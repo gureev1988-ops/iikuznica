@@ -1,6 +1,6 @@
 import json
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import ask
 import conversation as c
@@ -50,6 +50,10 @@ class ConversationTests(unittest.TestCase):
             self.assertIsNone(confirm_request(multiple, "сырой текст", "k", confirmed=True,
                                               part_index=chosen, register=logger))
         self.assertEqual(logger.call_count, 1)
+        for chosen in (2, 4, 2):
+            confirm_request(multiple, "обе просьбы", "k", confirmed=True, part_index=chosen, register=logger)
+        self.assertEqual(logger.call_args_list[1:], [
+            call("k:2", "Лимит вложения"), call("k:4", "Срок хранения"), call("k:2", "Лимит вложения")])
 
     def test_other_topic_after_question_does_not_reuse_directorate(self):
         raw = "Как мне повысить себе зарплату?"

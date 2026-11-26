@@ -59,3 +59,16 @@ python3 eval/conversations/check.py live --independent-parts --out /tmp/conversa
 ```sh
 python3 eval/conversations/check.py prepare --model-dir "$MINILM_DIR" --python "$RERANK_PYTHON"
 ```
+
+## Разбор сообщения и истории
+
+Эксперимент включается флагом `--conversation` у `eval/scope/ask.py`. Можно передать `--history-file` с историей пользователя и реальными ответами ассистента. Ядро возвращает общий текст с пронумерованными источниками и поле `requests` с отдельным действием по каждой просьбе. Если запросов в службу качества несколько, при подтверждении передаётся индекс выбранной части.
+
+Живой прогон использует подключение к OpenRouter и локальный MiniLM с проверкой контрольных сумм. Поиск выполняется по уточнённому тексту после выбора темы. Две команды используют разные каталоги для ответов и кеша.
+
+```sh
+python3 eval/conversations/check.py candidate --model-dir "$MINILM_DIR" --python "$RERANK_PYTHON" --out /tmp/auto42
+python3 eval/conversations/check.py candidate --working50 "$WORKING50_ZIP" --model-dir "$MINILM_DIR" --python "$RERANK_PYTHON" --out /tmp/auto50
+```
+
+При раздельном размещении генератора и поиска флаг `--defer-search` сохраняет недостающие запросы в `pending.json`. Команда `rank-pending` рассчитывает для них выдачу тем же MiniLM. Повторный `candidate` с тем же каталогом результатов и `--extra-cache` продолжает обработку. Сырые вопросы, ответы и выдачу по закрытым наборам следует хранить в согласованном окружении.

@@ -48,6 +48,7 @@ def confirm_request(reply, question, request_id, *, confirmed, register, part_in
     """register accepts an idempotency key and stores the confirmed employee question."""
     if confirmed is not True:
         return None
+    selected_offer = None
     if "requests" in reply:
         offers = {i: p for i, p in enumerate(reply["requests"]) if p["result"]["action"] == "escalate"
                   and p["result"].get("offer_quality_request") is True}
@@ -56,8 +57,11 @@ def confirm_request(reply, question, request_id, *, confirmed, register, part_in
         if type(part_index) is not int or part_index not in offers:
             return None
         question, reply = offers[part_index]["query"], offers[part_index]["result"]
+        if len(offers) > 1:
+            selected_offer = part_index
     if reply.get("action") != "escalate" or reply.get("offer_quality_request") is not True:
         return None
     if not request_id or not question.strip():
         raise ValueError("A request ID and the employee question are required")
-    return register(request_id, question)
+    key = request_id if selected_offer is None else f"{request_id}:{selected_offer}"
+    return register(key, question)
