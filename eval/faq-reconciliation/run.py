@@ -21,9 +21,6 @@ action: для входящего письма review_mail = модериров�
 source: укажи источник действующего ответа сотруднику для данной ситуации: expert = применимое действующее разъяснение уполномоченного эксперта, rule = применимый действующий регламент, none = ни одно основание не решает вопрос. При mail речь об авторе исходного обращения: доступное ему применимое письмо эксперта приоритетно сразу, включая время до модерации для общего FAQ. При wiki речь о новом запросе сотрудника: приоритет у применимого уже опубликованного экспертного FAQ, даже когда вики обновилась позже. Если письмо из другой области или автор не подтверждён, адресату можно дать самостоятельный однозначный ответ из применимого регламента; иначе none. Учитывай явно отозванное разъяснение. Для полностью покрытого дубликата, переданного в архив, у сотрудника остаётся основание в регламенте.
 В citations помести минимальный набор ID, который подтверждает оценку и выбор действия: письмо или FAQ, предметный пункт, при необходимости связанные условия, новая или прежняя версия. Указывай только ID из материалов данного события; при другом контексте указывай основание разграничения. reason — одно короткое объяснение по-русски. Дай результат для каждого события, сохрани порядок. Только JSON {"cases":[{"id":"ID","relation":"...","action":"...","source":"...","citations":["ID"],"reason":"..."}]}."""
 
-RELATIONS = {'conflict', 'covered', 'supplement', 'irrelevant', 'uncertain'}
-ACTIONS = {'review_mail','publish_faq','link_rule','keep_faq_flag','archive_duplicate','keep_faq','clarify'}
-SOURCES = {'expert','rule','none'}
 
 
 def encoded(value):
@@ -125,11 +122,11 @@ def screen_cards(output, clauses):
 
 def vetted_cards(report, screened, flags, clauses):
     audits = indexed(report['clauses'],'clause_id','audit')
-    if audits.keys() != clauses.keys() or any(type(a.get('ok')) is not bool or not text(a.get('reason')) for a in audits.values()):
-        raise ValueError('Audit must cover each source clause exactly once, with boolean ok and reason')
+    if audits.keys() != clauses.keys() or any(type(a.get('ok')) is not bool for a in audits.values()):
+        raise ValueError('Audit must cover each source clause exactly once, with boolean ok')
     for cid,a in audits.items():
         if not a['ok']:
-            flags[cid] = flags.get(cid) or a['reason']
+            flags[cid] = flags.get(cid) or (a['reason'] if text(a.get('reason')) else 'Rejected by auditor; reason unavailable')
     return {k:v for k,v in screened.items() if k not in flags}
 
 
@@ -150,17 +147,11 @@ def prepare(args):
     print(f"Prepared prompts in {out}. {len(cases)} events, {len(clauses)} source clauses.")
 
 
-def validate_answers(result,cases):
-    rows = indexed(result['cases'],'id','answers')
-    if list(rows) != list(cases):
-        raise ValueError('Answer IDs/order do not match events')
-    for eid,r in rows.items():
-        allowed = set(cases[eid]['candidate_clause_ids']) | {s['id'] for s in cases[eid]['evidence']}
-        cites = r.get('citations')
-        if (r.get('source') not in SOURCES or r.get('relation') not in RELATIONS or r.get('action') not in ACTIONS
-                or not isinstance(cites,list) or not all(text(cid) for cid in cites) or len(set(cites)) != len(cites)
-                or not set(cites) <= allowed or not text(r.get('reason'))):
-            raise ValueError(f'{eid}: invalid output or invented citation')
+def validate_decision_batch(result):
+    # Keep per-case failures in the denominator; score.py validates each decision.
+    if not isinstance(result, dict) or not isinstance(result.get('cases'), list):
+        raise ValueError('Decision batch must contain a cases array')
+
 
 def response_json(message):
     if not isinstance(message, str):
@@ -181,10 +172,19 @@ def request_stage(args, name, data, validate, key):
             old = json.loads(line)
             if old['stage'] == name and old['request_hash'] != identity:
                 raise ValueError(f'{name}: request changed; use a fresh output directory')
-            if old['stage'] == name and old.get('ok'):
+            if old['stage'] != name or old.get('finish_reason') != 'stop' or not text(old.get('text')):
+                continue
+            try:
                 parsed = response_json(old['text'])
                 validate(parsed)
-                return parsed
+            except (ValueError, KeyError, TypeError):
+                continue
+            if not old.get('ok'):
+                save(args.out/(name+'-revalidated.json'), {
+                    'id':old.get('id'), 'stage':name, 'request_hash':identity,
+                    'explanation':'First stored completion passing the current validator; no additional API call.'
+                })
+            return parsed
     call = request.Request('https://openrouter.ai/api/v1/chat/completions',
                            data=json.dumps(params,ensure_ascii=False).encode(),
                            headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'},method='POST')
@@ -275,7 +275,7 @@ def live(args):
     for arm in order:
         p = decisions(cases,clauses,cards if arm == 'registry' else None)
         save(out/(arm+'-prompt.json'),p)
-        result = request_stage(args,arm,p,lambda r:validate_answers(r,cases),key)
+        result = request_stage(args,arm,p,validate_decision_batch,key)
         save(out/(arm+'.json'),result)
     save(out/'usage-summary.json',usage_summary(out/'usage.jsonl'))
     print(f'Completed batch decisions in {out}; compare event quality using score.py.')
