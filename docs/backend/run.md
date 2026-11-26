@@ -71,7 +71,19 @@ python -m backend mail-list
 python -m backend mail-reply '<Message-ID из списка>' 'Заявку рассматривают в течение 2 дней.'
 ```
 
-У исходного сотрудника ответ появляется в истории и SSE. С токеном второго сотрудника задайте тот же вопрос в новой ленте. Ссылка в ответе открывает опубликованный фрагмент. Имитатор хранит письма между перезапусками в `.ii-local/mail.sqlite`. II_LOCAL_MAILBOX задаёт другой путь. Для тестов проверяемых ссылок и переключения движков команда `python -m backend seed-fixtures --version 1` загружает синтетические документы. Второй движок выбирается значением `engine: fixture-beta` в конфигурации.
+Когда фоновый воркер обработает письмо, в исходной ленте появится ответ администратора. Задайте тот же вопрос от второго сотрудника в новом чате.
+
+```sh
+curl -fsS -H "Authorization: Bearer $employee_token" "$api/conversations/$chat_id/messages"
+read -rs -p 'Токен employee2: ' second_token
+second_chat=$(python -c 'import uuid; print(uuid.uuid4())')
+curl -fsS -H "Authorization: Bearer $second_token" -H 'Content-Type: application/json' \
+  -d '{"client_message_id":"example-2","text":"Сколько дней рассматривают заявку?"}' \
+  "$api/conversations/$second_chat/messages"
+curl -fsS -H "Authorization: Bearer $second_token" "$api/conversations/$second_chat/messages"
+```
+
+Выполните последний запрос ещё раз, если ход пока в очереди. В готовом ответе `turns[].result.sources[0].kind` равно `faq`, а `url` ведёт к опубликованному фрагменту. В почтовом имитаторе остаётся одно исходящее письмо. Имитатор хранит письма между перезапусками в `.ii-local/mail.sqlite`. Переменная `II_LOCAL_MAILBOX` задаёт другой путь. Для тестов проверяемых ссылок и переключения движков команда `python -m backend seed-fixtures --version 1` загружает синтетические документы. Второй движок выбирается значением `engine: fixture-beta` в конфигурации.
 
 Встречный вопрос администратора продолжает ту же цепочку. Команда в ответном письме `Отзыв: вопрос снят` снимает обращение с очереди. Для уже опубликованного FAQ администратору также доступны операции замены и отзыва в API качества.
 
