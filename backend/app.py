@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import os
 
 from fastapi import Depends, FastAPI, HTTPException
+from pydantic import TypeAdapter
 
 from backend.config import Settings
 from backend.contracts.engine import build_engine
@@ -29,14 +30,14 @@ class Backend:
             self.mailbox = LocalMailbox(os.getenv("II_LOCAL_MAILBOX", ".ii-local/mail.sqlite"), self.mail_config.max_inbound_bytes)
         transport = self.mailbox or SmtpTransport(self.mail_config)
         inbox = self.mailbox or ImapInbox(self.mail_config)
-        self.mail = MailService(self.dsn, self.mail_config, transport=transport, inbox=inbox)
+        self.mail = MailService(self.dsn, self.mail_config, transport=transport, inbox=inbox, resolve_actor=lambda actor_id: self.resolve_actor(actor_id, "web"))
         self.dialog = DialogueService(dsn=self.dsn, engine=self.engine, mail_config=self.mail_config,
                                      max_pending=settings.max_pending, queue_reply=queue_reply, resolve_actor=self.resolve_actor)
         if sources is None:
             sources = {}
             batch = settings.integrations.get("batch")
             if batch is not None:
-                sources["batch"] = BatchSource(PageSnapshot(**page) for page in batch)
+                sources["batch"] = BatchSource(TypeAdapter(list[PageSnapshot]).validate_python(batch))
             if conf := settings.integrations.get("confluence"):
                 connector = ConfluenceSource(ConfluenceConfig(**conf))
                 sources["confluence"] = connector
@@ -100,7 +101,7 @@ class Backend:
         return run_once(self.dsn, queue, handlers, max_running=limit, terminal_handlers=terminal)
 
     def polling(self):
-        operations = {"recovery": lambda: recover_journal(self.dsn)}
+        operations = {"recovery": lambda: any(recover_journal(self.dsn))}
         if self.mail_config.mode != "disabled":
             operations["mail"] = lambda: self.observe("mail", self.mail.poll_inbox)
         if self.dion:

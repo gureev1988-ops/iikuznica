@@ -36,7 +36,7 @@ def test_burst_with_paused_then_restarted_workers(deployment, dsn, count, live_h
             accepted = [response.json()["turn_id"] for response in responses if response.status_code == 202]
             rejected = [response for response in responses if response.status_code != 202]
             assert len(accepted) == min(count, settings.max_pending)
-            assert all(response.status_code == 429 for response in rejected), [r.status_code for r in rejected]
+            assert all(response.status_code == 503 and response.json()["detail"]["code"] == "interactive_queue_full" for response in rejected), [r.status_code for r in rejected]
 
             def drain():
                 while backend.run_job("interactive") is not None:
