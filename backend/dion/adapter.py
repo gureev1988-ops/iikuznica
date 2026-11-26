@@ -8,15 +8,21 @@ from uuid import UUID, uuid4
 from psycopg.types.json import Jsonb
 
 from backend.contracts.api import MessageRequest
-from backend.db import append_event, connect, lock_source_catalog
+from backend.db import connect, lock_source_catalog
 from backend.dialog import Actor, DialogueError, DialogueService
-from backend.runtime import KnownDeliveryFailure, PendingDelivery, enqueue, reconcile_delivery, send_once
+from backend.runtime import KnownDeliveryFailure, PendingDelivery, enqueue, reconcile_delivery, require_lease, send_once
 
+from .audit import record_dispatch, record_outcome
 from .client import MAX_TEXT_LENGTH, MAX_UPDATE_ID, DionClient, DionRejected, as_object, as_uuid, update_id
 
 DELIVER = "dion.deliver"
+_PREFLIGHT_FAILURE = "dion_preflight_unavailable"
 _APPROVE = {"да", "подтверждаю", "/confirm"}
 _DECLINE = {"нет", "отмена", "/decline"}
+
+
+class DionPreflightUnavailable(RuntimeError):
+    """Delivery preparation failed before any provider send was attempted."""
 
 
 def queue_reply(
@@ -300,9 +306,19 @@ class DionAdapter:
             return None
         target = conn.execute(
             """
-            SELECT case_id, offer_id, clarification_id, mail_request_id, effect_key, true AS linked
-            FROM dion_outbox
-            WHERE conversation_id = %s AND confirmed_message_id = %s
+            SELECT o.case_id,
+                   CASE WHEN prep.payload IS NULL THEN o.offer_id
+                        ELSE (prep.payload->>'offer_id')::uuid END AS offer_id,
+                   CASE WHEN prep.payload IS NULL THEN o.clarification_id
+                        ELSE (prep.payload->>'clarification_id')::uuid END AS clarification_id,
+                   o.mail_request_id, o.effect_key, true AS linked
+            FROM dion_outbox o
+            LEFT JOIN delivery_attempts a
+                ON a.effect_key = o.effect_key AND a.channel = 'dion' AND a.state = 'sent'
+            LEFT JOIN events prep
+                ON prep.conversation_id = o.conversation_id AND prep.kind = 'dion.dispatch_prepared'
+                  AND prep.payload->>'attempt_id' = a.id::text
+            WHERE o.conversation_id = %s AND o.confirmed_message_id = %s
             UNION ALL
             SELECT case_id, null::uuid, null::uuid, null::uuid, null::text, true FROM dion_updates
             WHERE bot_id = %s AND chat_id = %s AND message_id = %s AND kind = 'input'
@@ -468,29 +484,66 @@ class DionAdapter:
             raise LookupError("DION outbox effect does not belong to this bot")
 
         def send():
-            with connect(self.dsn) as conn:
-                text = self._delivery_text(conn, outbox)
+            try:
+                with connect(self.dsn) as conn:
+                    envelope = self._prepare_dispatch(conn, job, outbox)
+            except KnownDeliveryFailure:
+                raise
+            except Exception:
+                # No provider I/O has run. Journal the failure as safe to retry.
+                raise KnownDeliveryFailure(_PREFLIGHT_FAILURE) from None
             try:
                 provider_id = self.client.send_message(
-                    chat_id=outbox["chat_id"], text=text, reply_to=outbox["reply_message_id"]
+                    chat_id=outbox["chat_id"], text=envelope["text"], reply_to=outbox["reply_message_id"]
                 )
             except DionRejected as exc:
                 raise KnownDeliveryFailure(str(exc)) from None
             return PendingDelivery(provider_id)
 
         outcome = send_once(self.dsn, channel="dion", effect_key=effect_key, send=send, job=job)
-        if outcome.state == "failed":
-            # Non-delivery is conclusive. Record a technical outcome for the original case.
+        if outcome.state in {"failed", "delivery_unknown"}:
             with connect(self.dsn) as conn:
-                self._delivery_event(conn, outbox, "failed")
+                lock_source_catalog(conn)
+                lock_delivery_receipts(conn, bot_id)
+                attempt = conn.execute(
+                    "SELECT state, provider_id FROM delivery_attempts WHERE id = %s FOR UPDATE",
+                    (outcome.attempt_id,),
+                ).fetchone()
+                if attempt["state"] == outcome.state:
+                    record_outcome(
+                        conn, outbox, outcome.attempt_id, outcome.state, provider_id=attempt["provider_id"],
+                    )
+        if outcome.state == "failed" and outcome.detail == _PREFLIGHT_FAILURE:
+            raise DionPreflightUnavailable(_PREFLIGHT_FAILURE)
         self.reconcile_pending(bot_id)
 
-    def _delivery_text(self, conn, outbox) -> str:
+    def _prepare_dispatch(self, conn, job, outbox) -> dict:
+        require_lease(conn, job)
+        lock_source_catalog(conn)
+        attempt = conn.execute(
+            """
+            SELECT id FROM delivery_attempts
+            WHERE channel = 'dion' AND state = 'sending'
+              AND effect_key = %s AND job_id = %s AND lease_token = %s
+            FOR UPDATE
+            """,
+            (outbox["effect_key"], job.id, job.lease_token),
+        ).fetchone()
+        if attempt is None:
+            raise DionPreflightUnavailable("DION sending attempt lost before provider I/O")
+        envelope = self._delivery_text(conn, outbox)
+        record_dispatch(conn, outbox, attempt["id"], envelope)
+        return envelope
+
+    def _delivery_text(self, conn, outbox) -> dict:
         actor = self._actor(outbox["external_user_id"])
         if actor is None or actor.id != outbox["actor_id"]:
             raise KnownDeliveryFailure("dion_destination_not_authorized")
+        # Preparation may supersede an action or append a case event.
+        # Take the write lock up front to avoid concurrent share-to-write upgrades.
+        lock_source_catalog(conn)
         conversation = conn.execute(
-            "SELECT 1 FROM conversations WHERE id = %s AND owner_id = %s",
+            "SELECT 1 FROM conversations WHERE id = %s AND owner_id = %s FOR UPDATE",
             (outbox["conversation_id"], actor.id),
         ).fetchone()
         if conversation is None:
@@ -508,19 +561,25 @@ class DionAdapter:
             raise
         if payload is None:
             raise KnownDeliveryFailure("dion_source_no_longer_available")
-        text, revised_refs = payload
+        text, revised_refs, keep_actions = payload
         footnote_refs = revised_refs if reevaluate_faq else outbox["source_refs"]
+        offer_id = outbox["offer_id"] if keep_actions else None
+        clarification_id = outbox["clarification_id"] if keep_actions else None
+        substitute = reevaluate_faq and (
+            text != outbox["text"] or footnote_refs != outbox["source_refs"]
+            or (not keep_actions and bool(outbox["offer_id"] or outbox["clarification_id"]))
+        )
 
         footer = []
-        if outbox["offer_id"] or outbox["clarification_id"]:
+        if offer_id or clarification_id:
             actions = self.dialogue.open_actions(conn, actor, outbox["conversation_id"])
-            if outbox["offer_id"]:
-                if not any(offer["id"] == outbox["offer_id"] for offer in actions["offers"]):
+            if offer_id:
+                if not any(offer["id"] == offer_id for offer in actions["offers"]):
                     raise KnownDeliveryFailure("dion_offer_no_longer_open")
-                footer.append(f"Ответьте «да» или «нет» на это сообщение. Можно отправить /confirm {outbox['offer_id']}")
-            if outbox["clarification_id"]:
+                footer.append(f"Ответьте «да» или «нет» на это сообщение. Можно отправить /confirm {offer_id}")
+            if clarification_id:
                 clarification = next(
-                    (item for item in actions["clarifications"] if item["id"] == outbox["clarification_id"]), None
+                    (item for item in actions["clarifications"] if item["id"] == clarification_id), None
                 )
                 if clarification is None:
                     raise KnownDeliveryFailure("dion_clarification_no_longer_open")
@@ -530,7 +589,7 @@ class DionAdapter:
                 )
                 footer.extend(choices)
                 footer.append(
-                    f"Ответьте на это сообщение номером или текстом. Можно отправить /answer {outbox['clarification_id']} и ответ."
+                    f"Ответьте на это сообщение номером или текстом. Можно отправить /answer {clarification_id} и ответ."
                 )
 
         if outbox["mail_request_id"]:
@@ -564,7 +623,15 @@ class DionAdapter:
                 footer.append(f"{self.public_base_url or ''}{url}")
 
         suffix = _clip("\n\n" + "\n".join(footer), 3000) if footer else ""
-        return _clip(text, MAX_TEXT_LENGTH - _html_length(suffix)) + suffix
+        return {
+            "text": _clip(text, MAX_TEXT_LENGTH - _html_length(suffix)) + suffix,
+            "source_refs": footnote_refs,
+            "substitute": substitute,
+            "offer_id": str(offer_id) if offer_id else None,
+            "clarification_id": str(clarification_id) if clarification_id else None,
+            "mail_request_id": str(outbox["mail_request_id"]) if outbox["mail_request_id"] else None,
+            "reply_message_id": str(outbox["reply_message_id"]) if outbox["reply_message_id"] else None,
+        }
 
     @staticmethod
     def _delivery_refs(conn, outbox):
@@ -596,14 +663,6 @@ class DionAdapter:
             enforce_current.append(ref)
         return enforce_current
 
-    @staticmethod
-    def _delivery_event(conn, outbox, state):
-        if outbox["case_id"] is not None:
-            append_event(
-                conn, outbox["conversation_id"], outbox["case_id"], outbox["turn_id"],
-                f"dion.delivery_{state}", {"state": state},
-            )
-
     def reconcile_pending(self, bot_id: UUID | None = None) -> int:
         if bot_id is None:
             bot_id = self.client.bot_id
@@ -618,7 +677,7 @@ class DionAdapter:
         rows = conn.execute(
             """
             SELECT u.update_id, u.kind, u.payload, a.id AS attempt_id, o.effect_key,
-                   o.conversation_id, o.case_id, o.turn_id
+                   o.conversation_id, o.case_id, o.turn_id, a.provider_id
             FROM delivery_attempts a
             JOIN dion_outbox o ON o.effect_key = a.effect_key
             JOIN dion_feeds f ON f.conversation_id = o.conversation_id
@@ -638,13 +697,17 @@ class DionAdapter:
                     self.dsn, attempt_id=row["attempt_id"], state=state,
                     detail="dion_message_failed" if state == "failed" else None, conn=conn,
                 )
+                message_id = None
                 if state == "sent":
                     message_id = as_uuid(row["payload"]["message"]["message_id"])
                     conn.execute(
                         "UPDATE dion_outbox SET confirmed_message_id = %s WHERE effect_key = %s",
                         (message_id, row["effect_key"]),
                     )
-                self._delivery_event(conn, row, state)
+                record_outcome(
+                    conn, row, row["attempt_id"], state,
+                    provider_id=row["provider_id"], message_id=message_id,
+                )
                 resolved.add(row["attempt_id"])
             conn.execute(
                 "UPDATE dion_updates SET processed_at = now() WHERE bot_id = %s AND update_id = %s",

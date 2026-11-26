@@ -1,7 +1,7 @@
 import json
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from threading import Barrier, Event
 from html import unescape
 from uuid import UUID, uuid4
 
@@ -494,3 +494,186 @@ def test_dion_delivery_ops_reconcile_exact_attempt_and_replay_retry(dsn, dion):
     assert api.post(path, json=decision, headers=headers).json() == posted.json()
     assert len(_state(dsn)["attempts"]) == 2
     assert _state(dsn)["attempts"][0]["detail"].startswith("operator_reconciliation:")
+
+
+@pytest.mark.parametrize(("question", "original_action"), [
+    ("Нужно официальное разъяснение", "escalate"),
+    ("Как подать заявку?", "clarify"),
+    ("Сколько дней рассматривают заявку?", "answer"),
+])
+def test_delayed_dion_dispatch_audits_official_substitution(dsn, dion, question, original_action):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from backend.contracts.api import MessageRequest
+    from backend.contracts.engine import AnswerResult
+    from backend.contracts.fixtures import seed_fixture_sources
+    from backend.db import connect
+    from backend.dialog import Actor, DialogueService
+    from backend.dion import dion_operations_router
+    from backend.mailfaq import MailService
+
+    class Escalate:
+        version = 1
+
+        def answer(self, request):
+            return AnswerResult("escalate", "Вопрос требует официального ответа.")
+
+    provider, adapter, dialogue = dion
+    actor = Actor("alice", frozenset({"employee"}), "alice@example.invalid")
+    if original_action == "answer":
+        with connect(dsn) as conn:
+            seed_fixture_sources(conn, active_version=2)
+
+    # Send quality's original email from a separate conversation. Its answer
+    # arrives only after the DION query has a queued response based on old data.
+    donor = DialogueService(dsn=dsn, engine=Escalate(), mail_config=dialogue.mail_config)
+    donor_conversation = uuid4()
+    with connect(dsn) as conn:
+        donor.admit(conn, actor, donor_conversation, MessageRequest(client_message_id="donor", text=question))
+    _run(dsn, "interactive", {"answer_turn": donor.answer_job})
+    with connect(dsn) as conn:
+        offer = donor.open_actions(conn, actor, donor_conversation)["offers"][0]
+        donor.confirm(conn, actor, offer["id"], offer["version"])
+    mail = MailService(dsn, dialogue.mail_config)
+    _run(dsn, "background", mail.handlers)
+
+    inbound_message = provider.text(question)
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    original = _state(dsn)["outbox"][0]
+    with connect(dsn) as conn:
+        saved = conn.execute("SELECT result FROM turns WHERE id = %s", (original["turn_id"],)).fetchone()["result"]
+    assert saved["action"] == original_action
+    if original_action == "answer":
+        assert "7 дней" in saved["text"]
+
+    official_text = "Применимое официальное разъяснение — 2 дня."
+    mail.simulator.reply(
+        mail.simulator.sent[0], official_text, message_id="<faq-before-dion@example.invalid>",
+    )
+    assert mail.poll_inbox() == 1
+    if original_action == "answer":
+        provider.outcomes.append("timeout")
+    _run(dsn, "background", adapter.handlers)
+    sent = provider.sends[-1]
+    assert official_text in unescape(sent["text"])
+    assert "/confirm" not in sent["text"] and "/answer" not in sent["text"]
+    assert "7 дней" not in sent["text"]
+
+    with connect(dsn) as conn:
+        prepared = conn.execute(
+            "SELECT payload FROM events WHERE kind = 'dion.dispatch_prepared' AND turn_id = %s",
+            (original["turn_id"],),
+        ).fetchone()["payload"]
+        attempt_id = UUID(prepared["attempt_id"])
+        assert prepared["text"] == unescape(sent["text"])
+        assert prepared["reply_message_id"] == str(inbound_message)
+        assert prepared["substitute"] and prepared["offer_id"] is None and prepared["clarification_id"] is None
+        assert [ref["kind"] for ref in prepared["source_refs"]] == ["faq"]
+        assert prepared["source_refs"][0]["url"] in prepared["text"]
+        assert conn.execute("SELECT 1 FROM messages WHERE id = %s", (attempt_id,)).fetchone() is None
+        outcome = conn.execute(
+            "SELECT state, provider_id FROM delivery_attempts WHERE id = %s", (attempt_id,)
+        ).fetchone()
+        assert outcome["state"] == "delivery_unknown"
+        if original_action == "escalate":
+            assert conn.execute(
+                "SELECT status FROM offers WHERE id = %s", (original["offer_id"],)
+            ).fetchone()["status"] == "superseded"
+        if original_action == "clarify":
+            assert conn.execute(
+                "SELECT status FROM clarifications WHERE id = %s", (original["clarification_id"],)
+            ).fetchone()["status"] == "superseded"
+
+    if original_action == "answer":
+        assert outcome["provider_id"] is None
+        app = FastAPI()
+        app.include_router(dion_operations_router(dsn, lambda: None))
+        result = TestClient(app).post(
+            f"/v1/ops/dion/delivery-attempts/{attempt_id}/reconcile",
+            json={"state": "sent", "message_id": str(uuid4()), "evidence": "Сообщение подтверждено в журнале Дион"},
+        )
+        assert result.status_code == 200
+    else:
+        provider.settle(sent)
+        adapter.poll_once(timeout=0)
+
+    with connect(dsn) as conn:
+        history = dialogue.history(conn, actor, original["conversation_id"])
+        replacement = next(message for message in history["messages"] if message["id"] == attempt_id)
+        assert replacement["text"] == prepared["text"]
+        assert replacement["source_refs"] == prepared["source_refs"]
+        statuses = [
+            row["kind"] for row in conn.execute(
+                """
+                SELECT kind FROM events WHERE conversation_id = %s AND payload->>'attempt_id' = %s
+                ORDER BY cursor
+                """,
+                (original["conversation_id"], str(attempt_id)),
+            )
+        ]
+    assert statuses == [
+        "dion.dispatch_prepared", "dion.delivery_unknown", "dion.delivery_sent", "dion.reply_substituted",
+    ]
+    assert history["turns"][0]["result"] == saved
+
+
+def test_local_dion_preflight_error_retries_without_ambiguous_acceptance(dsn, dion, monkeypatch):
+    from psycopg import OperationalError
+
+    from backend.db import connect
+
+    provider, adapter, dialogue = dion
+    provider.text("Сколько дней рассматривают заявку?")
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    actual = adapter._delivery_text
+
+    def unavailable(conn, outbox):
+        raise OperationalError("synthetic preflight outage")
+
+    monkeypatch.setattr(adapter, "_delivery_text", unavailable)
+    _run(dsn, "background", adapter.handlers)
+    assert provider.sends == []
+    previous = _state(dsn)["attempts"][0]
+    assert previous["state"] == "failed" and previous["detail"] == "dion_preflight_unavailable"
+    with connect(dsn) as conn:
+        job = conn.execute("SELECT * FROM jobs WHERE id = %s", (previous["job_id"],)).fetchone()
+        assert job["state"] == "queued"
+        conn.execute("UPDATE jobs SET available_at = now() WHERE id = %s", (job["id"],))
+    monkeypatch.setattr(adapter, "_delivery_text", actual)
+    _run(dsn, "background", adapter.handlers)
+    assert len(provider.sends) == 1
+    assert [item["state"] for item in _state(dsn)["attempts"]] == ["failed", "delivery_unknown"]
+
+
+def test_dion_prepares_two_same_chat_deliveries_without_holding_a_lock_during_io(dsn, dion):
+    from backend.db import connect
+    from backend.runtime import run_once
+
+    provider, adapter, dialogue = dion
+    provider.text("Нужно официальное разъяснение")
+    provider.text("Как подать заявку?")
+    adapter.poll_once(timeout=0)
+    assert adapter.route_once() == 2
+    for _ in range(2):
+        _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+
+    both_dispatching = Barrier(2, timeout=5)
+    provider.on_send = lambda body: both_dispatching.wait()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        jobs = [executor.submit(run_once, dsn, "background", adapter.handlers) for _ in range(2)]
+        assert all(job.result(timeout=10) is not None for job in jobs)
+    provider.on_send = None
+    assert len(provider.sends) == 2
+    with connect(dsn) as conn:
+        records = conn.execute(
+            "SELECT payload FROM events WHERE kind = 'dion.dispatch_prepared'"
+        ).fetchall()
+    assert len({row["payload"]["attempt_id"] for row in records}) == 2
+    assert sum(row["payload"]["offer_id"] is not None for row in records) == 1
+    assert sum(row["payload"]["clarification_id"] is not None for row in records) == 1
+    assert all(attempt["provider_id"] for attempt in _state(dsn)["attempts"])

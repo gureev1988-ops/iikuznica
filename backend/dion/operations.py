@@ -7,10 +7,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from backend.db import append_event, connect, lock_source_catalog
+from backend.db import connect, lock_source_catalog
 from backend.runtime import DeliveryStateConflict, enqueue, reconcile_delivery
 
 from .adapter import DELIVER, lock_delivery_receipts
+from .audit import record_outcome
 
 
 class DionDeliveryDecision(BaseModel):
@@ -78,7 +79,7 @@ def _reconcile_attempt(conn, dsn, attempt_id, decision):
     if decision.state == "sent" and attempt["confirmed_message_id"] not in (None, decision.message_id):
         raise HTTPException(409, detail={"code": "dion_message_id_conflict"})
     try:
-        reconcile_delivery(
+        result = reconcile_delivery(
             dsn, attempt_id=attempt_id, state=decision.state, conn=conn,
             provider_id=str(decision.message_id) if decision.message_id and not attempt["provider_id"] else None,
             detail=f"operator_reconciliation: {decision.evidence}",
@@ -91,11 +92,10 @@ def _reconcile_attempt(conn, dsn, attempt_id, decision):
             "UPDATE dion_outbox SET confirmed_message_id = %s WHERE effect_key = %s",
             (decision.message_id, attempt["effect_key"]),
         )
-    if attempt["state"] != decision.state and attempt["case_id"] is not None:
-        append_event(
-            conn, attempt["conversation_id"], attempt["case_id"], attempt["turn_id"],
-            f"dion.delivery_{decision.state}", {"state": decision.state},
-        )
+    record_outcome(
+        conn, attempt, attempt_id, decision.state,
+        provider_id=result.provider_id, message_id=decision.message_id,
+    )
 
     retry_job_id = None
     if decision.retry:
