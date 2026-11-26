@@ -126,7 +126,19 @@ def probe(cases, lookup):
             trace = input_trace(turn["question"], history_fixture(prior, "?" if prev_asked else "."))
             traces[f"{case['id']}.{i}"] = trace
             prior.append(turn["question"])
-    return {"retrieval": retrieval_probe(cases, lookup), "routing": traces}
+    followups = []
+    for case in (c for c in cases if c["id"].startswith("P")):
+        start, follow = case["turns"]
+        needed = {ref for part in follow["expect"] for ref, _ in part["steps"]}
+        comparison = {"id": case["id"]}
+        # A controlled retrieval comparison on known continuations only. The
+        # classifier must independently decide when this context applies in use.
+        for label, q in (("alone", follow["question"]),
+                         ("with_prior", start["question"] + "\n" + follow["question"])):
+            seeds, _ = lookup(q)
+            comparison[label] = sorted(needed - {" ".join(r) for r in seeds})
+        followups.append(comparison)
+    return {"retrieval": retrieval_probe(cases, lookup), "routing": traces, "followups_top5": followups}
 
 
 def live(cases, lookup, out):
