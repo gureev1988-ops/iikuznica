@@ -46,7 +46,6 @@ faq-revision-demo blockquote { margin-top: 8px; border-left: 2px solid #aab4bb; 
 faq-revision-demo .fq-label { display: block; font-size: 12px; font-weight: 730; }
 faq-revision-demo .fq-quote { background: #f5f7f9; padding: 10px 12px; border-radius: 7px; margin-top: 8px; }
 faq-revision-demo .fq-quote blockquote { border: 0; padding: 0; margin: 2px 0 0; }
-faq-revision-demo .fq-decision { margin-top: 12px; padding: 12px; background: #fff6e7; border-radius: 8px; }
 faq-revision-demo .fq-choice { display: block; width: 100%; margin-top: 6px; padding: 9px 12px; text-align: left; font: inherit; font-size: 13px; cursor: pointer; color: var(--ink,#212424); background: #fff; border: 1px solid var(--line,#dbe2e8); border-radius: 8px; }
 faq-revision-demo .fq-choice[aria-pressed="true"] { background: #f5f7f9; border-color: #86929a; font-weight: 700; }
 faq-revision-demo .fq-log { margin-top: 14px; }

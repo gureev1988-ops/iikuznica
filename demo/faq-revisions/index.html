@@ -26,7 +26,7 @@
     <faq-revision-demo></faq-revision-demo>
     <section class="conversation" id="conversation" aria-label="Чат сотрудника" hidden>
       <p id="question" class="question" tabindex="-1"></p>
-      <article class="reply"><h1 id="status"></h1><p id="version" class="note"></p><p id="response"></p><p id="review-note" class="note"></p><div id="sources"></div></article>
+      <article class="reply"><h1 id="status"></h1><p id="version" class="note"></p><p id="response" style="white-space:pre-line"></p><p id="review-note" class="note"></p><div id="sources"></div></article>
     </section>
   </main>
   <script src="model.js"></script>
@@ -36,10 +36,10 @@
     const desk = document.querySelector('faq-revision-demo');
     const panel = document.getElementById('conversation');
     const back = document.getElementById('return');
-    let triggerId;
+    let trigger;
     desk.addEventListener('faq-ask', event => {
-      triggerId = event.detail.id;
-      const view = window.FaqRevisionChat.snapshot(desk.model.query(triggerId));
+      trigger = desk.querySelector('[data-fq-desk] [data-fq-ask="' + event.detail.id + '"]');
+      const view = window.FaqRevisionChat.snapshot(desk.model.query(event.detail.id));
       document.getElementById('screen').textContent = 'Чат сотрудника';
       document.getElementById('question').textContent = view.question;
       document.getElementById('status').textContent = view.status;
@@ -67,7 +67,7 @@
       panel.hidden = back.hidden = true;
       desk.hidden = false;
       document.getElementById('screen').textContent = 'Отдел качества';
-      desk.querySelector('[data-fq-ask="' + triggerId + '"]')?.focus();
+      trigger?.focus();
     });
   </script>
 </body>

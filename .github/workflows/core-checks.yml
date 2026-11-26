@@ -1,0 +1,29 @@
+name: Core checks
+on:
+  pull_request:
+    paths:
+      - 'eval/**'
+      - 'corpus/**'
+      - 'demo/faq-revisions/model*'
+      - '.github/workflows/core-checks.yml'
+permissions:
+  contents: read
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate registry against originals
+        run: |
+          python3 eval/registry/registry.py --build
+          python3 eval/registry/registry.py --check
+          python3 -m unittest discover -s eval/registry
+      - name: Check response routing and source selection
+        run: python3 -m unittest discover -s eval/scope
+      - name: Check quality-service publication and source priority
+        run: |
+          node --test demo/faq-revisions/model.test.cjs
+          node eval/faq-priority/evaluate.cjs

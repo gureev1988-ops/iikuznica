@@ -4,6 +4,8 @@ import hashlib
 import io
 import json
 import os
+import secrets
+import statistics
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -12,6 +14,8 @@ import evidence
 from variants import linked, reference
 from policy import fingerprint, full_corpus, rows
 from run import cached_call, complete, decide, save
+from run_12x3 import SEARCH_MODELS
+import thresholds
 
 HERE = Path(__file__).resolve().parent
 EVAL = HERE.parent
@@ -81,17 +85,17 @@ def diagnose(cases, keys, corpus, out):
     print("Review all 50 messages against the originals in review.jsonl to determine usable answers.")
 
 
-def run(cases, bank, out):
+def run(cases, bank, out, model):
     corpus = full_corpus()
     out.mkdir(parents=True, exist_ok=True, mode=0o700)
     (out / ".gitignore").write_text("*\n")
     calls = out / "calls"
     calls.mkdir(exist_ok=True)
     # Pin inputs, corpus and implementation so resumed outputs cannot mix experiments.
-    files = [HERE / f for f in ("run50.py", "evidence.py", "ask.py")]
+    files = [HERE / f for f in ("run50.py", "evidence.py", "ask.py", "procedures.py", "quality.py", "thresholds.py")]
     files.extend([EVAL / s for s in ("decider/policy.py", "decider/run.py", "linked35/variants.py", "run_12x3.py")])
     digest = fingerprint([
-        cases, list(corpus.values()), list(evidence.REGISTRY().values()), [p.read_text() for p in files]])
+        model, cases, list(corpus.values()), list(evidence.REGISTRY().values()), [p.read_text() for p in files]])
     manifest = out / "manifest.json"
     if manifest.exists() and json.loads(manifest.read_text()) != digest:
         raise ValueError("Inputs or candidate changed; use another --out")
@@ -100,40 +104,123 @@ def run(cases, bank, out):
         result = out / (cid + ".json")
         if result.exists():
             continue
+        trace = []
         def generation(_, body, dataset):
             def call():
                 r = complete(cid, body, dataset)
                 if not r["ok"]:
-                    raise RuntimeError(f"{cid} Gemma HTTP {r['http']}")
+                    raise RuntimeError(f"{cid} {model} HTTP {r['http']}")
                 return {"response": r}
-            return cached_call(out, cid, "generate", body, call, lambda r: r["text"])["response"]
+            row = cached_call(out, cid, "generate", body, call, lambda r: r["text"])
+            response = row["response"]
+            trace.append({"stage": "generate", "hash": row["request_hash"], "model": body["model"],
+                          "seconds": response["latency_s"], "cost": response["usage"].get("cost")})
+            return response
 
         def judge(body):
-            return cached_call(out, cid, "judge", body, lambda: decide(body), lambda v: v["answers"])
+            row = cached_call(out, cid, "judge", body, lambda: decide(body), lambda v: v["answers"])
+            trace.append({"stage": "judge", "hash": row["request_hash"], "model": body["model"],
+                          "seconds": row["latency_s"], "cost": row["usage"].get("cost"),
+                          "answers": row["response"]["answers"]})
+            return row
 
         final = ask.answer(question, lambda _: (seeds, pool),
-                           generate_answer=lambda *args: evidence.generate(*args, call=generation),
+                           generate_answer=lambda *args: evidence.generate(*args, call=generation, model=model),
                            judge=lambda body: evidence.judge(body, call=judge),
-                           add_sources=evidence.alternatives, instruction="")
+                           add_sources=evidence.alternatives, instruction="", procedure_mode=True)
+        save(out / (cid + ".trace.json"), json.dumps(trace, ensure_ascii=False))
         save(result, json.dumps(final, ensure_ascii=False))
         print(cid, final["action"], flush=True)
     diagnose(cases, read_keys(bank), corpus, out)
+
+
+def offline(cases, keys):
+    coverage(cases, keys, full_corpus())
+    class NeedsModels(Exception):
+        pass
+
+    def stop(_):
+        raise NeedsModels
+
+    local = {}
+    for cid, (question, _, _) in cases.items():
+        try:
+            local[cid] = ask.answer(question, stop, procedure_mode=True)
+        except NeedsModels:
+            pass
+    correct = sum(r["action"] == keys[cid]["expected_action"] for cid, r in local.items())
+    print(f"Completed before model calls: {len(local)}/50; expected action: {correct}/{len(local)}")
+    return local
+
+
+def summarize(out, cases):
+    traces = [json.loads((out / (cid + ".trace.json")).read_text()) for cid in cases]
+    calls = [item for trace in traces for item in trace]
+    times = sorted(sum(r["seconds"] for r in trace) for trace in traces)
+    costs = [r["cost"] for r in calls]
+    summary = dict(cases=len(traces), calls=len(calls), api_seconds_p50=statistics.median(times),
+                   api_seconds_p95=times[(95 * len(times) + 99) // 100 - 1],
+                   total_api_usd=sum(costs) if all(v is not None for v in costs) else None)
+    save(out / "measurements.json", json.dumps(summary, indent=2))
+    print(summary)
+    records = []
+    for row in rows(out / "review.jsonl"):
+        log = json.loads((out / (row["id"] + ".trace.json")).read_text())
+        last = next((call["answers"] for call in reversed(log) if call["stage"] == "judge"), None)
+        records.append((row["response"]["action"], last, row["expected_action"]))
+    save(out / "threshold-replay.json", json.dumps(thresholds.sweep(records), indent=2))
+
+
+def paired(base, challenger, directory):
+    answers = [{r["id"]: r for r in rows(d / "review.jsonl")} for d in (base, challenger)]
+    if answers[0].keys() != answers[1].keys() or len(answers[0]) != 50:
+        raise ValueError("Expected two complete runs on the same bank")
+    saltfile = directory / "blind-salt"
+    if not saltfile.exists():
+        save(saltfile, secrets.token_hex(16))
+    salt = saltfile.read_text()
+    comparisons, unblind = [], {}
+    for cid, a in sorted(answers[0].items()):
+        b = answers[1][cid]
+        if any(a[k] != b[k] for k in ("question", "expected_action", "reference_answer")):
+            raise ValueError("Mismatched paired inputs")
+        order = hashlib.sha256((salt + cid).encode()).digest()[0] % 2
+        left, right = (a,b) if order == 0 else (b,a)
+        unblind[cid] = "base" if order == 0 else "challenger"
+        originals = {(r["doc"],r["ref"]): r for item in (a,b) for r in item["originals"]}
+        comparisons.append(dict(id=cid, question=a["question"], expected_action=a["expected_action"],
+                                reference_answer=a["reference_answer"], missing=a["missing"],
+                                originals=list(originals.values()), A=left["response"], B=right["response"]))
+    save(directory / "paired-review.jsonl", "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in comparisons))
+    save(directory / "unblind.json", json.dumps(unblind))
 
 
 if __name__ == "__main__":
     import fcntl
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("packet", type=Path, help="Private IIkuznitsa_Final15.zip")
-    parser.add_argument("--check", action="store_true", help="Compare source coverage offline")
-    parser.add_argument("--out", type=Path, default=Path("core50-private"))
+    parser.add_argument("--check", action="store_true", help="Run offline routing and coverage checks")
+    parser.add_argument("--out", type=Path, default=Path("procedures50-private"))
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--model", choices=SEARCH_MODELS, default=ask.GEMMA)
+    group.add_argument("--compare-models", action="store_true", help="Run a blinded Gemma/Qwen pair")
     args = parser.parse_args()
     cases, bank = blind_inputs(args.packet)
     if args.check:
-        coverage(cases, read_keys(bank), full_corpus())
+        offline(cases, read_keys(bank))
+        print("Historical linked35 threshold replay:", thresholds.historical(EVAL))
     elif not os.getenv("OPENROUTER_API_KEY"):
         parser.error("Live run requires OPENROUTER_API_KEY")
     else:
         args.out.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (args.out / ".gitignore").write_text("*\n")
         with (args.out / ".run.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            run(cases, bank, args.out)
+            folders = []
+            for model in (SEARCH_MODELS if args.compare_models else [args.model]):
+                folder = args.out / model.replace("/", "_")
+                run(cases, bank, folder, model)
+                summarize(folder, cases)
+                folders.append(folder)
+            if args.compare_models:
+                paired(*folders, args.out)

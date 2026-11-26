@@ -5,6 +5,7 @@ from functools import lru_cache
 
 from variants import GEMMA, index, make_request, reference
 from run import complete, decide
+import procedures
 
 REGISTRY = lru_cache(maxsize=1)(index)
 SELECT = """Ты отвечаешь сотруднику по действующим процессам. Получишь оригинальные пункты и подготовленные по ним утверждения.
@@ -75,18 +76,21 @@ def render(selection, allowed):
             "sources": [{"doc": doc, "ref": ref} for doc, ref in refs]}
 
 
-def generate(question, sources, instruction, *, call=complete):
+def generate(question, sources, instruction, *, call=complete, model=GEMMA):
     enriched, allowed = options(sources)
-    request = make_request({"question": question, "sources": enriched}, GEMMA, SELECT + "\n" + instruction)
+    request = make_request({"question": question, "sources": enriched}, model, SELECT + "\n" + instruction)
     row = call("request", request, "evidence-core")
     if not row["ok"]:
-        raise RuntimeError(f"Gemma HTTP {row['http']}")
+        raise RuntimeError(f"{model} HTTP {row['http']}")
     raw = row["text"].strip()
     if raw.startswith("```") and raw.endswith("```"):
         raw = raw.split("\n", 1)[-1][:-3]
     try:
-        return render(json.loads(raw), allowed)
-    except (KeyError, ValueError, TypeError):
+        selection = json.loads(raw)
+        if selection.get("action") == "answer" and isinstance(selection.get("ids"), list):
+            selection["ids"] = procedures.complete_ids(selection["ids"], allowed, question)
+        return render(selection, allowed)
+    except (AttributeError, KeyError, ValueError, TypeError):
         # An invalid selection has no employee-facing instruction. Let the regular judge
         # choose clarification, escalation or the single allowed repair.
         return {"action": "escalate", "message": NON_DIRECT["escalate"], "sources": []}
@@ -103,4 +107,12 @@ def judge(body, *, call=decide):
         " Проверь, может ли сотрудник действовать по этой реплике: указаны нужная ветка, роль и условия. "
         "Список похожих правил без выбора применимой ветки недостаточен."
     )
+    questions["needed_fact"] = {"type": "choice", "instructions":
+        "Оцени именно то, что нужно узнать сотруднику. Тематически похожий пункт не подтверждает "
+        "номер, значение, замещение или иной запрошенный реквизит. Если известная ситуация требует "
+        "официальных сведений, которых нет, сотрудник не может доопределить их своим уточнением.",
+        "criteria": {"supported": "В источниках есть конкретное применимое сведение.",
+                     "employee": "Сотрудник может сообщить собственное обстоятельство, меняющее применимое правило.",
+                     "company": "Ситуация понятна, но официальное сведение должен предоставить владелец процесса.",
+                     "irrelevant": "Вопрос вне проектной области или невозможно определить его предмет."}}
     return call(dict(body, questions=questions))
