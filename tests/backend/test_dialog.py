@@ -474,7 +474,17 @@ def test_delayed_action_sends_official_replacement_and_preserves_confirmed_histo
         )[2]
         actual_text = f"{text}\n\n{refs[0]['url']}"
         audit = dict(attempt_id=attempt_id, conversation_id=conversation_id, case_id=admitted.case_id,
-                     turn_id=admitted.turn_id, text=actual_text, source_refs=refs)
+                     turn_id=admitted.turn_id, text=actual_text, source_refs=refs, condition_sources=[])
+        conn.execute(
+            "INSERT INTO dion_dispatches (attempt_id, effect_key, envelope) VALUES (%s, %s, %s)",
+            (
+                attempt_id, outbox["effect_key"], Jsonb({
+                    "text": actual_text, "source_refs": refs, "condition_sources": [],
+                    "substitute": True, "offer_id": None, "clarification_id": None,
+                    "mail_request_id": None, "reply_message_id": None,
+                }),
+            ),
+        )
         service.record_delivery_replacement(conn, **audit)
     history_path = f"/v1/conversations/{conversation_id}/messages"
     assert all(item["id"] != str(attempt_id) for item in client.get(history_path).json()["messages"])

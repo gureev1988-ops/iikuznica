@@ -307,17 +307,15 @@ class DionAdapter:
         target = conn.execute(
             """
             SELECT o.case_id,
-                   CASE WHEN prep.payload IS NULL THEN o.offer_id
-                        ELSE (prep.payload->>'offer_id')::uuid END AS offer_id,
-                   CASE WHEN prep.payload IS NULL THEN o.clarification_id
-                        ELSE (prep.payload->>'clarification_id')::uuid END AS clarification_id,
+                   CASE WHEN prep.envelope IS NULL THEN o.offer_id
+                        ELSE (prep.envelope->>'offer_id')::uuid END AS offer_id,
+                   CASE WHEN prep.envelope IS NULL THEN o.clarification_id
+                        ELSE (prep.envelope->>'clarification_id')::uuid END AS clarification_id,
                    o.mail_request_id, o.effect_key, true AS linked
             FROM dion_outbox o
             LEFT JOIN delivery_attempts a
                 ON a.effect_key = o.effect_key AND a.channel = 'dion' AND a.state = 'sent'
-            LEFT JOIN events prep
-                ON prep.conversation_id = o.conversation_id AND prep.kind = 'dion.dispatch_prepared'
-                  AND prep.payload->>'attempt_id' = a.id::text
+            LEFT JOIN dion_dispatches prep ON prep.attempt_id = a.id
             WHERE o.conversation_id = %s AND o.confirmed_message_id = %s
             UNION ALL
             SELECT case_id, null::uuid, null::uuid, null::uuid, null::text, true FROM dion_updates
@@ -551,7 +549,7 @@ class DionAdapter:
         try:
             refs = self._delivery_refs(conn, outbox)
             reevaluate_faq = outbox["effect_key"].startswith("turn:")
-            payload = self.dialogue.delivery_payload(
+            payload = self.dialogue.delivery_envelope(
                 conn, actor, outbox["conversation_id"], outbox["text"], refs,
                 turn_id=outbox["turn_id"], reevaluate_faq=reevaluate_faq,
             )
@@ -561,7 +559,7 @@ class DionAdapter:
             raise
         if payload is None:
             raise KnownDeliveryFailure("dion_source_no_longer_available")
-        text, revised_refs, keep_actions = payload
+        text, revised_refs, keep_actions, condition_sources = payload
         footnote_refs = revised_refs if reevaluate_faq else outbox["source_refs"]
         offer_id = outbox["offer_id"] if keep_actions else None
         clarification_id = outbox["clarification_id"] if keep_actions else None
@@ -626,6 +624,7 @@ class DionAdapter:
         return {
             "text": _clip(text, MAX_TEXT_LENGTH - _html_length(suffix)) + suffix,
             "source_refs": footnote_refs,
+            "condition_sources": condition_sources,
             "substitute": substitute,
             "offer_id": str(offer_id) if offer_id else None,
             "clarification_id": str(clarification_id) if clarification_id else None,
