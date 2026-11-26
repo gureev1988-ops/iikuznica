@@ -1,7 +1,6 @@
 """Composition root for HTTP, interactive and background worker processes."""
 
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 import os
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -85,7 +84,7 @@ class Backend:
         return {"mode": mode, **(row or {"state": "not_checked"})}
 
     def document_job(self, job):
-        return self.observe("documents", lambda: self.documents.run(job.payload["run_id"]))
+        return self.observe("documents", lambda: self.documents.handle_job(job))
 
     def run_job(self, queue):
         if queue == "interactive":
@@ -96,14 +95,14 @@ class Backend:
             handlers = {"documents.sync": self.document_job, **self.mail.handlers}
             if self.dion:
                 handlers.update(self.dion.handlers)
-            terminal = {}
+            terminal = {"documents.sync": self.documents.terminal_job}
             limit = self.settings.background_concurrency
         return run_once(self.dsn, queue, handlers, max_running=limit, terminal_handlers=terminal)
 
     def polling(self):
         operations = {"recovery": lambda: recover_journal(self.dsn)}
         if self.mail_config.mode != "disabled":
-            operations["mail"] = lambda: self.observe("mail", self.mail.poll_once)
+            operations["mail"] = lambda: self.observe("mail", self.mail.poll_inbox)
         if self.dion:
             operations["dion"] = lambda: self.observe("dion", lambda: self.dion.poll_once(timeout=10))
             operations["dion-route"] = self.dion.route_once
@@ -131,7 +130,7 @@ def create_app(settings: Settings | None = None, *, services: Backend | None = N
         return actor
 
     app.include_router(create_router(backend.dialog, get_actor))
-    app.include_router(build_router(backend.dsn, get_actor))
+    app.include_router(build_router(backend.dsn, get_actor, service=backend.mail))
     app.include_router(make_router(backend.documents, require_ops))
     modes = {
         "mail": backend.mail_config.mode,
