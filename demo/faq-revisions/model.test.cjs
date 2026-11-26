@@ -8,161 +8,259 @@ const { createModel } = require('./model.js');
 
 const faq = (state, id) => state.faqs.find(item => item.id === id);
 const mail = (state, id) => state.mails.find(item => item.id === id);
+const scope = 'ДБРЦТ · пресейл';
 
-test('external version history drives full coverage and contradiction differently', () => {
-  const model = createModel();
-  const before = model.state();
-  assert.equal(before.event, null);
-  assert.equal(model.query('channel').answerKind, 'faq');
-  assert.match(model.query('estimate').answer, /5 рабочих дней/);
-  const after = model.syncConfluence();
-  assert.deepEqual([after.event.pageId, after.event.from, after.event.to], ['DEMO-DB', 'v1', 'v2']);
-  assert.deepEqual(after.changedRefs, ['1.6', 'Д.1']);
-  assert.equal(after.clauses.find(c => c.ref === 'Д.1').originalText, '');
-  assert.equal(faq(after, 'channel').status, 'archived');
-  assert.equal(faq(after, 'estimate').status, 'review');
-  assert.equal(faq(after, 'questionnaire').status, 'published');
-  assert.equal(faq(after, 'receipt').status, 'absent');
-  assert.equal(model.query('channel').answerKind, 'regulation');
-  assert.deepEqual(model.query('channel').refs, ['Д.1']);
-  assert.deepEqual(model.syncConfluence(), after);
+test('a new wiki version preserves the approved expert answer, archives an equivalent FAQ, and leaves unrelated records alone', () => {
+  const m = createModel();
+  const original = m.query('estimate');
+  assert.equal(original.discrepancy, null);
+  const update = m.syncConfluence();
+  const active = m.query('estimate');
+  assert.equal(active.answer, original.answer);
+  assert.deepEqual(active.approval, original.approval);
+  assert.equal(active.approval.verifiedText, active.answer);
+  assert.equal(active.approval.mailId, 'estimate-initial');
+  assert.equal(active.status, 'published');
+  assert.deepEqual(active.discrepancy.differences, [{ref:'1.6',key:'exactDays',expert:5,regulation:7}]);
+  assert.deepEqual(active.sources.map(s => [s.ref,s.role,s.revision,s.date]), [
+    ['1.6','discrepancy','v2',update.event.date],['1.7','support','v2',update.event.date]
+  ]);
+  assert.equal(faq(update,'channel').status, 'archived');
+  assert.equal(m.query('channel').answerKind, 'regulation');
+  assert.deepEqual(m.query('channel').refs, ['Д.1']);
+  assert.equal(m.query('questionnaire').discrepancy, null);
+  assert.equal(m.query('questionnaire').answerKind, 'faq');
+  assert.equal(m.query('receipt').answerKind,'none');
+  assert.deepEqual(m.syncConfluence(), update);
 });
 
-test('while an FAQ is contested the employee sees current clauses without old FAQ or email', () => {
-  const model = createModel();
-  model.syncConfluence();
-  const result = model.query('estimate');
-  assert.equal(result.answerKind, 'regulation');
-  assert.match(result.answer, /7 рабочих дней/);
-  assert.match(result.answer, /3 рабочих дня/);
-  assert.match(result.answer, /SLA на поиск и согласование/);
-  assert.doesNotMatch(JSON.stringify(result), /5 рабочих дней/);
-  assert.deepEqual(result.sources.map(item => [item.ref, item.revision]), [['1.6', 'v2'], ['1.7', 'v2']]);
-  assert.equal(result.approval, null);
-  assert.equal(model.query('questionnaire').answerKind, 'faq');
+for (const versionFirst of [true,false]) {
+  test('a conflicting reply reaches its addressee before FAQ moderation (' + (versionFirst ? 'wiki first' : 'mail first') + ')', () => {
+    const m = createModel();
+    if (versionFirst) m.syncConfluence();
+    const earlier = m.query('estimate');
+    const held = mail(m.receiveMail('deadline'),'deadline');
+    assert.equal(held.status, 'review');
+    assert.equal(held.canApprove,true);
+    assert.equal(held.canRevise,false);
+    assert.equal(held.recipientAnswer.text, held.body);
+    assert.equal(held.recipientAnswer.actor, held.actor);
+    assert.equal(held.recipientAnswer.discrepancy.differences[0].expert, 2);
+    assert.equal(held.recipientAnswer.discrepancy.differences[0].regulation, versionFirst ? 7 : 5);
+    assert.deepEqual(held.recipientAnswer.sources.map(s => s.ref), ['1.6','1.7']);
+    assert.deepEqual(m.query('estimate'), earlier);
+    const accepted = m.decideMail('deadline',held.reviewToken,'approve');
+    const active = m.query('estimate');
+    assert.equal(mail(accepted,'deadline').status, 'published');
+    assert.equal(active.answer, held.body);
+    assert.equal(active.approval.mailId,'deadline');
+    assert.equal(active.approval.verifiedText,held.body);
+    assert.equal(active.approval.date,held.date);
+    assert.deepEqual(active.discrepancy.refs,['1.6']);
+    assert.match(active.answer,/3 рабочих дня/);
+    assert.match(active.answer,/поиск и согласование/);
+    assert.deepEqual(m.receiveMail('deadline'),accepted);
+    assert.deepEqual(m.decideMail('deadline',held.reviewToken,'reject'),accepted);
+    m.syncConfluence();
+    assert.equal(m.query('estimate').answer,held.body);
+    assert.equal(m.query('estimate').discrepancy.differences[0].regulation,7);
+    assert.equal(mail(m.state(),'deadline').status, 'published');
+  });
+}
+
+test('outdated or foreign moderation tokens cannot replace the current FAQ', () => {
+  const m = createModel(), other = createModel();
+  const old = mail(m.receiveMail('deadline'),'deadline');
+  const current = m.syncConfluence();
+  const newMail = mail(current,'deadline');
+  assert.notEqual(old.reviewToken, newMail.reviewToken);
+  assert.deepEqual(m.decideMail('deadline',old.reviewToken,'approve'),current);
+  const foreign = mail(other.receiveMail('deadline'),'deadline');
+  assert.deepEqual(m.decideMail('deadline',foreign.reviewToken,'approve'),current);
+  assert.equal(newMail.checkedVersion, 'v2');
+  assert.equal(newMail.recipientAnswer.discrepancy.differences[0].regulation,7);
+  const rejected = m.decideMail('deadline',newMail.reviewToken,'reject');
+  assert.deepEqual(m.receiveMail('deadline'),rejected);
+  assert.equal(mail(rejected,'deadline').status,'rejected');
+  assert.equal(mail(rejected,'deadline').recipientAnswer.text,old.body);
+  assert.notEqual(m.query('estimate').answer,old.body);
 });
 
-test('FAQ removal is explicit, version-bound and idempotent, and never edits Confluence', () => {
-  const model = createModel();
-  const first = model.syncConfluence();
-  const key = faq(first, 'estimate').reviewToken;
-  assert.deepEqual(model.decideFaq('estimate', null, 'remove'), first);
-  assert.deepEqual(model.decideFaq('estimate', key, 'publish'), first);
-  const deferred = model.decideFaq('estimate', key, 'defer');
-  assert.equal(faq(deferred, 'estimate').status, 'review');
-  assert.deepEqual(model.decideFaq('estimate', key, 'remove'), deferred);
-  assert.equal(model.query('estimate').answerKind, 'regulation');
-  const updated = model.decideFaq('estimate', faq(deferred, 'estimate').reviewToken, 'remove');
-  assert.equal(faq(updated, 'estimate').status, 'archived');
-  assert.match(faq(updated, 'estimate').answer, /5 рабочих дней/);
-  assert.deepEqual(updated.event, first.event);
-  assert.deepEqual(updated.clauses, first.clauses);
-  assert.deepEqual(model.decideFaq('estimate', key, 'remove'), updated);
+test('authority is checked independently of letter wording, and different directorates do not conflict', () => {
+  const m = createModel();
+  const initial = m.query('estimate');
+  for (const id of ['unverified','other-scope']) {
+    const state = m.receiveMail(id);
+    const candidate = mail(state,id);
+    assert.equal(candidate.status,'review');
+    assert.equal(candidate.canApprove,false);
+    assert.equal(candidate.recipientAnswer,null);
+    assert.equal(candidate.discrepancy,null);
+    assert.deepEqual(m.decideMail(id,candidate.reviewToken,'approve'),state);
+    assert.deepEqual(m.query('estimate'),initial);
+    if (id === 'other-scope') {
+      assert.equal(candidate.question, initial.question);
+      assert.deepEqual(candidate.evidence,[]);
+    }
+  }
 });
 
-test('a conflicting letter cannot be passed through as an FAQ, including after rejection', () => {
-  const model = createModel();
-  const initialAnswer = model.query('estimate');
-  const held = model.receiveMail('deadline');
-  const candidate = mail(held, 'deadline');
-  assert.equal(candidate.status, 'review');
-  assert.equal(candidate.evidence[0].ref, '1.6');
-  assert.deepEqual(model.receiveMail('deadline'), held);
-  assert.deepEqual(model.decideMail('deadline', candidate.reviewToken, 'publish'), held);
-  assert.deepEqual(model.query('estimate'), initialAnswer);
-  const rejected = model.decideMail('deadline', candidate.reviewToken, 'reject');
-  assert.equal(mail(rejected, 'deadline').status, 'rejected');
-  assert.equal(mail(rejected, 'deadline').body, candidate.body);
-  assert.deepEqual(model.receiveMail('deadline'), rejected);
-  assert.deepEqual(model.query('estimate'), initialAnswer);
+test('an ambiguous expert statement stays out until the author identifies the applicable case', () => {
+  const m = createModel();
+  const hold = mail(m.receiveMail('ambiguous'),'ambiguous');
+  assert.equal(hold.recipientAnswer,null);
+  assert.equal(hold.canApprove,false);
+  assert.equal(hold.canRevise,true);
+  assert.equal(m.query('budget-tag').answerKind,'none');
+  assert.equal(m.decideMail('ambiguous',hold.reviewToken,'approve').mails.find(item => item.id === 'ambiguous').status,'review');
+  m.decideMail('ambiguous',hold.reviewToken,'revise');
+  const clarified = m.query('budget-tag');
+  assert.match(clarified.answer,/бюджетной оценки без подрядчика/);
+  assert.match(clarified.answer,/3 рабочих дня/);
+  assert.equal(clarified.approval.verifiedText,hold.clarification);
+  assert.equal(clarified.discrepancy,null);
+  m.syncConfluence();
+  assert.equal(m.query('budget-tag').discrepancy,null);
+  assert.match(m.query('budget-tag').answer,/Бюджет/);
 });
 
-test('reviewing a correction requires the current source version; a duplicate is closed', () => {
-  const model = createModel();
-  const old = mail(model.receiveMail('deadline'), 'deadline');
-  const current = model.syncConfluence();
-  const pending = mail(current, 'deadline');
-  assert.notEqual(old.reviewToken, pending.reviewToken);
-  assert.equal(pending.checkedVersion, 'v2');
-  assert.match(pending.evidence[0].text, /7 рабочих дней/);
-  assert.match(pending.correctedBody, /7 рабочих дней/);
-  assert.match(pending.body, /2 рабочих дня/);
-  assert.deepEqual(model.decideMail('deadline', old.reviewToken, 'revise'), current);
-  const accepted = model.decideMail('deadline', pending.reviewToken, 'revise');
-  assert.equal(mail(accepted, 'deadline').status, 'covered');
-  assert.equal(mail(accepted, 'deadline').reviewedBody, pending.correctedBody);
-  assert.equal(faq(accepted, 'estimate').status, 'review');
-  assert.equal(model.query('estimate').answerKind, 'regulation');
+test('a clarification that disagrees still needs confirmation, including the first FAQ on its subject', () => {
+  const candidate = {
+    id:'first', faqId:'budget-tag', scope:null, verified:true, actor:'Expert', subject:'Budget', question:'Budget?',
+    body:'Two days?', facts:{budgetDays:2}, clarification:'Yes, two days for budget assessments.',
+    corrected:{scope,body:'Two days for budget assessments.',facts:{budgetDays:2}}
+  };
+  const m = createModel({inbox:[candidate]});
+  const held = mail(m.receiveMail('first'),'first');
+  const reviewed = mail(m.decideMail('first',held.reviewToken,'revise'),'first');
+  assert.equal(reviewed.status,'review');
+  assert.equal(reviewed.canRevise,false);
+  assert.equal(reviewed.canApprove,true);
+  assert.match(reviewed.recipientAnswer.text,/Yes, two/);
+  assert.equal(reviewed.discrepancy.differences[0].key,'budgetDays');
+  assert.equal(m.query('budget-tag').answerKind,'none');
+  m.decideMail('first', reviewed.reviewToken,'approve');
+  assert.equal(m.query('budget-tag').answer, candidate.corrected.body);
+  assert.equal(m.query('budget-tag').approval.verifiedText, candidate.clarification);
+  assert.equal(m.query('budget-tag').discrepancy.differences[0].expert,2);
 });
 
-test('an authorized email can fill a gap and survives an unrelated version change', () => {
-  const model = createModel();
-  assert.equal(model.query('receipt').answerKind, 'none');
-  const updated = model.receiveMail('receipt');
-  assert.equal(mail(updated, 'receipt').status, 'published');
-  assert.equal(faq(updated, 'receipt').status, 'published');
-  const verified = model.query('receipt');
-  assert.equal(verified.answerKind, 'faq');
-  assert.equal(verified.answer, mail(updated, 'receipt').body);
-  assert.equal(verified.approval.actor, mail(updated, 'receipt').actor);
-  assert.deepEqual(verified.sources, []);
-  assert.equal(verified.approval.mailId, 'receipt');
-  assert.equal(verified.approval.verifiedText, mail(updated, 'receipt').body);
-  assert.deepEqual(model.receiveMail('receipt'), updated);
-  model.syncConfluence();
-  assert.equal(model.query('receipt').answer, verified.answer);
-  assert.equal(mail(model.state(), 'receipt').checkedVersion, 'v1');
+test('a separate expert opinion cannot silently replace another expert when applicability is clarified', () => {
+  const candidate = {
+    id:'second', faqId:'estimate', scope:null, verified:true, actor:'Another expert', subject:'Estimate', question:'Estimate?',
+    body:'One day?', facts:{exactDays:1}, clarification:'One day for exact assessments.',
+    corrected:{scope,body:'One day for exact assessments.',facts:{exactDays:1}}
+  };
+  const m = createModel({inbox:[candidate]});
+  const original = m.query('estimate');
+  const reason = mail(m.receiveMail('second'),'second');
+  const reviewed = mail(m.decideMail('second',reason.reviewToken,'revise'),'second');
+  assert.equal(reviewed.status,'review');
+  assert.equal(reviewed.canApprove,false);
+  assert.match(reviewed.reason,/другое экспертное основание/);
+  m.decideMail('second',reviewed.reviewToken,'approve');
+  assert.deepEqual(m.query('estimate'),original);
 });
 
-test('unclear scope triggers moderation and an author-confirmed scoped supplement can publish', () => {
-  const model = createModel();
-  const held = model.receiveMail('ambiguous');
-  const candidate = mail(held, 'ambiguous');
-  assert.equal(candidate.status, 'review');
-  assert.equal(candidate.canRevise, true);
-  assert.ok(candidate.clarification);
-  assert.equal(model.query('budget-tag').answerKind, 'none');
-  assert.deepEqual(model.decideMail('ambiguous', candidate.reviewToken, 'publish'), held);
-  const resolved = model.decideMail('ambiguous', candidate.reviewToken, 'revise');
-  assert.equal(mail(resolved, 'ambiguous').status, 'published');
-  const answer = model.query('budget-tag');
-  assert.match(answer.answer, /бюджетной оценки без подрядчика/);
-  assert.match(answer.answer, /3 рабочих дня/);
-  assert.match(answer.answer, /В теме письма укажите «Бюджет»/);
-  assert.equal(answer.sources[0].ref, '1.6');
-  assert.notEqual(answer.answer, candidate.body);
-  assert.equal(answer.approval.subject, candidate.subject);
-  assert.equal(answer.approval.verifiedText, candidate.clarification);
-  assert.equal(mail(resolved, 'ambiguous').body, candidate.body);
-  const refreshed = model.syncConfluence();
-  assert.equal(faq(refreshed, 'budget-tag').status, 'published');
-  assert.equal(model.query('budget-tag').answer, answer.answer);
+test('the regulation may catch up and diverge again without losing the retained approved letter', () => {
+  const page = days => ({'1.6':{text:'1.6. Сроки '+days+' и 3.',facts:{exactDays:days,budgetDays:3}},
+    '1.7':{text:'1.7. Дополнительно учитываем время на поиск и согласование подрядчика.', facts:{contractorSla:'search-and-agree'}}});
+  const m = createModel({pages:{v1:page(6),v2:page(5),v3:page(7)}, events:[
+    {from:'v1',to:'v2',pageId:'test',date:'2026-11-25'},{from:'v2',to:'v3',pageId:'test',date:'2026-11-26'}
+  ]});
+  const original = m.query('estimate');
+  assert.equal(original.discrepancy.differences[0].regulation,6);
+  m.syncConfluence();
+  assert.equal(m.query('estimate').status,'archived');
+  assert.equal(m.query('estimate').discrepancy,null);
+  assert.equal(m.query('estimate').answerKind,'regulation');
+  m.syncConfluence();
+  assert.equal(m.query('estimate').status,'published');
+  assert.deepEqual(m.query('estimate').approval,original.approval);
+  assert.equal(m.query('estimate').answer,original.answer);
+  assert.equal(m.query('estimate').discrepancy.differences[0].regulation,7);
 });
 
-test('old cards and copies of snapshots cannot change live decisions', () => {
-  const model = createModel();
-  const stale = faq(model.syncConfluence(), 'estimate').reviewToken;
-  const baseline = model.reset();
-  assert.equal(baseline.event, null);
-  const other = createModel();
-  const foreign = faq(other.syncConfluence(), 'estimate').reviewToken;
-  const pending = model.syncConfluence();
-  assert.deepEqual(model.decideFaq('estimate', stale, 'remove'), pending);
-  assert.deepEqual(model.decideFaq('estimate', foreign, 'remove'), pending);
-  pending.clauses[0].text = 'stale';
-  pending.event.actor = '';
-  faq(pending, 'estimate').status = 'published';
-  model.query('estimate').sources[0].text = '';
-  assert.equal(model.query('estimate').status, 'review');
-  assert.equal(model.state().event.actor.length > 0, true);
-  assert.ok(model.query('estimate').sources[0].text);
-  assert.equal(model.query('irrelevant'), null);
+test('a scoped expert can fill a gap, and unrelated changes create no discrepancies', () => {
+  const m = createModel();
+  const updated = m.receiveMail('receipt');
+  const source = mail(updated,'receipt');
+  assert.equal(source.status,'published');
+  assert.equal(m.query('receipt').approval.mailId,'receipt');
+  assert.equal(m.query('receipt').answer, source.body);
+  assert.equal(m.query('receipt').discrepancy,null);
+  assert.deepEqual(m.query('receipt').sources,[]);
+  assert.deepEqual(m.receiveMail('receipt'),updated);
+  m.syncConfluence();
+  assert.equal(m.query('receipt').answer,source.body);
+  assert.equal(m.query('receipt').discrepancy,null);
+  assert.equal(mail(m.state(),'receipt').checkedVersion,'v1');
 });
 
-test('the same model runs offline as a browser global', () => {
-  const shell = { window: {} };
-  vm.runInNewContext(readFileSync(join(__dirname, 'model.js'), 'utf8'), shell);
-  const model = shell.window.FaqRevisionDemoModel.createModel();
-  assert.equal(model.query('estimate').answerKind, 'faq');
-  assert.equal(model.syncConfluence().revision, 'v2');
+test('old snapshots remain independent, and browser and Node have the same policy', () => {
+  const shell = {window:{}};
+  vm.runInNewContext(readFileSync(join(__dirname,'model.js'),'utf8'),shell);
+  const m = shell.window.FaqRevisionDemoModel.createModel();
+  const prior = m.query('estimate');
+  m.syncConfluence();
+  const next = m.query('estimate');
+  assert.equal(prior.discrepancy,null);
+  assert.equal(next.discrepancy.revision,'v2');
+  next.approval.verifiedText = 'changed';
+  next.sources[0].text = '';
+  next.discrepancy.differences[0].expert = 999;
+  assert.equal(m.query('estimate').discrepancy.differences[0].expert,5);
+  assert.equal(m.query('estimate').approval.verifiedText,prior.answer);
+  assert.ok(m.query('estimate').sources[0].text);
+  assert.equal(m.query('irrelevant'),null);
+});
+
+test('an explicit quality withdrawal retires one accepted reply and keeps its evidence in history', () => {
+  const m = createModel();
+  const hold = mail(m.receiveMail('deadline'),'deadline');
+  const publication = m.decideMail('deadline',hold.reviewToken,'approve');
+  const firstKey = faq(publication,'estimate').withdrawToken;
+  const previousAnswer = m.query('estimate');
+  const current = m.syncConfluence();
+  const key = faq(current,'estimate').withdrawToken;
+  assert.ok(key);
+  assert.notEqual(firstKey,key);
+  assert.deepEqual(m.withdrawFaq('estimate',firstKey),current);
+  assert.deepEqual(m.withdrawFaq('channel',key),current);
+  const withdrawn = m.withdrawFaq('estimate',key);
+  assert.equal(faq(withdrawn,'estimate').status,'withdrawn');
+  assert.equal(faq(withdrawn,'estimate').approval.verifiedText,previousAnswer.answer);
+  assert.ok(withdrawn.log.at(-1).text.includes('deadline'));
+  assert.equal(mail(withdrawn,'deadline').withdrawn,true);
+  assert.equal(mail(withdrawn,'deadline').recipientAnswer,null);
+  assert.equal(mail(withdrawn,'deadline').body,hold.body);
+  const now = m.query('estimate');
+  assert.equal(now.answerKind,'regulation');
+  assert.equal(now.discrepancy,null);
+  assert.equal(now.approval,null);
+  assert.match(now.answer,/7 рабочих дней/);
+  assert.match(now.answer,/3 рабочих дня/);
+  assert.match(now.answer,/поиск и согласование/);
+  assert.doesNotMatch(now.answer,/2 рабочих дня/);
+  assert.ok(now.sources.every(source=>source.role==='support'));
+  assert.deepEqual(m.withdrawFaq('estimate',key),withdrawn);
+  assert.equal(previousAnswer.answerKind,'faq');
+  assert.deepEqual(m.syncConfluence(),withdrawn);
+});
+
+test('withdrawal before another wiki revision is permanent and partial coverage cannot answer the whole question', () => {
+  const candidate = {
+    id:'partial', faqId:'budget-tag', scope, verified:true, actor:'Expert', subject:'Budget exception', question:'Budget?',
+    body:'Two days, mark Budget.', facts:{budgetDays:2,budgetTag:'budget'}
+  };
+  const m = createModel({inbox:[candidate]});
+  const held = mail(m.receiveMail('partial'),'partial');
+  const approved = m.decideMail('partial',held.reviewToken,'approve');
+  m.withdrawFaq('budget-tag',faq(approved,'budget-tag').withdrawToken);
+  assert.equal(m.query('budget-tag').answerKind,'none');
+  assert.deepEqual(m.query('budget-tag').sources,[]);
+  m.syncConfluence();
+  assert.equal(m.query('budget-tag').status,'withdrawn');
+  assert.equal(m.query('budget-tag').answerKind,'none');
+  assert.equal(mail(m.state(),'partial').withdrawn,true);
 });
