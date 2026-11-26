@@ -300,6 +300,47 @@ def test_known_acl_loss_applies_before_new_revision_is_indexed(dsn):
     assert changes[-1] == (None, old.revision_id)
 
 
+@pytest.mark.parametrize('entrypoint', ['inventory', 'batch'])
+@pytest.mark.parametrize('previously_public', [True, False])
+def test_demo_access_cutoff_survives_stale_public_snapshots(dsn, entrypoint, previously_public):
+    selected = 'demo-page'
+
+    def apply(snapshot):
+        service = DocumentSync(dsn, {'batch': BatchSource((snapshot,))}, public_only=True)
+        if entrypoint == 'inventory':
+            result = service.run(service.request_sync('batch'))
+            assert result.status == 'completed'
+        else:
+            service.import_batch('batch', (snapshot,))
+
+    old = None
+    if previously_public:
+        apply(_snapshot(selected, 1))
+        with connect(dsn) as conn:
+            old = list_fragments(conn, 'alice', hackathon=True)[0]
+
+    closed = replace(_snapshot(selected, 3, acl=frozenset({'alice'})), storage_html='<p>Private revision</p>')
+    apply(closed)
+    apply(replace(closed, version=2))
+    for version in (2, 3):
+        apply(_snapshot(selected, version))
+        with connect(dsn) as conn:
+            assert list_fragments(conn, 'alice', hackathon=True) == ()
+            if old:
+                assert get_fragment(conn, old.revision_id, old.fragment_id, 'alice', hackathon=True) is None
+            cutoff = conn.execute('SELECT blocked_through_version FROM document_demo_access_cutoffs').fetchone()
+            assert cutoff == {'blocked_through_version': 3}
+            versions = conn.execute('SELECT version FROM source_revisions').fetchall()
+            assert versions == ([{'version': 1}] if previously_public else [])
+
+    apply(_snapshot(selected, 4))
+    with connect(dsn) as conn:
+        parts = list_fragments(conn, 'bob', hackathon=True)
+        assert '4 days & hours' in parts[0].text
+        versions = conn.execute('SELECT version FROM source_revisions ORDER BY version').fetchall()
+        assert versions == ([{'version': 1}, {'version': 4}] if previously_public else [{'version': 4}])
+
+
 def test_document_sync_http_admin_and_worker_hooks(dsn):
     service = DocumentSync(dsn, {'demo': BatchSource((_snapshot('seed', 1),))},
                            on_revision_change=lambda conn, new, old: None)

@@ -9,8 +9,8 @@ from uuid import UUID, uuid4
 from backend.db import connect, lock_source_catalog
 
 from .catalog import (
-    SnapshotError, activate_revision, deactivate_page, is_local_public_page, restrict_current_access,
-    stage_revision,
+    SnapshotError, activate_revision, deactivate_page, is_local_public_page, record_demo_access_cutoff,
+    restrict_current_access, stage_revision,
 )
 from .confluence import ConfluenceError
 from .ports import DocumentSource, PageProbe, PageSnapshot, PageStatus, RevisionIndexer
@@ -287,7 +287,10 @@ class DocumentSync:
     def _reconcile_demo_access(self, conn, source_key, external_id, snapshot, *, activate: bool) -> bool:
         if not self.public_only or is_local_public_page(conn, source_key, external_id, snapshot):
             return True
-        if activate and snapshot is not None and is_local_public_page(conn, source_key, external_id, None):
+        if (activate and snapshot is not None
+                and (snapshot.acl_actor_ids is not None or snapshot.upstream_url is not None)
+                and is_local_public_page(conn, source_key, external_id, None)):
+            record_demo_access_cutoff(conn, source_key, external_id, snapshot.version)
             deactivate_page(
                 conn, source_key, external_id, PageStatus.ACCESS_LOST, self.on_revision_change,
                 through_version=snapshot.version,

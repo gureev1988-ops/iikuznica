@@ -80,7 +80,7 @@ def actor_ids(snapshot: PageSnapshot) -> list[str] | None:
 
 
 def is_local_public_page(conn, source_key: str, external_id: str, snapshot: PageSnapshot | None) -> bool:
-    """Do not reclassify an integrated page when a demo batch reuses its external ID."""
+    """Check local provenance and the latest version at which access was denied."""
     if snapshot is not None and (snapshot.acl_actor_ids is not None or snapshot.upstream_url is not None):
         return False
     return conn.execute(
@@ -90,9 +90,26 @@ def is_local_public_page(conn, source_key: str, external_id: str, snapshot: Page
                 SELECT 1 FROM source_revisions r WHERE r.source_id = s.id
                     AND (r.acl_actor_ids IS NOT NULL OR r.upstream_url IS NOT NULL)
             ))
+        UNION ALL
+        SELECT 1 FROM document_demo_access_cutoffs
+        WHERE source_key = %s AND external_id = %s AND blocked_through_version >= %s
+        LIMIT 1
         """,
-        (source_key, external_id),
+        (source_key, external_id, source_key, external_id, snapshot.version if snapshot else None),
     ).fetchone() is None
+
+
+def record_demo_access_cutoff(conn, source_key: str, external_id: str, version: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO document_demo_access_cutoffs (source_key, external_id, blocked_through_version)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (source_key, external_id) DO UPDATE SET blocked_through_version = greatest(
+            document_demo_access_cutoffs.blocked_through_version, excluded.blocked_through_version
+        )
+        """,
+        (source_key, external_id, version),
+    )
 
 
 def stage_revision(conn, source_key: str, snapshot: PageSnapshot) -> tuple[IndexRevision, bool]:
