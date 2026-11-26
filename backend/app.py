@@ -1,19 +1,20 @@
 """Composition root for HTTP, interactive and background worker processes."""
 
 from contextlib import asynccontextmanager
+from functools import partial
 import os
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import TypeAdapter
 
-from backend.config import Settings
+from backend.config import INTEGRATED_QUALITY_EMAIL, Settings
 from backend.contracts.engine import build_engine
 from backend.db import connect
 from backend.dialog import DialogueService, create_router
 from backend.documents import BatchSource, ConfluenceConfig, ConfluenceSource, DocumentSync, PageSnapshot, make_router
 from backend.dion import DionAdapter, DionClient, DionConfig, dion_operations_router, queue_reply
 from backend.local_mail import LocalMailbox
-from backend.mailfaq import MailConfig, MailService, build_router
+from backend.mailfaq import MailConfig, MailService, build_router, reconcile_document_revision
 from backend.mailfaq.transport import ImapInbox, SmtpTransport
 from backend.runtime import operations_router, recover_journal, run_once
 
@@ -23,28 +24,43 @@ class Backend:
         self.settings = settings
         self.dsn = settings.dsn
         self.closeables = []
-        self.engine = engine or build_engine(settings.engine)
-        self.mail_config = mail_config or MailConfig.from_env()
-        self.mailbox = mailbox
+        hackathon = settings.hackathon
+        self.engine = build_engine(settings.engine) if hackathon else engine or build_engine(settings.engine)
+        self.mail_config = (
+            MailConfig.for_hackathon() if hackathon
+            else mail_config or MailConfig.from_env(quality_address=INTEGRATED_QUALITY_EMAIL)
+        )
+        self.mailbox = None if hackathon else mailbox
         if self.mailbox is None and self.mail_config.mode == "simulator":
             self.mailbox = LocalMailbox(os.getenv("II_LOCAL_MAILBOX", ".ii-local/mail.sqlite"), self.mail_config.max_inbound_bytes)
         transport = self.mailbox or SmtpTransport(self.mail_config)
         inbox = self.mailbox or ImapInbox(self.mail_config)
-        self.mail = MailService(self.dsn, self.mail_config, transport=transport, inbox=inbox, resolve_actor=lambda actor_id: self.resolve_actor(actor_id, "web"))
+        self.mail = MailService(
+            self.dsn, self.mail_config, transport=transport, inbox=inbox,
+            resolve_actor=lambda actor_id: self.resolve_actor(actor_id, "web"),
+            quality_enabled=lambda: settings.quality_admin is not None,
+        )
         self.dialog = DialogueService(dsn=self.dsn, engine=self.engine, mail_config=self.mail_config,
-                                     max_pending=settings.max_pending, queue_reply=queue_reply, resolve_actor=self.resolve_actor)
-        if sources is None:
+                                     max_pending=settings.max_pending, queue_reply=queue_reply,
+                                     resolve_actor=self.resolve_actor, hackathon=hackathon)
+        if hackathon or sources is None:
             sources = {}
             batch = settings.integrations.get("batch")
             if batch is not None:
-                sources["batch"] = BatchSource(TypeAdapter(list[PageSnapshot]).validate_python(batch))
-            if conf := settings.integrations.get("confluence"):
+                pages = TypeAdapter(list[PageSnapshot]).validate_python(batch)
+                sources["batch"] = BatchSource(pages)
+            if not hackathon and (conf := settings.integrations.get("confluence")):
                 connector = ConfluenceSource(ConfluenceConfig(**conf))
                 sources["confluence"] = connector
                 self.closeables.append(connector)
-        self.documents = DocumentSync(self.dsn, sources)
+        self.documents = DocumentSync(
+            self.dsn, sources, public_only=hackathon,
+            on_revision_change=partial(reconcile_document_revision, hackathon=True) if hackathon else None,
+        )
         self.dion = None
-        if dion_client is None and (cfg := settings.integrations.get("dion")):
+        if hackathon:
+            dion_client = None
+        elif dion_client is None and (cfg := settings.integrations.get("dion")):
             dion_client = DionClient(DionConfig(**cfg))
             self.closeables.append(dion_client)
         if dion_client is not None:
@@ -133,14 +149,14 @@ def create_app(settings: Settings | None = None, *, services: Backend | None = N
         return actor
 
     app.include_router(create_router(backend.dialog, get_actor))
-    app.include_router(build_router(backend.dsn, get_actor, service=backend.mail))
+    app.include_router(build_router(backend.dsn, get_actor, service=backend.mail, is_quality=backend.settings.is_quality))
     app.include_router(make_router(backend.documents, require_ops))
     app.include_router(dion_operations_router(backend.dsn, require_ops))
     modes = {
         "mail": backend.mail_config.mode,
         "dion": "network" if backend.dion else "disabled",
-        "documents": "network" if "confluence" in backend.settings.integrations else
-                     "batch" if "batch" in backend.settings.integrations else "disabled",
+        "documents": "network" if "confluence" in backend.documents.sources else
+                     "batch" if "batch" in backend.documents.sources else "disabled",
     }
     probes = {name: (lambda n=name, m=mode: backend.health(n, m)) for name, mode in modes.items()}
     app.include_router(operations_router(backend.dsn, require_ops, probes))

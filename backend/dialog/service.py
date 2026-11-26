@@ -166,6 +166,7 @@ class DialogueService:
         deadline_seconds: float = 60,
         queue_reply: Callable | None = None,
         resolve_actor: Callable[[str, str], Actor | None] | None = None,
+        hackathon: bool = False,
     ):
         self.dsn = dsn
         self.engine = engine
@@ -174,6 +175,7 @@ class DialogueService:
         self.deadline_seconds = deadline_seconds
         self.queue_reply = queue_reply
         self.resolve_actor = resolve_actor
+        self.hackathon = hackathon
 
     def ensure_conversation(self, conn, actor: Actor, conversation_id: UUID) -> UUID:
         _employee(actor)
@@ -503,7 +505,7 @@ class DialogueService:
                     if not self._message_visible(conn, actor, row, row["result"]):
                         continue
                     history.append(HistoryMessage(role=row["role"], text=row["text"]))
-            fragments = () if has_faq else tuple(list_fragments(conn, actor.id, kind="document"))
+            fragments = () if has_faq else list_fragments(conn, actor.id, kind="document", hackathon=self.hackathon)
             return AnswerRequest(
                 question=turn["question"], turn_id=turn["id"], case_id=turn["case_id"],
                 conditions=conditions, history=tuple(history), deadline=job.deadline_at,
@@ -555,7 +557,7 @@ class DialogueService:
     def _applicable_faq(self, conn, actor, question, conditions):
         from backend.mailfaq import find_faq
 
-        faq = find_faq(conn, question, conditions)
+        faq = find_faq(conn, question, conditions, hackathon=self.hackathon)
         if faq is not None and self._refs_visible(conn, actor, [faq.source_ref()], current=True):
             return faq
         return None
@@ -665,8 +667,7 @@ class DialogueService:
                 actor_id=actor.id, text="Не удалось обработать вопрос из-за технической ошибки.",
             )
 
-    @staticmethod
-    def _refs_visible(conn, actor: Actor, refs: list[dict], *, current: bool = False) -> bool:
+    def _refs_visible(self, conn, actor: Actor, refs: list[dict], *, current: bool = False) -> bool:
         from backend.documents import get_fragment
 
         if not refs:
@@ -679,7 +680,7 @@ class DialogueService:
                     return False
             except (KeyError, TypeError, ValueError):
                 return False
-            fragment = get_fragment(conn, key[1], key[2], actor.id, current=current)
+            fragment = get_fragment(conn, key[1], key[2], actor.id, current=current, hackathon=self.hackathon)
             if (
                 fragment is None or _fragment_key(fragment) != key
                 or fragment.kind != ref.get("kind") or quote not in fragment.text
@@ -814,7 +815,7 @@ class DialogueService:
 
         _employee(actor)
         lock_source_catalog(conn)
-        source = get_fragment(conn, revision_id, fragment_id, actor.id)
+        source = get_fragment(conn, revision_id, fragment_id, actor.id, hackathon=self.hackathon)
         if source is None:
             raise DialogueError(404, "source_not_found")
         return source

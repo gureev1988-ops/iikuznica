@@ -13,6 +13,11 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
+HACKATHON_QUALITY_EMAIL = "quality@softline.test"
+INTEGRATED_QUALITY_EMAIL = "quality@softline.ru"
+HACKATHON_DOCUMENT_SOURCES = ("synthetic-v1", "batch")
+
+
 class ConfigModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -33,6 +38,7 @@ class Identity(ConfigModel):
 
 class Settings(ConfigModel):
     database_url: SecretStr
+    profile: Literal["hackathon", "integrated"] = "hackathon"
     public_base_url: str = "http://localhost:8000"
     identities: list[Identity] = Field(default_factory=list)
     engine: str = "fixture-alpha"
@@ -49,11 +55,34 @@ class Settings(ConfigModel):
             values = [value for item in self.identities if (value := getattr(item, attribute))]
             if len(values) != len(set(values)):
                 raise ValueError(f"Duplicate identity {attribute}")
+        if sum(self._quality_email_matches(item.email) for item in self.identities if item.enabled) > 1:
+            raise ValueError("The quality mailbox must identify only one enabled account")
         return self
 
     @property
     def dsn(self):
         return self.database_url.get_secret_value()
+
+    @property
+    def hackathon(self) -> bool:
+        return self.profile == "hackathon"
+
+    def _quality_email_matches(self, email: str | None) -> bool:
+        expected = HACKATHON_QUALITY_EMAIL if self.hackathon else INTEGRATED_QUALITY_EMAIL
+        return bool(email and email.casefold() == expected)
+
+    @property
+    def quality_admin(self) -> Identity | None:
+        return next((item for item in self.identities if (
+            item.enabled and "quality" in item.roles and self._quality_email_matches(item.email)
+        )), None)
+
+    def is_quality(self, actor) -> bool:
+        identity = self.quality_admin
+        return (
+            identity is not None and actor is not None and actor.id == identity.id
+            and "quality" in actor.roles and self._quality_email_matches(actor.email)
+        )
 
     def by_dion_id(self, external_id):
         for item in self.identities:
@@ -64,15 +93,21 @@ class Settings(ConfigModel):
     def by_actor_id(self, actor_id):
         return next((item for item in self.identities if item.enabled and item.id == actor_id), None)
 
+    def authenticate_token(self, token: str | None):
+        if token:
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            for item in self.identities:
+                if item.enabled and item.bearer_sha256 and hmac.compare_digest(item.bearer_sha256, digest):
+                    return item.actor("web")
+        return None
+
     def actor_dependency(self):
         bearer = HTTPBearer(auto_error=False)
 
         def authenticate(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)):
-            if credentials is not None:
-                digest = hashlib.sha256(credentials.credentials.encode()).hexdigest()
-                for item in self.identities:
-                    if item.enabled and item.bearer_sha256 and hmac.compare_digest(item.bearer_sha256, digest):
-                        return item.actor("web")
+            actor = self.authenticate_token(credentials.credentials if credentials else None)
+            if actor is not None:
+                return actor
             raise HTTPException(401, "A valid bearer token is required", headers={"WWW-Authenticate": "Bearer"})
 
         return authenticate

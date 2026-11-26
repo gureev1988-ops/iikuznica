@@ -57,7 +57,7 @@ def load_fixture() -> FixtureSet:
     return FixtureSet.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def seed_fixture_sources(conn, *, active_version: int = 1) -> None:
+def seed_fixture_sources(conn, *, active_version: int = 1, hackathon: bool = False) -> None:
     """Install both synthetic revisions and activate the requested version."""
     fixture = load_fixture()
     if any(active_version not in {rev.version for rev in source.revisions} for source in fixture.sources):
@@ -76,10 +76,10 @@ def seed_fixture_sources(conn, *, active_version: int = 1) -> None:
             for revision in source.revisions:
                 _install_revision(conn, source, revision)
             active = next(revision for revision in source.revisions if revision.version == active_version)
-            _activate_fixture_revision(conn, source, active)
+            _activate_fixture_revision(conn, source, active, hackathon=hackathon)
 
 
-def _activate_fixture_revision(conn, source: FixtureSource, active: FixtureRevision) -> None:
+def _activate_fixture_revision(conn, source: FixtureSource, active: FixtureRevision, *, hackathon: bool) -> None:
     current = conn.execute(
         "SELECT status, current_revision_id, acl_actor_ids FROM sources WHERE id = %s",
         (source.document_id,),
@@ -99,7 +99,7 @@ def _activate_fixture_revision(conn, source: FixtureSource, active: FixtureRevis
         from backend.mailfaq import reconcile_document_revision
 
         previous = current["current_revision_id"] if current["status"] == "active" else None
-        reconcile_document_revision(conn, active.revision_id, previous)
+        reconcile_document_revision(conn, active.revision_id, previous, hackathon=hackathon)
 
 
 def _install_revision(conn, source: FixtureSource, revision: FixtureRevision) -> None:

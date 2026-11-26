@@ -3,6 +3,7 @@
 from hashlib import sha256
 from uuid import UUID, uuid4, uuid5
 
+from backend.config import HACKATHON_DOCUMENT_SOURCES, HACKATHON_QUALITY_EMAIL
 from backend.contracts.engine import SourceFragment, SourceKind
 
 from .fragments import extract_fragments
@@ -13,12 +14,25 @@ class SnapshotError(RuntimeError):
     """A document source returned inconsistent versioned data."""
 
 
+_HACKATHON_SOURCE = """
+    AND (NOT %s OR (s.source_system = 'document' AND s.source_key = ANY(%s)
+        AND s.acl_actor_ids IS NULL AND r.acl_actor_ids IS NULL AND r.upstream_url IS NULL) OR EXISTS (
+        SELECT 1 FROM faq_entries faq JOIN mail_requests mail ON mail.id = faq.request_id
+        WHERE faq.document_id = s.id AND mail.recipient = %s
+    ))
+"""
+
+
+def _hackathon_filter(hackathon: bool) -> tuple:
+    return hackathon, list(HACKATHON_DOCUMENT_SOURCES), HACKATHON_QUALITY_EMAIL
+
+
 def list_fragments(
-    conn, actor_id: UUID | str, *, kind: SourceKind | None = None,
+    conn, actor_id: UUID | str, *, kind: SourceKind | None = None, hackathon: bool = False,
 ) -> tuple[SourceFragment, ...]:
     """Read the latest indexed revisions available to an authenticated employee."""
     rows = conn.execute(
-        """
+        f"""
         SELECT s.id AS document_id, r.id AS revision_id, f.id AS fragment_id,
                f.text, r.title, f.anchor, s.source_system AS kind
         FROM sources AS s
@@ -28,19 +42,21 @@ def list_fragments(
             AND (%s::text IS NULL OR s.source_system = %s)
             AND (s.acl_actor_ids IS NULL OR %s = ANY(s.acl_actor_ids))
             AND (s.source_system = 'document' OR r.acl_actor_ids IS NULL OR %s = ANY(r.acl_actor_ids))
+            {_HACKATHON_SOURCE}
         ORDER BY s.id, f.ordinal
         """,
-        (kind, kind, str(actor_id), str(actor_id)),
+        (kind, kind, str(actor_id), str(actor_id), *_hackathon_filter(hackathon)),
     ).fetchall()
     return tuple(SourceFragment(**row) for row in rows)
 
 
 def get_fragment(
     conn, revision_id: UUID, fragment_id: UUID, actor_id: UUID | str, *, current: bool = False,
+    hackathon: bool = False,
 ) -> SourceFragment | None:
     """Resolve an indexed citation under current source access and historical ACLs."""
     row = conn.execute(
-        """
+        f"""
         SELECT s.id AS document_id, r.id AS revision_id, f.id AS fragment_id,
                f.text, r.title, f.anchor, s.source_system AS kind
         FROM source_fragments AS f
@@ -52,14 +68,31 @@ def get_fragment(
             AND (s.acl_actor_ids IS NULL OR %s = ANY(s.acl_actor_ids))
             AND (r.acl_actor_ids IS NULL OR %s = ANY(r.acl_actor_ids)
                  OR (s.source_system = 'document' AND r.id = s.current_revision_id))
+            {_HACKATHON_SOURCE}
         """,
-        (revision_id, fragment_id, current, str(actor_id), str(actor_id)),
+        (revision_id, fragment_id, current, str(actor_id), str(actor_id), *_hackathon_filter(hackathon)),
     ).fetchone()
     return SourceFragment(**row) if row else None
 
 
 def actor_ids(snapshot: PageSnapshot) -> list[str] | None:
     return None if snapshot.acl_actor_ids is None else sorted(snapshot.acl_actor_ids)
+
+
+def is_local_public_page(conn, source_key: str, external_id: str, snapshot: PageSnapshot | None) -> bool:
+    """Do not reclassify an integrated page when a demo batch reuses its external ID."""
+    if snapshot is not None and (snapshot.acl_actor_ids is not None or snapshot.upstream_url is not None):
+        return False
+    return conn.execute(
+        """
+        SELECT 1 FROM sources s WHERE s.source_system = 'document' AND s.source_key = %s
+            AND s.external_id = %s AND (s.acl_actor_ids IS NOT NULL OR EXISTS (
+                SELECT 1 FROM source_revisions r WHERE r.source_id = s.id
+                    AND (r.acl_actor_ids IS NOT NULL OR r.upstream_url IS NOT NULL)
+            ))
+        """,
+        (source_key, external_id),
+    ).fetchone() is None
 
 
 def stage_revision(conn, source_key: str, snapshot: PageSnapshot) -> tuple[IndexRevision, bool]:
@@ -178,13 +211,18 @@ def restrict_current_access(conn, source_key: str, snapshot: PageSnapshot, on_re
         on_revision_change(conn, None, row['current_revision_id'])
 
 
-def deactivate_page(conn, source_key: str, external_id: str, outcome: PageStatus, on_revision_change) -> None:
+def deactivate_page(
+    conn, source_key: str, external_id: str, outcome: PageStatus, on_revision_change,
+    *, through_version: int | None = None,
+) -> None:
     row = conn.execute(
         """
-        SELECT id, current_revision_id, status, acl_actor_ids FROM sources
-        WHERE source_system = 'document' AND source_key = %s AND external_id = %s AND status <> %s
+        SELECT s.id, s.current_revision_id, s.status, s.acl_actor_ids FROM sources s
+        LEFT JOIN source_revisions r ON r.id = s.current_revision_id
+        WHERE s.source_system = 'document' AND s.source_key = %s AND s.external_id = %s AND s.status <> %s
+            AND (%s::bigint IS NULL OR r.version <= %s)
         """,
-        (source_key, external_id, outcome.value),
+        (source_key, external_id, outcome.value, through_version, through_version),
     ).fetchone()
     if row is None:
         return

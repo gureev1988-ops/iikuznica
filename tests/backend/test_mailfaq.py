@@ -63,7 +63,8 @@ def send(dsn, mail):
 
 def client(dsn, mail):
     def actor(x_role: str = Header("employee"), x_actor: str = Header(USER)):
-        return SimpleNamespace(id=x_actor, roles={x_role})
+        email = "quality@softline.test" if x_role == "quality" else "employee@example.test"
+        return SimpleNamespace(id=x_actor, roles={x_role}, email=email)
 
     app = FastAPI()
     app.include_router(build_router(dsn, actor, service=mail))

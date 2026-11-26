@@ -1,6 +1,5 @@
 from hashlib import sha256
 import json
-from uuid import uuid4
 
 import pytest
 
@@ -10,10 +9,10 @@ def deployment(dsn, tmp_path, monkeypatch):
     from backend.config import Settings
 
     identities = [
-        {"id": name, "roles": roles, "email": f"{name}@example.test",
+        {"id": name, "roles": roles, "email": "quality@softline.test" if name == "quality" else f"{name}@example.test",
          "bearer_sha256": sha256(f"fixture-{name}".encode()).hexdigest()}
         for name, roles in (("first", ["employee"]), ("second", ["employee"]),
-                            ("operator", ["ops"]), ("quality", ["quality"]))
+                            ("operator", ["ops"]), ("quality", ["employee", "quality"]), ("impostor", ["quality"]))
     ]
     config = tmp_path / "settings.json"
     mailbox = tmp_path / "local-mail.sqlite"

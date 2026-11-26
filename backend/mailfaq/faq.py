@@ -6,6 +6,7 @@ import json
 import unicodedata
 from uuid import UUID, uuid4
 
+from backend.config import HACKATHON_DOCUMENT_SOURCES, HACKATHON_QUALITY_EMAIL
 from backend.db import lock_source_catalog
 
 from .message import clean_public_text
@@ -28,14 +29,16 @@ class FaqMatch:
     text: str
     conflict_revision_id: UUID | None
     partial: bool = False
+    kind: str = "faq"
+    quote: str | None = None
 
     def source_ref(self) -> dict:
         return {
             "document_id": str(self.document_id),
             "revision_id": str(self.revision_id),
             "fragment_id": str(self.fragment_id),
-            "quote": self.text,
-            "kind": "faq",
+            "quote": self.quote if self.quote is not None else self.text,
+            "kind": self.kind,
             "url": f"/v1/sources/{self.revision_id}/fragments/{self.fragment_id}",
         }
 
@@ -61,8 +64,8 @@ def _match(row: dict) -> FaqMatch:
     )
 
 
-def find_faq(conn, question: str, conditions: dict) -> FaqMatch | None:
-    """Look up an unambiguous, current official explanation directly in PostgreSQL."""
+def find_faq(conn, question: str, conditions: dict, *, hackathon: bool = False) -> FaqMatch | None:
+    """Resolve an exact published explanation or its verified demo document coverage."""
     rows = conn.execute(
         """
         SELECT f.*, r.pending, fragment.text, s.status AS source_status
@@ -71,14 +74,31 @@ def find_faq(conn, question: str, conditions: dict) -> FaqMatch | None:
         JOIN sources s ON s.id = f.document_id AND s.current_revision_id = f.current_revision_id
         JOIN source_fragments fragment ON fragment.id = f.current_fragment_id
         WHERE f.status = 'active' AND f.question_key = %s AND f.conditions_key = %s
+            AND (NOT %s OR r.recipient = %s)
         ORDER BY (f.conflict_revision_id IS NOT NULL) DESC, f.updated_at DESC, f.id
         """,
-        (_key(question), _conditions_key(conditions)),
+        (_key(question), _conditions_key(conditions), hackathon, HACKATHON_QUALITY_EMAIL),
     ).fetchall()
     if not rows or len({row["text"] for row in rows}) != 1:
         return None
     eligible = next((row for row in rows if row["source_status"] == "active"), None)
-    return _match(eligible) if eligible else None
+    if hackathon and eligible and not _public_document(conn, eligible["conflict_revision_id"], hackathon=True):
+        eligible["conflict_revision_id"] = None
+    if eligible:
+        return _match(eligible)
+    if hackathon:
+        for row in rows:
+            document = _public_document(conn, row["covered_revision_id"], hackathon=True)
+            if document is None or row["pending"]:
+                continue
+            covering = _covering_fragment(conn, document["id"], row["question_key"], row["text"], row["conditions_key"])
+            if covering is not None:
+                fragment, text = covering
+                return FaqMatch(
+                    row["id"], row["version"], document["source_id"], document["id"], fragment["id"], text,
+                    conflict_revision_id=None, kind="document", quote=fragment["text"],
+                )
+    return None
 
 
 def current_faq_notification(conn, revision_id: UUID, fragment_id: UUID) -> bool:
@@ -95,8 +115,14 @@ def current_faq_notification(conn, revision_id: UUID, fragment_id: UUID) -> bool
     return row is not None and _public_document(conn, row["covered_revision_id"]) is not None
 
 
-def _metadata(conn, faq_id: UUID, version: int) -> dict:
-    row = conn.execute("SELECT * FROM faq_entries WHERE id = %s FOR UPDATE", (faq_id,)).fetchone()
+def _metadata(conn, faq_id: UUID, version: int, *, hackathon: bool = False) -> dict:
+    row = conn.execute(
+        """
+        SELECT f.* FROM faq_entries f JOIN mail_requests r ON r.id = f.request_id
+        WHERE f.id = %s AND (NOT %s OR r.recipient = %s) FOR UPDATE OF f
+        """,
+        (faq_id, hackathon, HACKATHON_QUALITY_EMAIL),
+    ).fetchone()
     if row is None:
         raise MailError(404, "faq_not_found")
     if row["version"] != version:
@@ -104,14 +130,14 @@ def _metadata(conn, faq_id: UUID, version: int) -> dict:
     return row
 
 
-def _equivalent(conn, revision_id: UUID, question: str, answer: str, conditions_key: str) -> bool:
+def _covering_fragment(conn, revision_id: UUID, question: str, answer: str, conditions_key: str):
     if conditions_key != "{}":
-        return False
+        return None
     title = conn.execute(
         "SELECT title FROM source_revisions WHERE id = %s", (revision_id,),
     ).fetchone()["title"]
     fragments = conn.execute(
-        "SELECT text, heading_path FROM source_fragments WHERE revision_id = %s ORDER BY ordinal",
+        "SELECT id, text, heading_path FROM source_fragments WHERE revision_id = %s ORDER BY ordinal",
         (revision_id,),
     ).fetchall()
     section = [
@@ -121,21 +147,22 @@ def _equivalent(conn, revision_id: UUID, question: str, answer: str, conditions_
     if not section and _key(title) == question:
         section = [fragment for fragment in fragments if not fragment["heading_path"]]
     if len(section) != 1:
-        return False
+        return None
     entry = section[0]
     path = entry["heading_path"]
     if path and any(
         len(fragment["heading_path"]) > len(path) and fragment["heading_path"][:len(path)] == path
         for fragment in fragments
     ):
-        return False
+        return None
     lines = entry["text"].strip().splitlines()
     if entry["heading_path"] and lines and _key(lines[0]) == _key(entry["heading_path"][-1]):
         lines = lines[1:]
-    return _key("\n".join(lines)) == _key(answer)
+    text = "\n".join(lines)
+    return (entry, text) if _key(text) == _key(answer) else None
 
 
-def _public_document(conn, revision_id: UUID | None) -> dict | None:
+def _public_document(conn, revision_id: UUID | None, *, hackathon: bool = False) -> dict | None:
     if revision_id is None:
         return None
     return conn.execute(
@@ -144,8 +171,9 @@ def _public_document(conn, revision_id: UUID | None) -> dict | None:
         FROM source_revisions r JOIN sources s ON s.id = r.source_id
         WHERE r.id = %s AND s.source_system = 'document' AND s.status = 'active'
             AND s.current_revision_id = r.id AND s.acl_actor_ids IS NULL
+            AND (NOT %s OR (s.source_key = ANY(%s) AND r.acl_actor_ids IS NULL AND r.upstream_url IS NULL))
         """,
-        (revision_id,),
+        (revision_id, hackathon, list(HACKATHON_DOCUMENT_SOURCES)),
     ).fetchone()
 
 
@@ -173,7 +201,7 @@ def _set_coverage(
         )
 
 
-def _matching_document(conn, question: str) -> UUID | None:
+def _matching_document(conn, question: str, *, hackathon: bool = False) -> UUID | None:
     # A matching heading/title is an explicit section boundary for comparing an
     # otherwise unlinked public document. Ambiguous associations require review.
     rows = conn.execute(
@@ -183,7 +211,9 @@ def _matching_document(conn, question: str) -> UUID | None:
         ) AS headings
         FROM sources s JOIN source_revisions r ON r.id = s.current_revision_id
         WHERE s.source_system = 'document' AND s.status = 'active' AND s.acl_actor_ids IS NULL
-        """
+            AND (NOT %s OR (s.source_key = ANY(%s) AND r.acl_actor_ids IS NULL AND r.upstream_url IS NULL))
+        """,
+        (hackathon, list(HACKATHON_DOCUMENT_SOURCES)),
     ).fetchall()
     matches = [
         row["id"] for row in rows if any(_key(name) == question for name in [row["title"], *row["headings"]])
@@ -204,7 +234,7 @@ def _document_questions(conn, revision_id: UUID) -> list[str]:
     return list({_key(name) for name in [row["title"], *row["headings"]]})
 
 
-def publish_faq(conn, request: dict, text: str, *, replace: bool = False) -> FaqMatch | None:
+def publish_faq(conn, request: dict, text: str, *, replace: bool = False, hackathon: bool = False) -> FaqMatch | None:
     """Publish a new immutable source revision using the caller's locked transaction."""
     text = clean_public_text(text)
     if not text:
@@ -225,7 +255,7 @@ def publish_faq(conn, request: dict, text: str, *, replace: bool = False) -> Faq
                 "SELECT current_revision_id FROM sources WHERE id = %s",
                 (row["coverage_source_id"],),
             ).fetchone()["current_revision_id"]
-            reconcile_document_revision(conn, current)
+            reconcile_document_revision(conn, current, hackathon=hackathon)
             row = {**row, **conn.execute("SELECT * FROM faq_entries WHERE id = %s", (row["id"],)).fetchone()}
         return _match({**row, "pending": request["pending"]})
     faq_id = row["id"] if row else uuid4()
@@ -280,12 +310,12 @@ def publish_faq(conn, request: dict, text: str, *, replace: bool = False) -> Faq
             "SELECT current_revision_id FROM sources WHERE id = %s", (source_id,)
         ).fetchone()["current_revision_id"]
     else:
-        candidate = _matching_document(conn, question) if not request["conditions"] else None
-    document = _public_document(conn, candidate)
+        candidate = _matching_document(conn, question, hackathon=hackathon) if not request["conditions"] else None
+    document = _public_document(conn, candidate, hackathon=hackathon)
     covered = conflict = None
     if document:
         source_id = document["source_id"]
-        if not request["pending"] and _equivalent(conn, document["id"], question, text, conditions):
+        if not request["pending"] and _covering_fragment(conn, document["id"], question, text, conditions):
             covered = document["id"]
         else:
             conflict = document["id"]
@@ -297,12 +327,12 @@ def publish_faq(conn, request: dict, text: str, *, replace: bool = False) -> Faq
     )
 
 
-def set_coverage(conn, faq_id: UUID, version: int, revision_id: UUID) -> dict:
+def set_coverage(conn, faq_id: UUID, version: int, revision_id: UUID, *, hackathon: bool = False) -> dict:
     lock_sources(conn)
-    row = _metadata(conn, faq_id, version)
+    row = _metadata(conn, faq_id, version, hackathon=hackathon)
     if row["status"] != "active":
         raise MailError(409, "faq_withdrawn")
-    document = _public_document(conn, revision_id)
+    document = _public_document(conn, revision_id, hackathon=hackathon)
     if document is None:
         raise MailError(409, "covering_revision_not_current_public_document")
     match = conn.execute(
@@ -314,15 +344,15 @@ def set_coverage(conn, faq_id: UUID, version: int, revision_id: UUID) -> dict:
     ).fetchone()
     if match["pending"]:
         raise MailError(409, "partial_faq_cannot_be_covered")
-    if not _equivalent(conn, revision_id, row["question_key"], match["text"], row["conditions_key"]):
+    if not _covering_fragment(conn, revision_id, row["question_key"], match["text"], row["conditions_key"]):
         raise MailError(409, "covering_revision_not_equivalent")
     _set_coverage(conn, row, document["source_id"], revision_id, None)
     return conn.execute("SELECT * FROM faq_entries WHERE id = %s", (faq_id,)).fetchone()
 
 
-def withdraw_faq(conn, faq_id: UUID, version: int) -> dict:
+def withdraw_faq(conn, faq_id: UUID, version: int, *, hackathon: bool = False) -> dict:
     lock_sources(conn)
-    row = _metadata(conn, faq_id, version)
+    row = _metadata(conn, faq_id, version, hackathon=hackathon)
     if row["status"] == "withdrawn":
         return row
     conn.execute(
@@ -339,17 +369,22 @@ def withdraw_faq(conn, faq_id: UUID, version: int) -> dict:
     ).fetchone()
 
 
-def replace_faq(conn, faq_id: UUID, version: int, text: str) -> FaqMatch:
+def replace_faq(conn, faq_id: UUID, version: int, text: str, *, hackathon: bool = False) -> FaqMatch:
     lock_sources(conn)
-    row = _metadata(conn, faq_id, version)
+    row = _metadata(conn, faq_id, version, hackathon=hackathon)
     request = conn.execute(
         "SELECT * FROM mail_requests WHERE id = %s", (row["request_id"],)
     ).fetchone()
-    return publish_faq(conn, request, text, replace=True)
+    if request["state"] == "withdrawn":
+        conn.execute(
+            "UPDATE mail_requests SET state = 'resolved', updated_at = now() WHERE id = %s",
+            (request["id"],),
+        )
+    return publish_faq(conn, request, text, replace=True, hackathon=hackathon)
 
 
 def reconcile_document_revision(
-    conn, new_revision_id: UUID | None, previous_revision_id: UUID | None = None,
+    conn, new_revision_id: UUID | None, previous_revision_id: UUID | None = None, *, hackathon: bool = False,
 ) -> None:
     """Keep a FAQ hidden only while its current public covering revision is equivalent."""
     lock_sources(conn)
@@ -362,7 +397,7 @@ def reconcile_document_revision(
     if source is None:
         return
     source_id = source["source_id"]
-    document = _public_document(conn, new_revision_id)
+    document = _public_document(conn, new_revision_id, hackathon=hackathon)
     questions = _document_questions(conn, document["id"]) if document else []
     rows = conn.execute(
         """
@@ -370,21 +405,23 @@ def reconcile_document_revision(
         FROM faq_entries f
         JOIN source_fragments fragment ON fragment.id = f.current_fragment_id
         JOIN mail_requests request ON request.id = f.request_id
-        WHERE f.status = 'active' AND (
+        WHERE f.status = 'active' AND (NOT %s OR request.recipient = %s) AND (
             f.coverage_source_id = %s OR (
                 f.coverage_source_id IS NULL AND f.conditions_key = '{}' AND f.question_key = ANY(%s)
             )
         )
         FOR UPDATE OF f
         """,
-        (source_id, questions),
+        (hackathon, HACKATHON_QUALITY_EMAIL, source_id, questions),
     ).fetchall()
     for row in rows:
         covered = conflict = None
         if document:
-            if row["coverage_source_id"] is None and _matching_document(conn, row["question_key"]) != document["id"]:
+            if row["coverage_source_id"] is None and _matching_document(
+                conn, row["question_key"], hackathon=hackathon,
+            ) != document["id"]:
                 continue
-            if not row["pending"] and _equivalent(
+            if not row["pending"] and _covering_fragment(
                 conn, document["id"], row["question_key"], row["text"], row["conditions_key"],
             ):
                 covered = document["id"]

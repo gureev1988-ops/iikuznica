@@ -36,6 +36,8 @@ def test_two_mailboxes_and_employee_copy(deployment, dsn):
     from backend.db import connect
 
     settings, _, _ = deployment
+    settings = settings.model_copy(update={"profile": "integrated"})
+    next(identity for identity in settings.identities if identity.id == "quality").email = "quality@softline.ru"
     settings.identities[0].email = "first@sample.test"
     config = replace(MailConfig(), mode="network", sender="bot@sample.test", recipient="quality@sample.test",
                      reply_to="bot@sample.test", trusted_senders=("quality@sample.test",),

@@ -12,6 +12,8 @@ import ssl
 from threading import Lock
 from typing import Protocol
 
+from backend.config import HACKATHON_QUALITY_EMAIL
+
 
 @dataclass(frozen=True)
 class MailConfig:
@@ -36,9 +38,21 @@ class MailConfig:
     max_inbound_bytes: int = 2 * 1024 * 1024
     trusted_bounce_senders: tuple[str, ...] = ()
     trust_gateway_mailbox_policy: bool = False
+    hackathon: bool = False
 
     @classmethod
-    def from_env(cls):
+    def for_hackathon(cls):
+        return cls(
+            recipient=HACKATHON_QUALITY_EMAIL, trusted_senders=(HACKATHON_QUALITY_EMAIL,),
+            mailbox="HACKATHON", hackathon=True,
+        )
+
+    @property
+    def scoped_recipient(self) -> str | None:
+        return self.recipient if self.hackathon else None
+
+    @classmethod
+    def from_env(cls, *, quality_address: str | None = None):
         selected = {name: os.getenv(f"MAIL_{name.upper()}") for name in (
             "sender", "recipient", "reply_to", "authserv_id", "mailbox", "mode",
             "smtp_host", "smtp_user", "smtp_password", "imap_host", "imap_user", "imap_password",
@@ -58,6 +72,11 @@ class MailConfig:
             ].casefold() in {"1", "true", "yes"}
         if os.getenv("MAIL_TIMEOUT") is not None:
             values["timeout"] = float(os.environ["MAIL_TIMEOUT"])
+        if quality_address is not None:
+            recipient = values.setdefault("recipient", quality_address)
+            trusted = values.setdefault("trusted_senders", (quality_address,))
+            if recipient.casefold() != quality_address or tuple(address.casefold() for address in trusted) != (quality_address,):
+                raise ValueError("Integrated official mail must use the designated quality mailbox")
         result = cls(**values)
         if result.mode not in {"simulator", "network", "disabled"}:
             raise ValueError("MAIL_MODE must be simulator, network or disabled")
