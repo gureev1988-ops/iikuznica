@@ -64,3 +64,25 @@ npm run check --prefix contracts
 ```
 
 Тест восстановления требует pg_dump и pg_restore версии сервера или новее и права создать временную БД. PostgreSQL-тесты создают собственные схемы. Режим `--once` у каждого воркера служит для воспроизводимого прогона одной итерации. Для штатной резервной копии используйте `pg_dump -Fc` и `pg_restore --exit-on-error` в новую БД. Тест проверяет связь истории с фактически восстановленным текстом и его хешем. Живой пробный вызов OpenRouter включается через II_LIVE_MODEL=1 и OPENROUTER_API_KEY. Он использует одну короткую синтетическую реплику на фиксированном маршруте. Проверка локальных TLS-ящиков включается через II_LOOPBACK_MAIL=1 при запущенном стенде GreenMail.
+
+### Обмен между тестовыми ящиками по TLS
+
+В тесте участвуют бот, ящик качества и сотрудник в копии. GreenMail принимает настоящее SMTP-письмо. Тест читает его из ящиков качества и сотрудника по IMAP, отправляет обычный Reply и читает вернувшееся письмо из INBOX бота. Заголовок проверки отправителя воспроизводит утверждение доверенного шлюза. Адреса и данные синтетические.
+
+Для отдельного локального стенда нужны Docker, keytool и свободные порты 3465/3993. Выполните в одном терминале из корня репозитория после запуска PostgreSQL.
+
+```sh
+stand=$(mktemp -d)
+keytool -genkeypair -alias localhost -keyalg RSA -storetype PKCS12 \
+  -keystore "$stand/loopback.p12" -storepass greenmail -keypass greenmail \
+  -dname "CN=localhost" -ext SAN=DNS:localhost,IP:127.0.0.1 -validity 2
+keytool -exportcert -rfc -alias localhost -keystore "$stand/loopback.p12" \
+  -storepass greenmail -file "$stand/loopback.pem"
+chmod 644 "$stand/loopback.p12"
+mail_container=$(docker run --rm -d -p 127.0.0.1:3465:3465 -p 127.0.0.1:3993:3993 \
+  -v "$stand/loopback.p12:/tmp/gm.p12:ro" \
+  -e 'GREENMAIL_OPTS=-Dgreenmail.setup.test.smtps -Dgreenmail.setup.test.imaps -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=bot:demo@sample.test,quality:demo@sample.test,first:demo@sample.test -Dgreenmail.tls.keystore.file=/tmp/gm.p12 -Dgreenmail.tls.keystore.password=greenmail' \
+  greenmail/standalone:2.1.5)
+SSL_CERT_FILE="$stand/loopback.pem" II_LOOPBACK_MAIL=1 python -m pytest -q tests/acceptance/test_network_mail.py
+docker stop "$mail_container"
+```
