@@ -58,11 +58,13 @@ def verified_parts(question, search, corpus, faq, faq_scope):
     if not p or HANDOFF not in returned or SOURCE_LINE not in [re.sub(r"^[a-zа-я][.)]\s*", "", s.strip()) for s in p["text"].splitlines()]:
         return None
     claims = evidence.REGISTRY().get(HANDOFF, [])
-    found = next((r for r in claims if r["id"] == evidence.SUPPLY_HANDOFF_CLAIMS[-1] and r["quote"] == p["text"]), None)
-    if not found:
+    applicable = {r["id"]: r for r in claims if r["quote"] == p["text"]}
+    if not all(key in applicable for key in evidence.SUPPLY_HANDOFF_CLAIMS):
         return None
-    # Render the verified source sentence itself. It contains condition, actor, object and recipient.
-    verified = dict(action="answer", message=SOURCE_LINE + " [1]", sources=[dict(doc=HANDOFF[0], ref=HANDOFF[1])],
+    # The governing paragraph assigns the CRM request before the conditional transfer.
+    prerequisite = applicable[evidence.SUPPLY_HANDOFF_CLAIMS[0]]["statement"]
+    verified = dict(action="answer", message=prerequisite + " [1]\n\n" + SOURCE_LINE + " [1]",
+                    sources=[dict(doc=HANDOFF[0], ref=HANDOFF[1])],
                     offer_quality_request=False)
     first = {"text": "Предложение и получатель", "query": question, "result": verified}
     if len(fields) == 1:

@@ -18,6 +18,7 @@ class StateTests(unittest.TestCase):
     def test_unsupported_subrequest_stays_with_quality(self):
         direct = state.answer(MAIN, lookup)
         self.assertIn("отправляет его АМ", direct["message"])
+        self.assertIn("Заявку на расчет типа «Поставка» на BDM", direct["message"])
         self.assertFalse(direct["offer_quality_request"])
         combined = state.answer(BOTH, lookup)
         self.assertEqual([p["result"]["action"] for p in combined["requests"]], ["answer","escalate"])
