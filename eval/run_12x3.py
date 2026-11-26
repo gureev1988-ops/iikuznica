@@ -26,6 +26,8 @@ import zlib
 
 
 MODELS = ("qwen/qwen3-14b", "google/gemma-4-26b-a4b-it", "qwen/qwen3.5-122b-a10b")
+SEARCH_MODELS = ("google/gemma-4-26b-a4b-it", "qwen/qwen3.5-122b-a10b")
+EVAL_DIR = Path(__file__).resolve().parent
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
 
@@ -139,32 +141,54 @@ def score(row, gold):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, type=Path)
-    parser.add_argument("--out", type=Path, default=Path("iikuznitsa_run12"))
+    parser.add_argument("--input", type=Path)
+    parser.add_argument("--search", action="store_true", help="Use frozen top-5 retrieval and the two finalist models")
+    parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--check", action="store_true", help="Validate the bank without network requests")
     args = parser.parse_args()
-    data = load_dataset(args.input)
+    if args.input is None and not args.search:
+        parser.error("--input is required for the original benchmark")
+    data = load_dataset(args.input or EVAL_DIR / "iikuznitsa_run12/IIkuznitsa_Run_12x3.py")
+    models = SEARCH_MODELS if args.search else MODELS
     cases = data["cases"]
     gold = {g["id"]: g for g in data["gold"]}
     expected_ids = {f"Q{i:02}" for i in range(1, 13)}
     if (len(cases) != 12 or len(data["gold"]) != 12 or {c["id"] for c in cases} != expected_ids
             or set(gold) != expected_ids or not data["system"].strip()):
         parser.error("Expected 12 matching start12 questions and answers")
+    if args.search:
+        by_id = {c["id"]: c["question"] for c in cases}
+        frozen = EVAL_DIR / "retrieval/contexts.jsonl"
+        cases = [json.loads(line) for line in frozen.read_text().splitlines()]
+        if (len(cases) != 12 or {c["id"] for c in cases} != expected_ids
+                or any(c["question"] != by_id[c["id"]] for c in cases)):
+            parser.error("Retrieved contexts and baseline questions differ")
+        for case in cases:
+            sources = case["sources"]
+            if (set(case) != {"id", "question", "sources"} or len(sources) > 5
+                    or any(set(p) != {"doc", "ref", "text", "section", "title"} for p in sources)):
+                parser.error("Invalid top-5 input")
     if args.check:
-        print("Validated 12 questions and 3 models. No network calls.")
+        print(f"Validated 12 questions and {len(models)} models. No network calls.")
         return 0
 
+    if args.search and not os.environ.get("OPENROUTER_API_KEY"):
+        parser.error("OPENROUTER_API_KEY is required for model calls")
+    if args.out is None:
+        args.out = EVAL_DIR / "retrieval/results" if args.search else Path("iikuznitsa_run12")
     dataset_id = fingerprint({"cases": cases, "system": data["system"]})
+    if args.search:
+        dataset_id = fingerprint({"inputs": dataset_id, "models": list(models)})
     args.out.mkdir(parents=True, exist_ok=True)
     with (args.out / ".run.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             parser.error("A benchmark is already running in this output folder")
-        return run_cases(args.out, cases, data["system"], gold, dataset_id)
+        return run_cases(args.out, cases, data["system"], gold, dataset_id, models)
 
 
-def run_cases(output, cases, system, gold, dataset_id):
+def run_cases(output, cases, system, gold, dataset_id, models=MODELS):
     log = output / "attempts.jsonl"
     latest = {}
     if log.exists():
@@ -176,7 +200,7 @@ def run_cases(output, cases, system, gold, dataset_id):
                 latest[row["id"], row["model"]] = row
     skip = set()
     for case in cases:
-        for model in MODELS:
+        for model in models:
             body = make_request(case, model, system)
             previous = latest.get((case["id"], model), {})
             if model in skip or (previous.get("ok") and previous.get("request_hash") == fingerprint(body)):
@@ -187,7 +211,7 @@ def run_cases(output, cases, system, gold, dataset_id):
             latest[case["id"], model] = row
             print(case["id"], model, row["http"], row["ok"], row.get("error", ""), flush=True)
             if row["http"] in (401, 402):
-                skip.update(MODELS)
+                skip.update(models)
             elif row["http"] in (400, 403, 404):
                 skip.add(model)
             if row["http"] == 429:
@@ -199,8 +223,9 @@ def run_cases(output, cases, system, gold, dataset_id):
             writer.writeheader()
             writer.writerows(result)
     n = sum(row["ok"] for row in latest.values())
-    print(f"Completed {n} of 36")
-    return 0 if n == 36 else 2
+    target = len(cases) * len(models)
+    print(f"Completed {n} of {target}")
+    return 0 if n == target else 2
 
 
 if __name__ == "__main__":

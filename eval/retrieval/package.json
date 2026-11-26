@@ -1,0 +1,8 @@
+{
+  "name": "iikuznica-search-eval",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@electric-sql/pglite": "0.6.0"
+  }
+}
