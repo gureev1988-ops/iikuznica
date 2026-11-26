@@ -27,6 +27,18 @@ def normalized(text):
     return " ".join(text.casefold().replace("ё", "е").split())
 
 
+def full_procedure(question):
+    if re.search(r"\b(?:отпуск\w*|зарплат\w*|оклад\w*)\b", question, re.I):
+        return False
+    explicit = re.search(
+        r"по шагам|пошагов|порядок действий|в каком порядке|проведи меня|расскажи маршрут|"
+        r"опиши путь|какие согласования", question, re.I)
+    coordinated_steps = re.search(
+        r"\bкак\s+(?:[А-Я]{2,5}\s+)?\w+(?:ть|ти)\b[^?]*(?:,\s*|\bи\s+)(?:где\s+)?\w+(?:ть|ти)\b",
+        question, re.I)
+    return len(question.split()) >= 12 and bool(explicit or coordinated_steps)
+
+
 def operation(text):
     t = normalized(text)
     if re.search(r"замещ|замен|отпуск|отсутств|недоступ|сравни|чем различ|чем отлич|для каждой дирекц", t):

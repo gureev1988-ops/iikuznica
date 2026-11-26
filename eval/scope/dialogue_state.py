@@ -22,13 +22,33 @@ RESOLVE = """Помоги поиску по корпоративным регл�
 Для неоднозначной ссылки на разные документы верни ambiguous, turn=null и короткий вопрос с названиями вариантов.
 Короткий ответ на конкретное уточнение бота дополняет прежний вопрос. Новый самостоятельный вопрос может прервать уточнение."""
 
+PROCEDURE_CONTEXT = (
+    "\nЕсли в истории есть полная процедура без текста ответа, используй вопрос сотрудника "
+    "и ранее восстановленную тему. Уточнение участника или условия само по себе не меняет объект действия. "
+    "Укажи конкретный объект и известную дирекцию выбранной темы."
+)
+REPLY_REFERENCE = re.compile(
+    r"\b(?:в (?:тво[её]м|предыдущем) ответе|ты (?:сказал|написал|упомянул)\w*|"
+    r"(?:шаг|пункт)\w*\s+(?:№\s*)?\d+|(?:перв\w*|втор\w*|треть\w*|последн\w*)\s+(?:шаг|пункт)\w*)\b", re.I
+)
+DIRECTORATE_NAMES = {"IB": "Дирекция ИБ", "DB": "ДБРЦТ", "TECH": "Техническая дирекция"}
+
 
 def restore(question, past, model, call):
     history = [(role, t[key]) for t in past for role, key in (("user", "user"), ("assistant", "assistant"))]
     visible = conversation.visible_history(history, question)
+    procedure_context = set()
+    refers_to_reply = REPLY_REFERENCE.search(question)
     for turn in visible:
-        turn["resolved"] = past[turn["turn"] - 1]["resolved"]
-    body = make_request({"question": question, "sources": visible}, model, RESOLVE)
+        prior = past[turn["turn"] - 1]
+        turn["resolved"] = prior["resolved"]
+        if (not refers_to_reply and prior["action"] == "answer"
+                and procedures.full_procedure(turn["user"]) and procedures.full_procedure(turn["resolved"])):
+            # Generated instructions are presentation. Keep the employee's topic stable across rewrites.
+            turn["assistant"] = ""
+            procedure_context.add(turn["turn"])
+    instruction = RESOLVE + PROCEDURE_CONTEXT if procedure_context else RESOLVE
+    body = make_request({"question": question, "sources": visible}, model, instruction)
     row = call("resolve", body, "dialogue-state")
     if not row["ok"]:
         raise RuntimeError(f"Topic resolution failed (HTTP {row['http']})")
@@ -49,8 +69,13 @@ def restore(question, past, model, call):
             raise ValueError
         context = by_id[anchor]["resolved"] + " " + by_id[anchor]["user"] + " " + question
         dirs = procedures.directories(question) or procedures.directories(context)
-        if procedures.directories(query) - dirs or set(re.findall(r"\d+", query)) - set(re.findall(r"\d+", context)):
+        query_dirs = procedures.directories(query)
+        if query_dirs - dirs or set(re.findall(r"\d+", query)) - set(re.findall(r"\d+", context)):
             raise ValueError
+        known_dirs = dirs - {"PRE"}
+        if (anchor in procedure_context and not query_dirs and len(known_dirs) == 1
+                and not re.search(r"\b\w*дирекц", question, re.I)):
+            query = DIRECTORATE_NAMES[next(iter(known_dirs))] + ". " + query.strip()
         return "follow", query.strip()
     except (TypeError, KeyError, ValueError):
         return "ambiguous", "О каком процессе или документе ты спрашиваешь?"

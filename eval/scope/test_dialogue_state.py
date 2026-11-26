@@ -48,6 +48,48 @@ class StateTests(unittest.TestCase):
         relation, _ = state.restore("А кто её согласует?",past,"model",call)
         self.assertEqual(relation,"ambiguous")
 
+    def test_procedure_followup_uses_the_same_topic_across_rewritten_answers(self):
+        first = "Дирекция ИБ. Как зарегистрировать площадку проекта, раздать доступы и сохранить контакты заказчика?"
+        question = "А сотрудника субподрядчика можно туда пригласить?"
+        resolved = "Можно ли пригласить сотрудника субподрядчика на площадку проекта Дирекции ИБ?"
+        planner = Mock(return_value=dict(ok=True, text=json.dumps(
+            dict(relation="follow", turn=1, query=resolved))))
+        for previous_answer in ("Сайт проекта создаётся автоматически.",
+                                "Открой сайт и выдай доступ команде. Субподрядчики на сайт не допускаются."):
+            past = [dict(user=first, resolved=first, assistant=previous_answer, action="answer")]
+            self.assertEqual(state.restore(question, past, "model", planner), ("follow", resolved))
+        old_input, new_input = [call.args[1] for call in planner.call_args_list]
+        self.assertEqual(old_input, new_input)
+        topic, = json.loads(new_input["messages"][1]["content"])["sources"]
+        self.assertEqual((topic["user"], topic["resolved"], topic["assistant"]), (first, first, ""))
+
+    def test_procedure_followup_retains_known_directorate_if_resolver_omits_it(self):
+        first = "Техническая дирекция. Опиши путь от заявки на субподрядчика до допуска к работам по шагам."
+        past = [dict(user=first, resolved=first, assistant="порядок действий", action="answer")]
+        resolved = "Может ли субподрядчик начинать работы после подписания договора, если оплаченного заказа ещё нет?"
+        planner = Mock(return_value=dict(ok=True, text=json.dumps(
+            dict(relation="follow", turn=1, query=resolved))))
+        self.assertEqual(state.restore("Договор подписали. Он может начинать?", past, "model", planner),
+                         ("follow", "Техническая дирекция. " + resolved))
+        self.assertEqual(state.restore("А в другой дирекции он может начинать?", past, "model", planner),
+                         ("follow", resolved))
+        self.assertEqual(state.restore("А если это ДБРЦТ?", past, "model", planner),
+                         ("follow", "ДБРЦТ. " + resolved))
+        planner.return_value["text"] = json.dumps(dict(relation="new", turn=None, query=""))
+        self.assertEqual(state.restore("Как оформить УПД?", past, "model", planner),
+                         ("new", "Как оформить УПД?"))
+
+    def test_explicit_reference_to_procedure_reply_keeps_the_reply(self):
+        first = "В Технической дирекции опиши по шагам, как оформить заявку для нового подрядчика."
+        previous_answer = "1. Подать заявку. 2. Дождаться проверки."
+        past = [dict(user=first, resolved=first, assistant=previous_answer, action="answer")]
+        planner = Mock(return_value=dict(ok=True, text=json.dumps(
+            dict(relation="ambiguous", turn=None, query="О какой проверке идёт речь?"))))
+        state.restore("Кто отвечает за шаг 2?", past, "model", planner)
+        request = planner.call_args.args[1]
+        topic, = json.loads(request["messages"][1]["content"])["sources"]
+        self.assertEqual(topic["assistant"], previous_answer)
+
     def test_short_followup_resolves_topic_before_matching_faq(self):
         past = [dict(user="ДБРЦТ: что с договором?", assistant="Проверяем договор.",
                      action="answer", resolved="ДБРЦТ: что с договором?")]
