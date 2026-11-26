@@ -86,3 +86,11 @@ def append_event(
     if row is None:
         raise ValueError(f"Unknown conversation: {conversation_id}")
     return row["cursor"]
+
+
+def lock_source_catalog(conn, *, write: bool = False) -> None:
+    """Serialize source visibility changes with evidence reads in the transaction."""
+    if write:
+        conn.execute("SELECT pg_advisory_xact_lock(31007)")
+    else:
+        conn.execute("SELECT pg_advisory_xact_lock_shared(31007)")

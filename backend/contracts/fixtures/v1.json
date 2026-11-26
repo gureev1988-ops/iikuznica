@@ -33,6 +33,7 @@
       "external_id": "review-deadline",
       "title": "Учебный регламент рассмотрения заявки",
       "anchor": "review-deadline",
+      "heading": "Сколько дней рассматривают заявку?",
       "revisions": [
         {
           "version": 1,
@@ -53,6 +54,7 @@
       "external_id": "submission",
       "title": "Учебный регламент подачи заявки",
       "anchor": "submission",
+      "heading": "Как подать заявку?",
       "revisions": [
         {
           "version": 1,

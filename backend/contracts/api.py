@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .engine import Action, SourceKind
 
@@ -32,6 +32,16 @@ class OfferDecision(BaseModel):
     version: int = Field(ge=1)
 
 
+class SourceReference(BaseModel):
+    document_id: UUID
+    revision_id: UUID
+    fragment_id: UUID
+    kind: SourceKind
+    quote: str
+    url: str
+    claim: str | None = None
+
+
 class MessageView(BaseModel):
     id: UUID
     case_id: UUID
@@ -40,6 +50,7 @@ class MessageView(BaseModel):
     role: Literal["user", "assistant", "system"]
     text: str
     created_at: datetime
+    source_refs: list[SourceReference] | None = None
 
 
 class ClarificationOptionView(BaseModel):
@@ -67,19 +78,19 @@ class OfferView(BaseModel):
     text: str
 
 
-class SourceReference(BaseModel):
-    document_id: UUID
-    revision_id: UUID
-    fragment_id: UUID
-    kind: SourceKind
-    quote: str
-    url: str
-
-
 class ResultView(BaseModel):
     action: Action
     text: str
     sources: list[SourceReference] = Field(default_factory=list)
+    notice: str | None = None
+
+
+class MailFollowupView(BaseModel):
+    request_id: UUID
+    case_id: UUID
+    turn_id: UUID
+    state: Literal["counter_question", "partial"]
+    pending: list[str]
 
 
 class TurnView(BaseModel):
@@ -94,6 +105,7 @@ class TurnView(BaseModel):
     clarifications: list[ClarificationView]
     offers: list[OfferView]
     cursor: int
+    mail_followups: list[MailFollowupView] = Field(default_factory=list)
 
 
 class HistoryView(BaseModel):
@@ -101,6 +113,7 @@ class HistoryView(BaseModel):
     cursor: int
     messages: list[MessageView]
     turns: list[TurnView]
+    mail_followups: list[MailFollowupView] = Field(default_factory=list)
 
 
 class SourceView(BaseModel):
@@ -126,6 +139,60 @@ class EventView(BaseModel):
         return f"id: {self.cursor}\nevent: {self.kind}\ndata: {self.model_dump_json()}\n\n"
 
 
+class AuthenticationError(BaseModel):
+    detail: str
+
+
+class DialogueErrorDetail(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    code: str
+    cursor: int | None = None
+
+
+class DialogueErrorResponse(BaseModel):
+    detail: DialogueErrorDetail
+
+
+class ValidationIssue(BaseModel):
+    loc: list[str | int]
+    msg: str
+    type: str
+    input: Any = None
+    ctx: dict[str, Any] | None = None
+
+
+class CommandValidationError(BaseModel):
+    detail: DialogueErrorDetail | list[ValidationIssue]
+
+
+def dialogue_error_responses(*statuses: int) -> dict[int, dict]:
+    responses = {
+        401: {"model": AuthenticationError, "description": "A valid bearer token is required."},
+        403: {"model": DialogueErrorResponse, "description": "This operation requires the employee role."},
+        404: {"model": DialogueErrorResponse, "description": "The resource does not exist or is unavailable."},
+        409: {"model": DialogueErrorResponse, "description": "The command conflicts with current state."},
+        422: {"model": CommandValidationError, "description": "The command or request body is invalid."},
+        503: {"model": DialogueErrorResponse, "description": "The interactive queue cannot accept the command."},
+    }
+    return {status: responses[status] for status in statuses}
+
+
+class EventCursorExpired(BaseModel):
+    code: Literal["event_cursor_expired"] = "event_cursor_expired"
+    cursor: int
+
+
+class EventCursorExpiredResponse(BaseModel):
+    detail: EventCursorExpired
+
+
+EVENT_CURSOR_EXPIRED = {
+    "model": EventCursorExpiredResponse,
+    "description": "Cursor expired. Read a new conversation snapshot.",
+}
+
+
 EVENT_STREAM = {
     "description": (
         "Server-sent events. Resume with Last-Event-ID from the same conversation. "
@@ -135,6 +202,7 @@ EVENT_STREAM = {
         "text/event-stream": {
             "schema": {"type": "string"},
             "x-event-schema": EventView.model_json_schema(),
+            "x-reset-schema": EventCursorExpired.model_json_schema(),
         }
     },
 }

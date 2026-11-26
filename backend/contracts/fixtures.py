@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from backend.db import lock_source_catalog
+
 
 class FixtureRecord(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -39,6 +41,7 @@ class FixtureSource(FixtureRecord):
     external_id: str
     title: str
     anchor: str
+    heading: str
     revisions: tuple[FixtureRevision, ...]
 
 
@@ -60,6 +63,7 @@ def seed_fixture_sources(conn, *, active_version: int = 1) -> None:
     if any(active_version not in {rev.version for rev in source.revisions} for source in fixture.sources):
         raise ValueError(f"Unknown synthetic source version: {active_version}")
     with conn.transaction():
+        lock_source_catalog(conn, write=True)
         for source in fixture.sources:
             conn.execute(
                 """
@@ -71,14 +75,31 @@ def seed_fixture_sources(conn, *, active_version: int = 1) -> None:
             )
             for revision in source.revisions:
                 _install_revision(conn, source, revision)
-                if revision.version == active_version:
-                    conn.execute(
-                        """
-                        UPDATE sources SET status = 'active', current_revision_id = %s, updated_at = now()
-                        WHERE id = %s
-                        """,
-                        (revision.revision_id, source.document_id),
-                    )
+            active = next(revision for revision in source.revisions if revision.version == active_version)
+            _activate_fixture_revision(conn, source, active)
+
+
+def _activate_fixture_revision(conn, source: FixtureSource, active: FixtureRevision) -> None:
+    current = conn.execute(
+        "SELECT status, current_revision_id, acl_actor_ids FROM sources WHERE id = %s",
+        (source.document_id,),
+    ).fetchone()
+    if current["status"] == "active" and current["current_revision_id"] == active.revision_id:
+        return
+    conn.execute(
+        """
+        UPDATE sources SET status = 'active', current_revision_id = %s, updated_at = now()
+        WHERE id = %s
+        """,
+        (active.revision_id, source.document_id),
+    )
+    if current["acl_actor_ids"] is None and conn.execute(
+        "SELECT 1 FROM faq_entries WHERE status = 'active' LIMIT 1"
+    ).fetchone():
+        from backend.mailfaq import reconcile_document_revision
+
+        previous = current["current_revision_id"] if current["status"] == "active" else None
+        reconcile_document_revision(conn, active.revision_id, previous)
 
 
 def _install_revision(conn, source: FixtureSource, revision: FixtureRevision) -> None:
@@ -95,8 +116,8 @@ def _install_revision(conn, source: FixtureSource, revision: FixtureRevision) ->
     )
     conn.execute(
         """
-        INSERT INTO source_fragments (id, revision_id, ordinal, anchor, text)
-        VALUES (%s, %s, 0, %s, %s) ON CONFLICT (id) DO NOTHING
+        INSERT INTO source_fragments (id, revision_id, ordinal, anchor, heading_path, text)
+        VALUES (%s, %s, 0, %s, %s, %s) ON CONFLICT (id) DO NOTHING
         """,
-        (revision.fragment_id, revision.revision_id, source.anchor, revision.text),
+        (revision.fragment_id, revision.revision_id, source.anchor, [source.heading], revision.text),
     )
