@@ -1,12 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
+from importlib.util import find_spec
+import json
 from uuid import uuid4
 
 import pytest
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
 
-from backend.contracts.api import EventView
+from backend.contracts.api import EventCursorExpired, EventView
 from backend.contracts.engine import (
     AnswerRequest,
     Citation,
@@ -16,6 +18,7 @@ from backend.contracts.engine import (
     SourceSnapshot,
     build_engine,
 )
+from backend.contracts.export import DEFAULT_OUTPUT, openapi_document
 from backend.contracts.fixtures import load_fixture, seed_fixture_sources
 from backend.db import append_event, connect, migrate
 
@@ -188,3 +191,28 @@ def test_message_idempotency_and_event_conversation_constraints(db):
     with pytest.raises(ForeignKeyViolation), db.transaction():
         append_event(db, feed_b, case_b, turn_a, "invalid", {})
     assert append_event(db, feed_b, case_b, None, "allowed", {}) == 1
+
+
+
+def test_published_openapi_describes_admission_and_sse_recovery():
+    contract = json.loads(DEFAULT_OUTPUT.read_text(encoding="utf-8"))
+    paths = contract["paths"]
+    messages = paths["/v1/conversations/{conversation_id}/messages"]
+    request_body = messages["post"]["requestBody"]["content"]["application/json"]["schema"]
+    assert request_body["$ref"] == "#/components/schemas/MessageRequest"
+    accepted = messages["post"]["responses"]["202"]["content"]["application/json"]["schema"]
+    assert accepted["$ref"] == "#/components/schemas/AcceptedMessage"
+
+    events = paths["/v1/conversations/{conversation_id}/events"]["get"]
+    resume = {(item["in"], item["name"]) for item in events["parameters"]}
+    assert {("header", "Last-Event-ID"), ("query", "after")} <= resume
+    sse = events["responses"]["200"]["content"]["text/event-stream"]
+    assert sse["x-event-schema"] == EventView.model_json_schema()
+    assert sse["x-reset-schema"] == EventCursorExpired.model_json_schema()
+    assert "410" in events["responses"]
+
+
+def test_published_openapi_matches_composed_api():
+    if find_spec("backend.app") is None:
+        pytest.skip("Run in the integrated backend checkout to compare the registered routers")
+    assert json.loads(DEFAULT_OUTPUT.read_text(encoding="utf-8")) == openapi_document()
