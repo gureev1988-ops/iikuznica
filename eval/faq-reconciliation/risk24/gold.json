@@ -1,0 +1,377 @@
+{
+  "cases": [
+    {
+      "id": "R01",
+      "relation": "conflict",
+      "action": "review_mail",
+      "source": "expert",
+      "required_citations": [
+        "Z.v2.6",
+        "R01.m"
+      ],
+      "allowed_citations": [
+        "Z.v2.6",
+        "R01.m"
+      ],
+      "reason": "Для круглого стола с приглашённым переводчиком полномочный эксперт прямо снимает обязательную вторую визу."
+    },
+    {
+      "id": "R02",
+      "relation": "covered",
+      "action": "archive_duplicate",
+      "source": "rule",
+      "required_citations": [
+        "Z.v2.2",
+        "R02.f"
+      ],
+      "allowed_citations": [
+        "Z.v2.2",
+        "R02.f",
+        "Z.v1.2"
+      ],
+      "reason": "Новая редакция закрепляет WAV и полностью покрывает карточку о формате итогового мастера."
+    },
+    {
+      "id": "R03",
+      "relation": "uncertain",
+      "action": "clarify",
+      "source": "none",
+      "required_citations": [
+        "G.v2.9",
+        "R03.m"
+      ],
+      "allowed_citations": [
+        "G.v2.9",
+        "R03.m"
+      ],
+      "reason": "Подписант листа зависит от вида выхода. В письме не установлено, будет репетиция или публичный спектакль."
+    },
+    {
+      "id": "R04",
+      "relation": "conflict",
+      "action": "keep_faq_flag",
+      "source": "expert",
+      "required_citations": [
+        "G.v2.3",
+        "R04.f"
+      ],
+      "allowed_citations": [
+        "G.v2.3",
+        "R04.f",
+        "G.v1.3"
+      ],
+      "reason": "Для одного и того же выезда FAQ и действующая норма назначают разных подписантов."
+    },
+    {
+      "id": "R05",
+      "relation": "covered",
+      "action": "link_rule",
+      "source": "rule",
+      "required_citations": [
+        "M.v2.8",
+        "R05.m"
+      ],
+      "allowed_citations": [
+        "M.v2.8",
+        "R05.m"
+      ],
+      "reason": "Номер в листе запуска повторного заказа книжного блока требуется и при прежнем макете."
+    },
+    {
+      "id": "R06",
+      "relation": "conflict",
+      "action": "keep_faq_flag",
+      "source": "expert",
+      "required_citations": [
+        "M.v2.4",
+        "R06.f"
+      ],
+      "allowed_citations": [
+        "M.v2.4",
+        "R06.f",
+        "M.v1.4"
+      ],
+      "reason": "FAQ разрешает снять образец после письменного подтверждения, даже если печать продолжается. Новая редакция требует окончания печати."
+    },
+    {
+      "id": "R07",
+      "relation": "conflict",
+      "action": "clarify",
+      "source": "rule",
+      "required_citations": [
+        "K.v2.7",
+        "R07.m"
+      ],
+      "allowed_citations": [
+        "K.v2.7",
+        "R07.m"
+      ],
+      "reason": "Анонимное указание снимает отметку для учебной копии вопреки норме. Авторство следует проверить, а текущий ответ определяется пунктом."
+    },
+    {
+      "id": "R08",
+      "relation": "covered",
+      "action": "archive_duplicate",
+      "source": "rule",
+      "required_citations": [
+        "K.v2.5",
+        "R08.f"
+      ],
+      "allowed_citations": [
+        "K.v2.5",
+        "R08.f",
+        "K.v1.5"
+      ],
+      "reason": "Пункт полностью покрывает указание о PNG для посетителя на стойке."
+    },
+    {
+      "id": "R09",
+      "relation": "irrelevant",
+      "action": "link_rule",
+      "source": "rule",
+      "required_citations": [
+        "M.v2.10",
+        "R09.m"
+      ],
+      "allowed_citations": [
+        "M.v2.10",
+        "R09.m"
+      ],
+      "reason": "Письмо касалось текстовой вычитки другого заказа. Цветопробу сотрудник оформляет по применимой ветке пункта."
+    },
+    {
+      "id": "R10",
+      "relation": "covered",
+      "action": "archive_duplicate",
+      "source": "rule",
+      "required_citations": [
+        "Z.v2.5",
+        "R10.f"
+      ],
+      "allowed_citations": [
+        "Z.v2.5",
+        "R10.f",
+        "Z.v1.5"
+      ],
+      "reason": "Для внутренней прослушки норма и FAQ совпадают по моменту закрытия ссылки."
+    },
+    {
+      "id": "R11",
+      "relation": "supplement",
+      "action": "publish_faq",
+      "source": "expert",
+      "required_citations": [
+        "G.v2.11",
+        "R11.m"
+      ],
+      "allowed_citations": [
+        "G.v2.11",
+        "R11.m"
+      ],
+      "reason": "К обязанности приложить фото эксперт добавляет крупный план и масштабную линейку."
+    },
+    {
+      "id": "R12",
+      "relation": "covered",
+      "action": "archive_duplicate",
+      "source": "rule",
+      "required_citations": [
+        "G.v2.7",
+        "R12.f"
+      ],
+      "allowed_citations": [
+        "G.v2.7",
+        "R12.f",
+        "G.v1.7"
+      ],
+      "reason": "В новой редакции учтены и сушка при комнатной температуре на открытой стойке, и запись времени."
+    },
+    {
+      "id": "R13",
+      "relation": "conflict",
+      "action": "review_mail",
+      "source": "expert",
+      "required_citations": [
+        "K.v2.9",
+        "R13.m"
+      ],
+      "allowed_citations": [
+        "K.v2.9",
+        "R13.m"
+      ],
+      "reason": "Для ведомостей конкретной серии атласов эксперт назначает оператора, а применимый пункт указывает хранителя коллекции."
+    },
+    {
+      "id": "R14",
+      "relation": "supplement",
+      "action": "keep_faq",
+      "source": "expert",
+      "required_citations": [
+        "Z.v2.2",
+        "R14.f"
+      ],
+      "allowed_citations": [
+        "Z.v2.2",
+        "R14.f",
+        "Z.v1.2",
+        "Z.v2.8"
+      ],
+      "reason": "Правка покрывает формат WAV. Код звуковой дорожки в имени аудиофайла задаёт FAQ."
+    },
+    {
+      "id": "R15",
+      "relation": "supplement",
+      "action": "publish_faq",
+      "source": "expert",
+      "required_citations": [
+        "Z.v2.8",
+        "R15.m"
+      ],
+      "allowed_citations": [
+        "Z.v2.8",
+        "R15.m"
+      ],
+      "reason": "Пункт требует код в имени записки. Эксперт указывает позицию и разделитель."
+    },
+    {
+      "id": "R16",
+      "relation": "irrelevant",
+      "action": "keep_faq",
+      "source": "expert",
+      "required_citations": [
+        "G.v2.3",
+        "R16.f"
+      ],
+      "allowed_citations": [
+        "G.v2.3",
+        "R16.f",
+        "G.v1.3"
+      ],
+      "reason": "Правка меняет подпись для междугороднего выезда. Указания о расписке и ярлыке для передачи между залами сохраняются."
+    },
+    {
+      "id": "R17",
+      "relation": "conflict",
+      "action": "review_mail",
+      "source": "expert",
+      "required_citations": [
+        "G.v2.9",
+        "R17.m"
+      ],
+      "allowed_citations": [
+        "G.v2.9",
+        "R17.m"
+      ],
+      "reason": "Для публичного представления эксперт передаёт оформление помощнику режиссёра, а по норме оформляет администратор."
+    },
+    {
+      "id": "R18",
+      "relation": "supplement",
+      "action": "keep_faq",
+      "source": "expert",
+      "required_citations": [
+        "M.v2.4",
+        "R18.f"
+      ],
+      "allowed_citations": [
+        "M.v2.4",
+        "R18.f",
+        "M.v1.4"
+      ],
+      "reason": "Новая редакция покрывает срок хранения. Полку для дальнейшего размещения по-прежнему задаёт только FAQ."
+    },
+    {
+      "id": "R19",
+      "relation": "covered",
+      "action": "link_rule",
+      "source": "rule",
+      "required_citations": [
+        "M.v2.6",
+        "R19.m"
+      ],
+      "allowed_citations": [
+        "M.v2.6",
+        "R19.m"
+      ],
+      "reason": "Эксперт прямо отозвал старое разъяснение и подтвердил действующую норму о проверке обложки мастером отделки."
+    },
+    {
+      "id": "R20",
+      "relation": "irrelevant",
+      "action": "keep_faq",
+      "source": "expert",
+      "required_citations": [
+        "K.v2.5",
+        "R20.f"
+      ],
+      "allowed_citations": [
+        "K.v2.5",
+        "R20.f",
+        "K.v1.5"
+      ],
+      "reason": "Правка касается копии для просмотра на стойке. Внутреннему каталогу по-прежнему передают TIFF, а получателя файла называет FAQ."
+    },
+    {
+      "id": "R21",
+      "relation": "supplement",
+      "action": "publish_faq",
+      "source": "expert",
+      "required_citations": [
+        "K.v2.12",
+        "R21.m"
+      ],
+      "allowed_citations": [
+        "K.v2.12",
+        "R21.m"
+      ],
+      "reason": "Фонд по норме определяет формат обозначения, а его эксперт уточняет позицию и квадратные скобки для своего фонда."
+    },
+    {
+      "id": "R22",
+      "relation": "conflict",
+      "action": "keep_faq_flag",
+      "source": "expert",
+      "required_citations": [
+        "Z.v2.5",
+        "R22.f"
+      ],
+      "allowed_citations": [
+        "Z.v2.5",
+        "R22.f",
+        "Z.v1.5"
+      ],
+      "reason": "В день премьеры по норме публичная ссылка ещё открыта. Карточка предписывает отключить её накануне."
+    },
+    {
+      "id": "R23",
+      "relation": "covered",
+      "action": "link_rule",
+      "source": "rule",
+      "required_citations": [
+        "M.v2.6",
+        "R23.m"
+      ],
+      "allowed_citations": [
+        "M.v2.6",
+        "R23.m"
+      ],
+      "reason": "Технолог проверяет первую полосу книжного блока по действующей норме."
+    },
+    {
+      "id": "R24",
+      "relation": "conflict",
+      "action": "keep_faq_flag",
+      "source": "expert",
+      "required_citations": [
+        "G.v2.7",
+        "R24.f"
+      ],
+      "allowed_citations": [
+        "G.v2.7",
+        "R24.f",
+        "G.v1.7"
+      ],
+      "reason": "Предписанный экспертной карточкой сушильный шкаф расходится с требованием об открытой стойке. Указания о записи времени совпадают."
+    }
+  ]
+}

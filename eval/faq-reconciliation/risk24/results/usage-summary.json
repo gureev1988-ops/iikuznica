@@ -1,0 +1,1463 @@
+{
+  "total": {
+    "attempts": 38,
+    "successful": 38,
+    "latency_s_sum": 54.809,
+    "input_tokens": 66646,
+    "output_tokens": 9645,
+    "provider_reported_usd": 0.007706868,
+    "known_usd_subtotal": 0.007706868,
+    "missing_cost_attempts": 0
+  },
+  "groups": {
+    "cards": {
+      "attempts": 1,
+      "successful": 1,
+      "latency_s_sum": 6.997,
+      "input_tokens": 1802,
+      "output_tokens": 2817,
+      "provider_reported_usd": 0.00095094,
+      "known_usd_subtotal": 0.00095094,
+      "missing_cost_attempts": 0
+    },
+    "audit": {
+      "attempts": 1,
+      "successful": 1,
+      "latency_s_sum": 2.841,
+      "input_tokens": 4611,
+      "output_tokens": 431,
+      "provider_reported_usd": 0.00053567,
+      "known_usd_subtotal": 0.00053567,
+      "missing_cost_attempts": 0
+    },
+    "raw": {
+      "attempts": 18,
+      "successful": 18,
+      "latency_s_sum": 23.628,
+      "input_tokens": 25448,
+      "output_tokens": 3178,
+      "provider_reported_usd": 0.002660608,
+      "known_usd_subtotal": 0.002660608,
+      "missing_cost_attempts": 0
+    },
+    "registry": {
+      "attempts": 18,
+      "successful": 18,
+      "latency_s_sum": 21.343,
+      "input_tokens": 34785,
+      "output_tokens": 3219,
+      "provider_reported_usd": 0.00355965,
+      "known_usd_subtotal": 0.00355965,
+      "missing_cost_attempts": 0
+    }
+  },
+  "route_issues": [],
+  "attempts": [
+    {
+      "stage": "cards",
+      "request_hash": "34db804ad091fd2a8959b2dc86c07549d9f2dc9cdb66160da11a87fa1e8c439b",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1802,
+        "completion_tokens": 2817,
+        "total_tokens": 4619,
+        "cost": 0.00095094,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00095094,
+          "upstream_inference_prompt_cost": 0.00016218,
+          "upstream_inference_completions_cost": 0.00078876
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716625-WNdUafN9J5nT0pc3C10H",
+      "finish_reason": "stop",
+      "latency_s": 6.997,
+      "group": "cards",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "audit",
+      "request_hash": "906e8faf1c09eb2c1c6eb635d6ac24b0cfa059beaa6b7d34d59ee009065fbc6e",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 4611,
+        "completion_tokens": 431,
+        "total_tokens": 5042,
+        "cost": 0.00053567,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00053567,
+          "upstream_inference_prompt_cost": 0.00041499,
+          "upstream_inference_completions_cost": 0.00012068
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716631-DwcOd0tih7mAtGOTLtmk",
+      "finish_reason": "stop",
+      "latency_s": 2.841,
+      "group": "audit",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-E01",
+      "request_hash": "c0607a22898be355e2eb977abc1ce206fe7880dc0e658ebaf8d426be69957bcd",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1266,
+        "completion_tokens": 120,
+        "total_tokens": 1386,
+        "cost": 0.000116052,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000116052,
+          "upstream_inference_prompt_cost": 8.2452e-05,
+          "upstream_inference_completions_cost": 3.36e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716634-QDlASM4dLmTPVDCyFX7F",
+      "finish_reason": "stop",
+      "latency_s": 0.888,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-E01",
+      "request_hash": "f1cc527297c73e281a4b12644b41fa4bca335be86afd9502e51114e5a1e9d92a",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1617,
+        "completion_tokens": 129,
+        "total_tokens": 1746,
+        "cost": 0.000150162,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000150162,
+          "upstream_inference_prompt_cost": 0.000114042,
+          "upstream_inference_completions_cost": 3.612e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716635-ugjdNWMoPcq60tSEdikp",
+      "finish_reason": "stop",
+      "latency_s": 1.368,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-U1",
+      "request_hash": "bd389024783477bd168821fbce13a2eb6c538d1007f6fb6bc5ec889bce5e933b",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1628,
+        "completion_tokens": 293,
+        "total_tokens": 1921,
+        "cost": 0.00022856,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00022856,
+          "upstream_inference_prompt_cost": 0.00014652,
+          "upstream_inference_completions_cost": 8.204e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716634-R3cV1Jvghf4lgVDd918C",
+      "finish_reason": "stop",
+      "latency_s": 2.029,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-U1",
+      "request_hash": "c4c3cb5626f5402fe0ca12c8e3dcafdd54f507c068577ed0405becf25acbfd38",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 2314,
+        "completion_tokens": 318,
+        "total_tokens": 2632,
+        "cost": 0.000265812,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000265812,
+          "upstream_inference_prompt_cost": 0.000176772,
+          "upstream_inference_completions_cost": 8.904e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716636-PjI8lWjAzVKSyluOGhyF",
+      "finish_reason": "stop",
+      "latency_s": 2.035,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-E02",
+      "request_hash": "4e508c85f1921f46439a275255c824148d16acd942e9c8fde187105e6e5f0b82",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1288,
+        "completion_tokens": 127,
+        "total_tokens": 1415,
+        "cost": 0.00015148,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00015148,
+          "upstream_inference_prompt_cost": 0.00011592,
+          "upstream_inference_completions_cost": 3.556e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716635-AKJDPrxVgxz5tnMejXV8",
+      "finish_reason": "stop",
+      "latency_s": 1.888,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-E02",
+      "request_hash": "a8f56ce2c9d496c6760606514e3da5b0f47593ba1c070e9113dc5377c4200a16",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1722,
+        "completion_tokens": 133,
+        "total_tokens": 1855,
+        "cost": 0.00019222,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00019222,
+          "upstream_inference_prompt_cost": 0.00015498,
+          "upstream_inference_completions_cost": 3.724e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716634-3HL5zDOd06pPKXYMfVFN",
+      "finish_reason": "stop",
+      "latency_s": 1.008,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-U2",
+      "request_hash": "af0a10636802d2946b620773e643141db372fea02b5eed8eeea90df7306c1eac",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1754,
+        "completion_tokens": 289,
+        "total_tokens": 2043,
+        "cost": 0.000207292,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000207292,
+          "upstream_inference_prompt_cost": 0.000126372,
+          "upstream_inference_completions_cost": 8.092e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716638-Yjtj2vh0wr2PwGL4BPlZ",
+      "finish_reason": "stop",
+      "latency_s": 2.11,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-U2",
+      "request_hash": "f72c6015a8962ecc5aa741e02d0382fb59de0f09f5a2bf7f05370e989fdf7be4",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 2668,
+        "completion_tokens": 263,
+        "total_tokens": 2931,
+        "cost": 0.000282272,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000282272,
+          "upstream_inference_prompt_cost": 0.000208632,
+          "upstream_inference_completions_cost": 7.364e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716636-19MQU2TDcaoFL0oSvpoi",
+      "finish_reason": "stop",
+      "latency_s": 1.28,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-E03",
+      "request_hash": "3e46a58684c3427f7e7b8f7763037b543d04b7e5007b14992acc3b802acf7844",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1277,
+        "completion_tokens": 114,
+        "total_tokens": 1391,
+        "cost": 0.000115362,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000115362,
+          "upstream_inference_prompt_cost": 8.3442e-05,
+          "upstream_inference_completions_cost": 3.192e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716637-UAXlXPpbOIPAjgE38ijd",
+      "finish_reason": "stop",
+      "latency_s": 0.829,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-E03",
+      "request_hash": "efdc40b47c2806198bd1a9796b8911896334009ef6a32e294daf4ea07ce6b778",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1675,
+        "completion_tokens": 126,
+        "total_tokens": 1801,
+        "cost": 0.00018603,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00018603,
+          "upstream_inference_prompt_cost": 0.00015075,
+          "upstream_inference_completions_cost": 3.528e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716638-hOwzVLPcSq0lfmodiGL0",
+      "finish_reason": "stop",
+      "latency_s": 1.194,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-U3",
+      "request_hash": "677e5c8497e492e57bd6ab65f888b472d9fc0094c30ea4b8af568cef48670c5d",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1738,
+        "completion_tokens": 248,
+        "total_tokens": 1986,
+        "cost": 0.000194372,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000194372,
+          "upstream_inference_prompt_cost": 0.000124932,
+          "upstream_inference_completions_cost": 6.944e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716638-ZcoMN79CnuIuf7qfKKDc",
+      "finish_reason": "stop",
+      "latency_s": 1.613,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-U3",
+      "request_hash": "c18a62010dd21934ba9c03cc1b6e6bd4a0204b319ea438b0f8675d6fdb5dbb98",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 2584,
+        "completion_tokens": 263,
+        "total_tokens": 2847,
+        "cost": 0.000274712,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000274712,
+          "upstream_inference_prompt_cost": 0.000201072,
+          "upstream_inference_completions_cost": 7.364e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716640-BmAyNf4XoiOnfGuvxOQA",
+      "finish_reason": "stop",
+      "latency_s": 1.203,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-E04",
+      "request_hash": "7ea095c128da65ef50bb82964924da13b550acecb8d4d41bc90128c8e3fa18d6",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1281,
+        "completion_tokens": 137,
+        "total_tokens": 1418,
+        "cost": 0.000122162,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000122162,
+          "upstream_inference_prompt_cost": 8.3802e-05,
+          "upstream_inference_completions_cost": 3.836e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716640-8mSfAo9i0XKpEhwyBfrO",
+      "finish_reason": "stop",
+      "latency_s": 1.601,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-E04",
+      "request_hash": "995a88efa0755d4562e232132ba7ee92929da12ad502fcea58e0564beb81878a",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1666,
+        "completion_tokens": 130,
+        "total_tokens": 1796,
+        "cost": 0.000154852,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000154852,
+          "upstream_inference_prompt_cost": 0.000118452,
+          "upstream_inference_completions_cost": 3.64e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716639-No7fE5QIPoSKJSQajsYl",
+      "finish_reason": "stop",
+      "latency_s": 0.844,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-U4",
+      "request_hash": "1195accda011515ddefa72bf60e0562fc9dd789739d40e99dbbe875c20089500",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1651,
+        "completion_tokens": 242,
+        "total_tokens": 1893,
+        "cost": 0.000184862,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000184862,
+          "upstream_inference_prompt_cost": 0.000117102,
+          "upstream_inference_completions_cost": 6.776e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716642-likJkkGqOC8gtUhMk7Jv",
+      "finish_reason": "stop",
+      "latency_s": 2.195,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-U4",
+      "request_hash": "664f56e1babd9af5f2f3d53dac27a02f10bb7103c405053b882ad7ea84923fac",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 2378,
+        "completion_tokens": 292,
+        "total_tokens": 2670,
+        "cost": 0.00029578,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00029578,
+          "upstream_inference_prompt_cost": 0.00021402,
+          "upstream_inference_completions_cost": 8.176e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716640-8yVzm9vmCrBSqanWtNt3",
+      "finish_reason": "stop",
+      "latency_s": 1.663,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-E05",
+      "request_hash": "f7f7833e12a8f16fa2dc5dd8b74460803362efbb34639e3d27c99d8314a96b14",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1296,
+        "completion_tokens": 140,
+        "total_tokens": 1436,
+        "cost": 0.000124352,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000124352,
+          "upstream_inference_prompt_cost": 8.5152e-05,
+          "upstream_inference_completions_cost": 3.92e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716641-4d0AUoHta2BkDNSokogl",
+      "finish_reason": "stop",
+      "latency_s": 1.13,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-E05",
+      "request_hash": "06331f17774c49f864eb6f23ee0f7d82527765d33f34e8ecd35b37cffd93cfab",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1694,
+        "completion_tokens": 156,
+        "total_tokens": 1850,
+        "cost": 0.000164652,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000164652,
+          "upstream_inference_prompt_cost": 0.000120972,
+          "upstream_inference_completions_cost": 4.368e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716642-21MYiGkngpp1U6xAcL94",
+      "finish_reason": "stop",
+      "latency_s": 1.063,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-U5",
+      "request_hash": "668d87a4b09b5dea388e497c8dc00848147e5bd04afcb87a264503f7e01ff669",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1669,
+        "completion_tokens": 291,
+        "total_tokens": 1960,
+        "cost": 0.000200202,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000200202,
+          "upstream_inference_prompt_cost": 0.000118722,
+          "upstream_inference_completions_cost": 8.148e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716642-jaaMWHPKrFpKO3lbDViH",
+      "finish_reason": "stop",
+      "latency_s": 1.61,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-U5",
+      "request_hash": "67214b4bc7e6f82501e507e10a43bd733accda88c3271cac597cb1c14a32b18d",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 2385,
+        "completion_tokens": 238,
+        "total_tokens": 2623,
+        "cost": 0.000249802,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000249802,
+          "upstream_inference_prompt_cost": 0.000183162,
+          "upstream_inference_completions_cost": 6.664e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716643-cEAtfvuZEOYanyZlqZ3j",
+      "finish_reason": "stop",
+      "latency_s": 1.128,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-E06",
+      "request_hash": "d7e29d7737405dd5b08a0bf4a91170469daf0bc84a1becc8e70ea63d8da7871c",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1280,
+        "completion_tokens": 129,
+        "total_tokens": 1409,
+        "cost": 0.000119832,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000119832,
+          "upstream_inference_prompt_cost": 8.3712e-05,
+          "upstream_inference_completions_cost": 3.612e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716644-ryZU6i9I2fBa2fWkTpUe",
+      "finish_reason": "stop",
+      "latency_s": 0.914,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-E06",
+      "request_hash": "4a1fb238caf6d80c5934aa0b26ee0ed23adbd6a417a41c3783a73ab2b5ee6f37",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1671,
+        "completion_tokens": 136,
+        "total_tokens": 1807,
+        "cost": 0.000156982,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000156982,
+          "upstream_inference_prompt_cost": 0.000118902,
+          "upstream_inference_completions_cost": 3.808e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716643-NSlEKZZGyg0Y3sYMKkCp",
+      "finish_reason": "stop",
+      "latency_s": 1.069,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-U6",
+      "request_hash": "e6a69d0fe7167ff8b21781717e86a195eac47bc011bd0d930777f15fa6be27cc",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1679,
+        "completion_tokens": 273,
+        "total_tokens": 1952,
+        "cost": 0.000196062,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000196062,
+          "upstream_inference_prompt_cost": 0.000119622,
+          "upstream_inference_completions_cost": 7.644e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716645-Mj9HYw8LmRpdwOpS3luY",
+      "finish_reason": "stop",
+      "latency_s": 1.161,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-U6",
+      "request_hash": "047fc88faa2f8a98b1c79a02cc4c58b66efffa192375346f7ddc319766b1dd72",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 2435,
+        "completion_tokens": 272,
+        "total_tokens": 2707,
+        "cost": 0.000263822,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000263822,
+          "upstream_inference_prompt_cost": 0.000187662,
+          "upstream_inference_completions_cost": 7.616e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716644-xabSqHRmMci5frvCWxDo",
+      "finish_reason": "stop",
+      "latency_s": 1.359,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-E07",
+      "request_hash": "6068002d7d4b30a6ef24f6e652cf4684f9c4e557a8884337e7d09dec8e4de9a4",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1281,
+        "completion_tokens": 126,
+        "total_tokens": 1407,
+        "cost": 0.000119082,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000119082,
+          "upstream_inference_prompt_cost": 8.3802e-05,
+          "upstream_inference_completions_cost": 3.528e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716644-XOFCU4S4VXTXycU5XQqt",
+      "finish_reason": "stop",
+      "latency_s": 0.895,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-E07",
+      "request_hash": "8c6746f9d9a92be861bde8133062fe42e123d1cab1aa2efc7dead1f0a450d71e",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1680,
+        "completion_tokens": 140,
+        "total_tokens": 1820,
+        "cost": 0.000158912,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000158912,
+          "upstream_inference_prompt_cost": 0.000119712,
+          "upstream_inference_completions_cost": 3.92e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716645-q7uSAzXdyniYBPjK4n3T",
+      "finish_reason": "stop",
+      "latency_s": 1.04,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-E08",
+      "request_hash": "903eda0aa978f97acea4f5fdfd2a141e92912e73f441cf460c613aa7b16e6887",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1216,
+        "completion_tokens": 122,
+        "total_tokens": 1338,
+        "cost": 0.000112112,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000112112,
+          "upstream_inference_prompt_cost": 7.7952e-05,
+          "upstream_inference_completions_cost": 3.416e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716646-U0iDRuvD33UYor0wakCv",
+      "finish_reason": "stop",
+      "latency_s": 0.789,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-E08",
+      "request_hash": "e9f330169df2d219570445aca216bb5541558b288bb8f5719230812821dcaacd",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1516,
+        "completion_tokens": 122,
+        "total_tokens": 1638,
+        "cost": 0.000139112,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000139112,
+          "upstream_inference_prompt_cost": 0.000104952,
+          "upstream_inference_completions_cost": 3.416e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716645-hjbW0fK9kznh6iJaEsIp",
+      "finish_reason": "stop",
+      "latency_s": 0.798,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-E09",
+      "request_hash": "b35934039d4ce023b5ba042f1eb69382f22dc5b6ab6304685bbe4b29ff40cae4",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1288,
+        "completion_tokens": 134,
+        "total_tokens": 1422,
+        "cost": 0.000121952,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000121952,
+          "upstream_inference_prompt_cost": 8.4432e-05,
+          "upstream_inference_completions_cost": 3.752e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716646-nXq0HXVoJqeeWpgZ6V7o",
+      "finish_reason": "stop",
+      "latency_s": 1.05,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-E09",
+      "request_hash": "ac45c67e6eaae7b0891d0df69def10addddb41f090c652f89b421918dbf20e4c",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1700,
+        "completion_tokens": 128,
+        "total_tokens": 1828,
+        "cost": 0.000157352,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000157352,
+          "upstream_inference_prompt_cost": 0.000121512,
+          "upstream_inference_completions_cost": 3.584e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716647-HCnuNGevppedFDA1ycs6",
+      "finish_reason": "stop",
+      "latency_s": 1.054,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-E10",
+      "request_hash": "93d48cd7c398bbcc5aa296c355319fd39a43d9e763f07360b43c4192f0e0b129",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1313,
+        "completion_tokens": 141,
+        "total_tokens": 1454,
+        "cost": 0.000126162,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000126162,
+          "upstream_inference_prompt_cost": 8.6682e-05,
+          "upstream_inference_completions_cost": 3.948e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716647-LqrxhjaJlDbQT7ZNYHxi",
+      "finish_reason": "stop",
+      "latency_s": 1.127,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-E10",
+      "request_hash": "e5b8842f845ec9efbbde7db46a4055766d7f7cb4db1536851111ae466b14d63f",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1718,
+        "completion_tokens": 128,
+        "total_tokens": 1846,
+        "cost": 0.000158972,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000158972,
+          "upstream_inference_prompt_cost": 0.000123132,
+          "upstream_inference_completions_cost": 3.584e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716646-0SV8cmwI0k65nPdgmKUH",
+      "finish_reason": "stop",
+      "latency_s": 1.023,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-E11",
+      "request_hash": "f0224704fdc1bd44dcb43ce1af6a69727cbaef4b26ab09c6f045628fa8efc0c9",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1265,
+        "completion_tokens": 127,
+        "total_tokens": 1392,
+        "cost": 0.000117922,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000117922,
+          "upstream_inference_prompt_cost": 8.2362e-05,
+          "upstream_inference_completions_cost": 3.556e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716647-yRWC4yD2foa2zst9Y2Cl",
+      "finish_reason": "stop",
+      "latency_s": 0.736,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-E11",
+      "request_hash": "80e884ddd42e8bbf480da133bd0fe31725df1ace7f486a95a88b0ad590ff8f07",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1650,
+        "completion_tokens": 120,
+        "total_tokens": 1770,
+        "cost": 0.000150612,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000150612,
+          "upstream_inference_prompt_cost": 0.000117012,
+          "upstream_inference_completions_cost": 3.36e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716648-1WNc6TjN2TEwGJwUqpWo",
+      "finish_reason": "stop",
+      "latency_s": 1.228,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "raw-E12",
+      "request_hash": "456b972fcd7bc22e18076f94ffc49dab714874313b1f543267adbc73b75c17bf",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1278,
+        "completion_tokens": 125,
+        "total_tokens": 1403,
+        "cost": 0.000102788,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 1152,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000102788,
+          "upstream_inference_prompt_cost": 6.7788e-05,
+          "upstream_inference_completions_cost": 3.5e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716649-MsITp1GmXqbzgR8LtHYu",
+      "finish_reason": "stop",
+      "latency_s": 1.063,
+      "group": "raw",
+      "attempt": 1,
+      "route_issues": []
+    },
+    {
+      "stage": "registry-E12",
+      "request_hash": "e514b058a2fcb15e2793b3bd0ab1b197cc9e2dc136e2a0897b9c3b16686cbab1",
+      "requested_model": "google/gemma-4-26b-a4b-it",
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 1712,
+        "completion_tokens": 125,
+        "total_tokens": 1837,
+        "cost": 0.000157592,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 768,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000157592,
+          "upstream_inference_prompt_cost": 0.000122592,
+          "upstream_inference_completions_cost": 3.5e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "provider": "Makora",
+      "served_model": "google/gemma-4-26b-a4b-it",
+      "id": "gen-1795716648-OfPrjywj66j7PGjUudZ4",
+      "finish_reason": "stop",
+      "latency_s": 0.986,
+      "group": "registry",
+      "attempt": 1,
+      "route_issues": []
+    }
+  ]
+}
