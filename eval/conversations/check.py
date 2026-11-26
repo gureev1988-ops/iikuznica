@@ -5,6 +5,7 @@ import gzip
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -31,6 +32,22 @@ def load_bank():
                     if tuple(ref.split()) not in corpus or not description:
                         raise ValueError(f"Invalid reference in {case['id']}: {ref}")
     return cases
+
+
+def independent_parts(cases):
+    """Controlled ablation: the fixture tells us that the two questions are independent."""
+    singles = []
+    for case in cases:
+        turn = case["turns"][0]
+        if turn.get("relation") != "independent":
+            continue
+        first, mark, second = turn["question"].partition("?")
+        if not mark or not first or not second.strip().endswith("?") or second.count("?") != 1:
+            raise ValueError(f"Expected two explicit questions in {case['id']}")
+        second = re.sub(r"^(?:и ещё,? |и еще,? |и |а |заодно )", "", second.strip(), count=1, flags=re.I)
+        for suffix, question in (("a", first + mark), ("b", second)):
+            singles.append({"id": case["id"] + suffix, "turns": [{"question": question}]})
+    return singles
 
 
 class Boundary(Exception):
@@ -178,14 +195,21 @@ if __name__ == "__main__":
     prep = modes.add_parser("prepare")
     prep.add_argument("--model-dir", required=True)
     prep.add_argument("--python", default=sys.executable)
-    cachefile = HERE / "search.json.gz"
-    prep.add_argument("--cache", type=Path, default=cachefile)
+    prep.add_argument("--cache", type=Path)
+    prep.add_argument("--independent-parts", action="store_true")
     for name in ("probe", "live"):
         mode = modes.add_parser(name)
-        mode.add_argument("--cache", type=Path, default=cachefile)
+        mode.add_argument("--cache", type=Path)
+        if name == "live":
+            mode.add_argument("--independent-parts", action="store_true")
         mode.add_argument("--out", type=Path, required=True)
     args = cli.parse_args()
     cases = load_bank()
+    parts = getattr(args, "independent_parts", False)
+    if parts:
+        cases = independent_parts(cases)
+    if args.cache is None:
+        args.cache = HERE / ("search-parts.json.gz" if parts else "search.json.gz")
     if args.command == "prepare":
         make_cache(cases, args.python, args.model_dir, args.cache)
     else:
