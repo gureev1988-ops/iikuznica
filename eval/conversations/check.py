@@ -54,6 +54,10 @@ class Boundary(Exception):
     """Stop at an observed pipeline boundary before a paid model call."""
 
 
+class NeedSearch(Exception):
+    """A dynamic query requires the same pinned retriever on the scoring host."""
+
+
 def history_fixture(prior, punctuation):
     return [entry for q in prior for entry in (("user", q), ("assistant", punctuation))]
 
@@ -80,6 +84,10 @@ def make_cache(cases, python, model_dir, output):
                 if "query" in trace:
                     queries.setdefault(trace["query"], str(len(queries)))
             prior.append(q)
+    rank_queries(queries, python, model_dir, output)
+
+
+def rank_queries(queries, python, model_dir, output):
     with TemporaryDirectory() as tmp:
         inputs, pool, ranks = [Path(tmp) / name for name in ("questions", "pool", "ranks")]
         inputs.write_text("".join(json.dumps(dict(id=i, question=q), ensure_ascii=False) + "\n"
@@ -153,6 +161,7 @@ def live(cases, lookup, out, *, candidate=False):
     (out / "calls").mkdir(exist_ok=True)
     (out / ".gitignore").write_text("*\n")
     records = []
+    pending = {}
     for case in cases:
         history = []
         for index, turn in enumerate(case["turns"], 1):
@@ -172,7 +181,11 @@ def live(cases, lookup, out, *, candidate=False):
                            judge=lambda b: evidence.judge(b, call=judge))
             if candidate:
                 import conversation
-                response = conversation.answer(turn["question"], lookup, planner=generation, **options)
+                try:
+                    response = conversation.answer(turn["question"], lookup, planner=generation, **options)
+                except NeedSearch as missing:
+                    pending[missing.args[0]] = cid
+                    break
             else:
                 response = ask.answer(turn["question"], lookup, procedure_mode=True, instruction="",
                                       add_sources=evidence.alternatives, **options)
@@ -180,6 +193,9 @@ def live(cases, lookup, out, *, candidate=False):
             records.append({"turn": cid, "question": turn["question"], "response": response})
             save(out / "replies.jsonl", "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
             print(cid, response["action"], flush=True)
+    if candidate:
+        save(out / "pending.json", json.dumps(list(pending), ensure_ascii=False))
+        print(f"Completed {len(records)} turns. Pending distinct searches: {len(pending)}", flush=True)
 
 
 if __name__ == "__main__":
@@ -190,6 +206,11 @@ if __name__ == "__main__":
     prep.add_argument("--python", default=sys.executable)
     prep.add_argument("--cache", type=Path)
     prep.add_argument("--independent-parts", action="store_true")
+    fill = modes.add_parser("rank-pending")
+    fill.add_argument("--questions", required=True, type=Path)
+    fill.add_argument("--model-dir", required=True)
+    fill.add_argument("--python", default=sys.executable)
+    fill.add_argument("--out", required=True, type=Path)
     for name in ("probe", "live", "candidate"):
         mode = modes.add_parser(name)
         mode.add_argument("--cache", type=Path)
@@ -199,8 +220,16 @@ if __name__ == "__main__":
             mode.add_argument("--working50", type=Path, help="Private packet with the original working bank")
             mode.add_argument("--model-dir", type=Path, help="Pinned MiniLM for newly contextualized queries")
             mode.add_argument("--python", default=sys.executable)
+            mode.add_argument("--defer-search", action="store_true", help="Pause affected cases for exact dynamic reranking")
+            mode.add_argument("--extra-cache", type=Path, action="append", default=[])
         mode.add_argument("--out", type=Path, required=True)
     args = cli.parse_args()
+    if args.command == "rank-pending":
+        pending = json.loads(args.questions.read_text())
+        if not isinstance(pending, list) or not pending or not all(isinstance(q, str) and q.strip() for q in pending):
+            cli.error("Expected a nonempty JSON list of query strings")
+        rank_queries({q: str(i) for i, q in enumerate(pending)}, args.python, args.model_dir, args.out)
+        sys.exit(0)
     cases = load_bank()
     parts = getattr(args, "independent_parts", False)
     if parts:
@@ -214,10 +243,11 @@ if __name__ == "__main__":
         if cache["corpus"] != fingerprint(list(ask.full_corpus().values())):
             cli.error("Corpus changed; regenerate the search snapshot")
         if args.command == "candidate":
-            extra = json.loads(gzip.decompress((HERE / "search-parts.json.gz").read_bytes()))
-            if extra["corpus"] != cache["corpus"]:
-                cli.error("Incompatible independent-question snapshot")
-            cache["inputs"].update(extra["inputs"])
+            for path in [HERE / "search-parts.json.gz", *args.extra_cache]:
+                extra = json.loads(gzip.decompress(path.read_bytes()))
+                if extra["corpus"] != cache["corpus"]:
+                    cli.error("Incompatible search snapshot")
+                cache["inputs"].update(extra["inputs"])
             if args.working50:
                 from run50 import blind_inputs
                 working, _ = blind_inputs(args.working50)
@@ -229,6 +259,8 @@ if __name__ == "__main__":
             key = fingerprint(q)
             if key not in cache["inputs"] and args.command == "candidate" and args.model_dir:
                 cache["inputs"][key] = ask.retrieve(q, args.model_dir, args.python)
+            if key not in cache["inputs"] and args.command == "candidate" and args.defer_search:
+                raise NeedSearch(q)
             return cache["inputs"][key]
         if args.command == "probe":
             save(args.out, json.dumps(probe(cases, lookup), ensure_ascii=False, indent=2))
