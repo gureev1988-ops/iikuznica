@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .engine import Action, SourceKind
 
@@ -32,6 +32,16 @@ class OfferDecision(BaseModel):
     version: int = Field(ge=1)
 
 
+class SourceReference(BaseModel):
+    document_id: UUID
+    revision_id: UUID
+    fragment_id: UUID
+    kind: SourceKind
+    quote: str
+    url: str
+    claim: str | None = None
+
+
 class MessageView(BaseModel):
     id: UUID
     case_id: UUID
@@ -40,6 +50,7 @@ class MessageView(BaseModel):
     role: Literal["user", "assistant", "system"]
     text: str
     created_at: datetime
+    source_refs: list[SourceReference] | None = None
 
 
 class ClarificationOptionView(BaseModel):
@@ -65,16 +76,6 @@ class OfferView(BaseModel):
     version: int
     status: OfferStatus
     text: str
-
-
-class SourceReference(BaseModel):
-    document_id: UUID
-    revision_id: UUID
-    fragment_id: UUID
-    kind: SourceKind
-    quote: str
-    url: str
-    claim: str | None = None
 
 
 class ResultView(BaseModel):
@@ -126,6 +127,45 @@ class EventView(BaseModel):
 
     def encode_sse(self) -> str:
         return f"id: {self.cursor}\nevent: {self.kind}\ndata: {self.model_dump_json()}\n\n"
+
+
+class AuthenticationError(BaseModel):
+    detail: str
+
+
+class DialogueErrorDetail(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    code: str
+    cursor: int | None = None
+
+
+class DialogueErrorResponse(BaseModel):
+    detail: DialogueErrorDetail
+
+
+class ValidationIssue(BaseModel):
+    loc: list[str | int]
+    msg: str
+    type: str
+    input: Any = None
+    ctx: dict[str, Any] | None = None
+
+
+class CommandValidationError(BaseModel):
+    detail: DialogueErrorDetail | list[ValidationIssue]
+
+
+def dialogue_error_responses(*statuses: int) -> dict[int, dict]:
+    responses = {
+        401: {"model": AuthenticationError, "description": "A valid bearer token is required."},
+        403: {"model": DialogueErrorResponse, "description": "This operation requires the employee role."},
+        404: {"model": DialogueErrorResponse, "description": "The resource does not exist or is unavailable."},
+        409: {"model": DialogueErrorResponse, "description": "The command conflicts with current state."},
+        422: {"model": CommandValidationError, "description": "The command or request body is invalid."},
+        503: {"model": DialogueErrorResponse, "description": "The interactive queue cannot accept the command."},
+    }
+    return {status: responses[status] for status in statuses}
 
 
 class EventCursorExpired(BaseModel):
