@@ -121,13 +121,6 @@ class _FixtureEngine:
             raise EngineUnavailable("Engine deadline exceeded")
 
         scenario = self._find(_normalize(request.question))
-        # A clarification may bring an option or free text as the current input.
-        if scenario is None:
-            for message in reversed(request.history):
-                if message.role == "user":
-                    scenario = self._find(_normalize(message.text))
-                    if scenario is not None:
-                        break
         if scenario is None:
             return AnswerResult("out_of_scope", "В учебных сценариях такого вопроса нет.")
         if scenario.action == "technical_failure":
