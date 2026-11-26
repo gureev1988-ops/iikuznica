@@ -1,0 +1,65 @@
+{
+  "n": 35,
+  "complete": true,
+  "by_expected_action": {
+    "clarify": {
+      "n": 4,
+      "baseline_correct": 1,
+      "final_correct": 3
+    },
+    "answer": {
+      "n": 28,
+      "baseline_correct": 28,
+      "final_correct": 28
+    },
+    "escalate": {
+      "n": 2,
+      "baseline_correct": 1,
+      "final_correct": 1
+    },
+    "out_of_scope": {
+      "n": 1,
+      "baseline_correct": 1,
+      "final_correct": 1
+    }
+  },
+  "improved_action": [
+    "Q01",
+    "Q14"
+  ],
+  "regressed_action": [],
+  "unsafe_first_drafts_published": [
+    "Q10",
+    "Q11",
+    "Q22"
+  ],
+  "unsafe_controls_seen": 7,
+  "safe_first_drafts_held": [],
+  "safe_controls_seen": 6,
+  "first_decisions": {
+    "clarify": 3,
+    "publish": 29,
+    "retrieve": 2,
+    "out_of_scope": 1
+  },
+  "successful_calls_by_stage": {
+    "decision1": 35,
+    "repair": 2,
+    "decision2": 2
+  },
+  "decision_api_seconds": {
+    "p50": 0.191,
+    "p95": 0.278
+  },
+  "added_api_seconds_per_question": {
+    "p50": 0.192,
+    "p95": 1.637
+  },
+  "baseline_generation_plus_new_api_seconds": {
+    "p50": 1.555,
+    "p95": 4.038
+  },
+  "historical_baseline_usd": 0.004293452,
+  "added_usd": 0.00054686,
+  "calls_without_cost": 0
+}
