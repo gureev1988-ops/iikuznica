@@ -94,7 +94,8 @@ def generate(question, sources, instruction):
     return draft(row["text"])
 
 
-def answer(question, search, previous_question="", generate_answer=generate, judge=decide):
+def answer(question, search, previous_question="", generate_answer=generate, judge=decide,
+           add_sources=None, instruction=None):
     question = question.strip()
     if not question:
         raise ValueError("Введи вопрос")
@@ -105,7 +106,11 @@ def answer(question, search, previous_question="", generate_answer=generate, jud
     seeds, pool = search(question)
     corpus = full_corpus()
     sources = linked([corpus[tuple(key)] for key in seeds], corpus, index())
-    instruction = load_dataset(EVAL / "iikuznitsa_run12/IIkuznitsa_Run_12x3.py")["system"]
+    if add_sources is not None:
+        sources = add_sources(sources, pool, corpus)
+    selection_mode = instruction is not None
+    if instruction is None:
+        instruction = load_dataset(EVAL / "iikuznitsa_run12/IIkuznitsa_Run_12x3.py")["system"]
     expanded = False
     for attempt in range(2):
         current = generate_answer(question, sources, instruction)
@@ -118,7 +123,11 @@ def answer(question, search, previous_question="", generate_answer=generate, jud
         if not attempt and route == "retrieve":
             sources = extended(sources, pool, corpus)
             expanded = True
-        instruction = REPAIR
+        if selection_mode:
+            instruction = ("Пересмотри выбор с учётом предыдущего черновика и решения проверяющего. "
+                           + json.dumps({"draft": current, "verdict": verdict["answers"]}, ensure_ascii=False))
+        else:
+            instruction = REPAIR
     return reply("escalate", "gap")
 
 
@@ -128,9 +137,15 @@ if __name__ == "__main__":
     parser.add_argument("--previous-question", default="")
     parser.add_argument("--model-dir", type=Path, help="Pinned MiniLM ONNX model and tokenizer")
     parser.add_argument("--python", default=sys.executable, help="Python with ONNX Runtime and tokenizers")
+    parser.add_argument("--evidence", action="store_true", help="Select source-bound registry statements")
     args = parser.parse_args()
     def search(question):
         if not args.model_dir or not os.getenv("OPENROUTER_API_KEY"):
             parser.error("Для полного поиска укажи --model-dir и OPENROUTER_API_KEY")
         return retrieve(question, args.model_dir, args.python)
-    print(json.dumps(answer(args.question, search, args.previous_question), ensure_ascii=False))
+    kwargs = {}
+    if args.evidence:
+        import evidence
+        kwargs = dict(generate_answer=evidence.generate, judge=evidence.judge,
+                      add_sources=evidence.alternatives, instruction="")
+    print(json.dumps(answer(args.question, search, args.previous_question, **kwargs), ensure_ascii=False))
