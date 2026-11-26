@@ -810,11 +810,11 @@ class DialogueService:
     def delivery_payload(
         self, conn, actor: Actor, conversation_id: UUID, text: str, source_refs: list[dict], *,
         turn_id: UUID | None = None, reevaluate_faq: bool = False,
-    ) -> tuple[str, list[dict]] | None:
+    ) -> tuple[str, list[dict], bool] | None:
         """Recheck the destination owner and applicability before deferred DION sending."""
         _employee(actor)
         lock_source_catalog(conn)
-        _conversation(conn, actor, conversation_id)
+        _conversation(conn, actor, conversation_id, write=reevaluate_faq and turn_id is not None)
         if reevaluate_faq and turn_id is not None:
             turn = conn.execute(
                 "SELECT * FROM turns WHERE id = %s AND conversation_id = %s", (turn_id, conversation_id)
@@ -824,16 +824,59 @@ class DialogueService:
             conditions, _ = self._conditions(conn, actor, turn["case_id"])
             faq = self._applicable_faq(conn, actor, turn["question"], conditions)
             if faq is not None:
-                action = (turn["result"] or {}).get("action")
-                if action in {"clarify", "escalate"}:
-                    return None
+                self._supersede_pending_action(conn, turn)
                 result = self._faq_result(faq)
-                return self._delivery_body(result), result["sources"]
+                return self._delivery_body(result), result["sources"], False
             if not self._result_visible(conn, actor, turn["result"], current=True):
                 return None
         if self._refs_visible(conn, actor, source_refs, current=True):
-            return text, source_refs
+            return text, source_refs, True
         return None
+
+    def _supersede_pending_action(self, conn, turn):
+        action = (turn["result"] or {}).get("action")
+        if action == "clarify":
+            row = conn.execute(
+                "SELECT * FROM clarifications WHERE turn_id = %s AND status = 'open'", (turn["id"],)
+            ).fetchone()
+            if row is not None:
+                self._supersede_clarification(conn, turn["conversation_id"], row)
+        elif action == "escalate":
+            row = conn.execute(
+                """
+                UPDATE offers SET status = 'superseded', updated_at = now()
+                WHERE turn_id = %s AND status = 'open' RETURNING id, version
+                """,
+                (turn["id"],),
+            ).fetchone()
+            if row is not None:
+                _event(conn, turn, "offer.superseded", {
+                    "offer_id": str(row["id"]), "version": row["version"], "status": "superseded",
+                })
+
+    @staticmethod
+    def record_delivery_replacement(
+        conn, *, attempt_id: UUID, conversation_id: UUID, case_id: UUID, turn_id: UUID,
+        text: str, source_refs: list[dict],
+    ) -> None:
+        """Project a confirmed DION replacement into the original conversation history."""
+        conn.execute("SELECT id FROM conversations WHERE id = %s FOR UPDATE", (conversation_id,))
+        row = conn.execute(
+            """
+            INSERT INTO messages (id, conversation_id, case_id, turn_id, role, text, source_refs, created_at)
+            SELECT a.id, o.conversation_id, o.case_id, o.turn_id, 'assistant', %s, %s, clock_timestamp()
+            FROM delivery_attempts a JOIN dion_outbox o ON o.effect_key = a.effect_key
+            WHERE a.id = %s AND a.channel = 'dion' AND a.state = 'sent'
+                AND o.conversation_id = %s AND o.case_id = %s AND o.turn_id = %s
+            ON CONFLICT (id) DO NOTHING RETURNING id
+            """,
+            (text, Jsonb(source_refs), attempt_id, conversation_id, case_id, turn_id),
+        ).fetchone()
+        if row is not None:
+            append_event(conn, conversation_id, case_id, turn_id, "dion.reply_substituted", {
+                "attempt_id": str(attempt_id), "message_id": str(row["id"]),
+                "text": text, "source_refs": source_refs,
+            })
 
     def events(self, conn, actor: Actor, conversation_id: UUID, after: int, *, limit: int = 100) -> list[dict]:
         _employee(actor)
