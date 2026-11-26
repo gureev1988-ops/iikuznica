@@ -8,8 +8,11 @@ const here = (name) => fileURLToPath(new URL(name, import.meta.url));
 const { values: options } = parseArgs({ options: {
   questions: { type: 'string', default: here('questions.jsonl') },
   output: { type: 'string', default: here('contexts.jsonl') },
-  timings: { type: 'string' }
+  timings: { type: 'string' },
+  limit: { type: 'string', default: '5' }
 } });
+const limit = Number(options.limit);
+if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit must be a positive integer');
 const passages = JSON.parse(execFileSync('python3', [here('extract.py')], { maxBuffer: 8_000_000 })).filter(p => p.text !== p.section);
 const questions = readFileSync(options.questions, 'utf8').trim().split('\n').map(JSON.parse);
 const glossary = new Map();
@@ -82,8 +85,8 @@ try {
       JOIN term_stats s USING (lexeme) JOIN passage p USING (idx) JOIN lengths l USING (idx)
       CROSS JOIN average
       WHERE cardinality($3::text[]) = 0 OR p.doc = ANY($3)
-      GROUP BY p.idx ORDER BY score DESC, p.idx LIMIT 5
-    `, [encodeText(question), encodeText(expanded), docs]);
+      GROUP BY p.idx ORDER BY score DESC, p.idx LIMIT $4
+    `, [encodeText(question), encodeText(expanded), docs, limit]);
     const sources = result.rows.map(row => passages[row.idx]);
     cases.push({ id, question, sources });
     timings.push({ id, question, sources: sources.map(p => p.doc + ' ' + p.ref), lookup_ms: performance.now() - started });
