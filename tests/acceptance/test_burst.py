@@ -1,34 +1,38 @@
 """Controlled HTTP admission bursts followed by worker recovery on PostgreSQL."""
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
 from math import ceil
 from uuid import uuid4
 
-from fastapi.testclient import TestClient
+import httpx
 import pytest
 
-from backend.app import Backend, create_app
+from backend.app import Backend
 from backend.contracts.fixtures import seed_fixture_sources
 from backend.db import connect
 from .conftest import credentials
 
 
 @pytest.mark.parametrize("count", [10, 20, 200])
-def test_burst_with_paused_then_restarted_workers(deployment, dsn, count):
+def test_burst_with_paused_then_restarted_workers(deployment, dsn, count, live_http):
     settings, _, _ = deployment
     with connect(dsn) as conn:
         seed_fixture_sources(conn)
     backend = Backend(settings)
     try:
-        with TestClient(create_app(services=backend)) as client:
-            def submit(i):
-                return client.post(f"/v1/conversations/{uuid4()}/messages", headers=credentials("first"),
-                                   json={"client_message_id": f"burst-{i}", "text": "Сколько дней рассматривают заявку?"})
+        with httpx.Client(base_url=live_http, trust_env=False) as client:
+            async def submit_all():
+                limits = httpx.Limits(max_connections=count, max_keepalive_connections=16)
+                async with httpx.AsyncClient(base_url=live_http, limits=limits, timeout=30, trust_env=False) as callers:
+                    return await asyncio.gather(*(callers.post(
+                        f"/v1/conversations/{uuid4()}/messages", headers=credentials("first"),
+                        json={"client_message_id": f"burst-{i}", "text": "Сколько дней рассматривают заявку?"}
+                    ) for i in range(count)))
 
-            # Keep the worker paused through admission to exercise backpressure reproducibly.
-            with ThreadPoolExecutor(max_workers=min(24, count)) as pool:
-                responses = list(pool.map(submit, range(count)))
+            # Pause workers through admission so all requests compete for bounded capacity.
+            responses = asyncio.run(submit_all())
             accepted = [response.json()["turn_id"] for response in responses if response.status_code == 202]
             rejected = [response for response in responses if response.status_code != 202]
             assert len(accepted) == min(count, settings.max_pending)
@@ -58,7 +62,7 @@ def test_burst_with_paused_then_restarted_workers(deployment, dsn, count):
         p95 = {key: round(float(sorted(row[key] for row in measurements)[ceil(.95 * len(accepted)) - 1]), 3)
                for key in ("useful_s", "complete_s")}
         print("BURST", json.dumps({"submitted": count, "accepted": len(accepted), "rejected": len(rejected),
-                                   "completed": len(accepted), "http_clients": min(24, count), "workers": 4, "p95": p95}))
+                                   "completed": len(accepted), "http_clients": count, "workers": 4, "p95": p95}))
         if count == 10:
             assert p95["useful_s"] <= 5 and p95["complete_s"] <= 15
     finally:

@@ -106,6 +106,6 @@ def test_consent_reply_restart_immediate_faq_and_wiki_conflict(deployment, dsn):
         worker("interactive")
         latest = read_turn(client, conflicting, "second")["result"]
         assert ANSWER in latest["text"] and latest["sources"][0]["kind"] == "faq"
-        assert "расхожд" in json.dumps(latest, ensure_ascii=False).casefold()
+        assert "расходится" in latest["notice"].casefold()
         assert read_turn(client, following, "second")["result"]["sources"][0]["revision_id"] == source["revision_id"]
     assert len(mailbox.sent()) == 1
