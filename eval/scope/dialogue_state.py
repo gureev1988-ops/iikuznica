@@ -49,7 +49,7 @@ def restore(question, past, model, call):
             raise ValueError
         context = by_id[anchor]["resolved"] + " " + by_id[anchor]["user"] + " " + question
         dirs = procedures.directories(question) or procedures.directories(context)
-        if procedures.directories(query) - dirs or set(re.findall(r"\d+",query)) - set(re.findall(r"\d+",context)):
+        if procedures.directories(query) - dirs or set(re.findall(r"\d+", query)) - set(re.findall(r"\d+", context)):
             raise ValueError
         return "follow", query.strip()
     except (TypeError, KeyError, ValueError):
@@ -65,7 +65,7 @@ def answer(question, search, *, past=(), model=GEMMA, planner=complete, generate
         raise ValueError("Введи вопрос")
     personal = lambda q: ask.pay_shortcut(conversation.LEADING_CONNECTOR.sub("", q))
     pair = conversation.explicit_pair(query)
-    if faq and (hit := faq.lookup(query, faq_scope)):
+    if not past and faq and (hit := faq.lookup(query, faq_scope)):
         return dict(hit, resolved_question=query)
     if pair:
         # The first part could be a follow-up; the second explicitly establishes its own scope.
@@ -90,6 +90,8 @@ def answer(question, search, *, past=(), model=GEMMA, planner=complete, generate
                 return dict(action="clarify", message=resolved, sources=[], offer_quality_request=False,
                             resolved_question=query)
             query = resolved
+    if past and faq and (hit := faq.lookup(query, faq_scope)):
+        return dict(hit, resolved_question=query)
     verified = handoff.verified_parts(query, search, ask.full_corpus(), faq, faq_scope)
     if verified:
         for part in verified:
