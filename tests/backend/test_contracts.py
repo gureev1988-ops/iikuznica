@@ -216,3 +216,45 @@ def test_published_openapi_matches_composed_api():
     if find_spec("backend.app") is None:
         pytest.skip("Run in the integrated backend checkout to compare the registered routers")
     assert json.loads(DEFAULT_OUTPUT.read_text(encoding="utf-8")) == openapi_document()
+
+
+def test_fixture_revision_change_reactivates_covered_faq(db):
+    if find_spec("backend.mailfaq") is None:
+        pytest.skip("Run in the integrated checkout to verify FAQ reconciliation")
+    from backend.mailfaq import MailConfig, create_request, find_faq
+    from backend.mailfaq.faq import publish_faq
+
+    fixture = load_fixture()
+    source = fixture.sources[0]
+    first, second = source.revisions
+    question = fixture.scenarios[0].questions[0]
+    seed_fixture_sources(db)
+    conversation_id, case_id = _feed(db)
+    turn_id = db.execute(
+        """
+        INSERT INTO turns (conversation_id, case_id, request_id, question)
+        VALUES (%s, %s, 'fixture-coverage', %s) RETURNING id
+        """,
+        (conversation_id, case_id, question),
+    ).fetchone()["id"]
+    offer_id = db.execute(
+        """
+        INSERT INTO offers (case_id, turn_id, status, text)
+        VALUES (%s, %s, 'confirmed', 'Official clarification') RETURNING id
+        """,
+        (case_id, turn_id),
+    ).fetchone()["id"]
+    request_id = create_request(
+        db, MailConfig(), offer_id=offer_id, conversation_id=conversation_id, case_id=case_id,
+        turn_id=turn_id, actor_id="employee", actor_email="employee@example.test", channel="web",
+        question=question, conditions={},
+    )
+    request = db.execute("SELECT * FROM mail_requests WHERE id = %s", (request_id,)).fetchone()
+    official = publish_faq(db, request, first.text)
+    assert find_faq(db, question, {}) is None  # The equivalent first revision covers this FAQ.
+
+    seed_fixture_sources(db, active_version=2)
+    visible = find_faq(db, question, {})
+    assert visible.revision_id == official.revision_id
+    assert visible.conflict_revision_id == second.revision_id
+    assert visible.text == first.text
