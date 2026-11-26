@@ -1,0 +1,105 @@
+{
+  "model": "google/gemma-4-26b-a4b-it",
+  "requested_pairs": 12,
+  "timing_scope": "ttft_s and latency_s measure generator HTTP; estimated_lookup_plus_generation_s adds a separate warm lookup measurement when present, excludes interface and network to bot",
+  "paired_complete": 12,
+  "bm25": {
+    "completed": 12,
+    "attempts": 12,
+    "valid_answers": 11,
+    "correct_actions": 8,
+    "direct_answers_expected": 9,
+    "direct_answers_citing_all_expected": 6,
+    "answers_citing_outside_context": 1,
+    "reported_cost_usd_including_retries": 0.00137429,
+    "attempts_without_reported_cost": 0,
+    "ttft_s": {
+      "observations": 12,
+      "median": 0.445,
+      "p95_nearest_rank": 1.184
+    },
+    "latency_s": {
+      "observations": 12,
+      "median": 0.988,
+      "p95_nearest_rank": 3.318
+    },
+    "lookup_ms": {
+      "observations": 12,
+      "median": 5.3042939999998,
+      "p95_nearest_rank": 18.500448000000233
+    },
+    "estimated_lookup_plus_generation_s": {
+      "observations": 12,
+      "median": 0.9944690254999999,
+      "p95_nearest_rank": 3.322476141
+    },
+    "input_tokens": {
+      "observations": 12,
+      "median": 772.0,
+      "p95_nearest_rank": 1245
+    },
+    "output_tokens": {
+      "observations": 12,
+      "median": 124.5,
+      "p95_nearest_rank": 208
+    }
+  },
+  "registry": {
+    "completed": 12,
+    "attempts": 12,
+    "valid_answers": 11,
+    "correct_actions": 10,
+    "direct_answers_expected": 9,
+    "direct_answers_citing_all_expected": 7,
+    "answers_citing_outside_context": 1,
+    "reported_cost_usd_including_retries": 0.00133739,
+    "attempts_without_reported_cost": 0,
+    "ttft_s": {
+      "observations": 12,
+      "median": 0.578,
+      "p95_nearest_rank": 0.81
+    },
+    "latency_s": {
+      "observations": 12,
+      "median": 1.3585,
+      "p95_nearest_rank": 2.764
+    },
+    "lookup_ms": {
+      "observations": 12,
+      "median": 0.6138329999885173,
+      "p95_nearest_rank": 4.850791999995181
+    },
+    "estimated_lookup_plus_generation_s": {
+      "observations": 12,
+      "median": 1.35902643850006,
+      "p95_nearest_rank": 2.764702469999851
+    },
+    "input_tokens": {
+      "observations": 12,
+      "median": 774.0,
+      "p95_nearest_rank": 1161
+    },
+    "output_tokens": {
+      "observations": 12,
+      "median": 123.0,
+      "p95_nearest_rank": 190
+    }
+  },
+  "paired_changes": {
+    "correct_action_only_bm25": 1,
+    "correct_action_only_registry": 3,
+    "pairs_with_different_serving_provider": 7,
+    "latency_s": {
+      "pairs": 12,
+      "median_registry_minus_bm25": 0.29150000000000004
+    },
+    "estimated_lookup_plus_generation_s": {
+      "pairs": 12,
+      "median_registry_minus_bm25": 0.2854839005000763
+    },
+    "cost_usd_openrouter": {
+      "pairs": 12,
+      "median_registry_minus_bm25": -3.604999999999997e-06
+    }
+  }
+}
