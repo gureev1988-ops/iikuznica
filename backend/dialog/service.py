@@ -490,8 +490,11 @@ class DialogueService:
             if not has_faq:
                 for row in conn.execute(
                     """
-                    SELECT m.role, m.text, t.result, m.source_refs
+                    SELECT m.role, m.text, t.result, m.source_refs,
+                        a.id AS dispatch_attempt_id, d.envelope->'condition_sources' AS condition_sources
                     FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
+                    LEFT JOIN delivery_attempts a ON a.id = m.id AND a.channel = 'dion' AND a.state = 'sent'
+                    LEFT JOIN dion_dispatches d ON d.attempt_id = a.id
                     WHERE m.case_id = %s AND m.turn_id IS DISTINCT FROM %s
                     ORDER BY m.created_at, m.id
                     """,
@@ -694,7 +697,14 @@ class DialogueService:
 
     def _message_visible(self, conn, actor, message: dict, turn_result: dict | None) -> bool:
         if message["source_refs"] is not None:
-            return self._refs_visible(conn, actor, message["source_refs"], current=message["role"] == "user")
+            conditions = message.get("condition_sources")
+            if conditions is None and message.get("dispatch_attempt_id") is not None:
+                conditions = (turn_result or {}).get("condition_sources")
+                if conditions is None:
+                    return False
+            return self._refs_visible(
+                conn, actor, message["source_refs"] + (conditions or []), current=message["role"] == "user",
+            )
         return message["role"] != "assistant" or self._result_visible(conn, actor, turn_result)
 
     @staticmethod
@@ -781,12 +791,18 @@ class DialogueService:
         visible_messages = []
         for row in conn.execute(
             """
-            SELECT id, case_id, turn_id, client_message_id, role, text, created_at, source_refs
-            FROM messages WHERE conversation_id = %s ORDER BY created_at, id
+            SELECT m.id, m.case_id, m.turn_id, m.client_message_id, m.role, m.text, m.created_at, m.source_refs,
+                a.id AS dispatch_attempt_id, d.envelope->'condition_sources' AS condition_sources
+            FROM messages m
+            LEFT JOIN delivery_attempts a ON a.id = m.id AND a.channel = 'dion' AND a.state = 'sent'
+            LEFT JOIN dion_dispatches d ON d.attempt_id = a.id
+            WHERE m.conversation_id = %s ORDER BY m.created_at, m.id
             """,
             (conversation_id,),
         ):
             if self._message_visible(conn, actor, row, results.get(row["turn_id"])):
+                row.pop("dispatch_attempt_id")
+                row.pop("condition_sources")
                 visible_messages.append(row)
         return {
             "conversation_id": conversation_id, "cursor": cursor, "messages": visible_messages,
@@ -811,26 +827,37 @@ class DialogueService:
         self, conn, actor: Actor, conversation_id: UUID, text: str, source_refs: list[dict], *,
         turn_id: UUID | None = None, reevaluate_faq: bool = False,
     ) -> tuple[str, list[dict], bool] | None:
-        """Recheck the destination owner and applicability before deferred DION sending."""
+        payload = self.delivery_envelope(
+            conn, actor, conversation_id, text, source_refs, turn_id=turn_id, reevaluate_faq=reevaluate_faq,
+        )
+        return payload[:3] if payload is not None else None
+
+    def delivery_envelope(
+        self, conn, actor: Actor, conversation_id: UUID, text: str, source_refs: list[dict], *,
+        turn_id: UUID | None = None, reevaluate_faq: bool = False,
+    ) -> tuple[str, list[dict], bool, list[dict]] | None:
+        """Recheck delayed content and return its internal condition evidence."""
         _employee(actor)
         lock_source_catalog(conn)
         _conversation(conn, actor, conversation_id, write=reevaluate_faq and turn_id is not None)
+        condition_sources = []
         if reevaluate_faq and turn_id is not None:
             turn = conn.execute(
                 "SELECT * FROM turns WHERE id = %s AND conversation_id = %s", (turn_id, conversation_id)
             ).fetchone()
             if turn is None:
                 return None
-            conditions, _ = self._conditions(conn, actor, turn["case_id"])
+            conditions, current_condition_sources = self._conditions(conn, actor, turn["case_id"])
             faq = self._applicable_faq(conn, actor, turn["question"], conditions)
             if faq is not None:
                 self._supersede_pending_action(conn, turn)
                 result = self._faq_result(faq)
-                return self._delivery_body(result), result["sources"], False
+                return self._delivery_body(result), result["sources"], False, current_condition_sources
             if not self._result_visible(conn, actor, turn["result"], current=True):
                 return None
+            condition_sources = (turn["result"] or {}).get("condition_sources", [])
         if self._refs_visible(conn, actor, source_refs, current=True):
-            return text, source_refs, True
+            return text, source_refs, True, condition_sources
         return None
 
     def _supersede_pending_action(self, conn, turn):
@@ -857,7 +884,7 @@ class DialogueService:
     @staticmethod
     def record_delivery_replacement(
         conn, *, attempt_id: UUID, conversation_id: UUID, case_id: UUID, turn_id: UUID,
-        text: str, source_refs: list[dict],
+        text: str, source_refs: list[dict], condition_sources: list[dict] | None = None,
     ) -> None:
         """Project a confirmed DION replacement into the original conversation history."""
         conn.execute("SELECT id FROM conversations WHERE id = %s FOR UPDATE", (conversation_id,))
@@ -876,6 +903,7 @@ class DialogueService:
             append_event(conn, conversation_id, case_id, turn_id, "dion.reply_substituted", {
                 "attempt_id": str(attempt_id), "message_id": str(row["id"]),
                 "text": text, "source_refs": source_refs,
+                **({"condition_sources": condition_sources} if condition_sources is not None else {}),
             })
 
     def events(self, conn, actor: Actor, conversation_id: UUID, after: int, *, limit: int = 100) -> list[dict]:
@@ -904,9 +932,17 @@ class DialogueService:
         for row in rows:
             result = row.pop("turn_result")
             payload = row["payload"]
+            condition_sources = payload.pop("condition_sources", None)
+            uncertain_legacy_scope = False
+            if condition_sources is None and row["kind"] in ("dion.dispatch_prepared", "dion.reply_substituted"):
+                condition_sources = (result or {}).get("condition_sources")
+                uncertain_legacy_scope = condition_sources is None and (
+                    row["kind"] == "dion.reply_substituted" or payload.get("substitute") is True
+                )
             has_action = any(key in payload for key in ("result", "clarification", "offer"))
-            hidden = (has_action and not self._result_visible(conn, actor, result)) or not self._refs_visible(
-                conn, actor, payload.get("source_refs", [])
+            hidden = (
+                uncertain_legacy_scope or (has_action and not self._result_visible(conn, actor, result))
+                or not self._refs_visible(conn, actor, payload.get("source_refs", []) + (condition_sources or []))
             )
             if hidden:
                 row["payload"] = {"redacted": True}
