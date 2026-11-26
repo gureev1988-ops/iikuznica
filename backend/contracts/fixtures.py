@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict
 
 from backend.db import lock_source_catalog
 
+FIXTURE_SOURCE_KEY = "synthetic-v1"
+
 
 class FixtureRecord(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -58,25 +60,55 @@ def load_fixture() -> FixtureSet:
 
 
 def seed_fixture_sources(conn, *, active_version: int = 1, hackathon: bool = False) -> None:
-    """Install both synthetic revisions and activate the requested version."""
+    """Install eligible synthetic revisions and activate the requested version."""
     fixture = load_fixture()
     if any(active_version not in {rev.version for rev in source.revisions} for source in fixture.sources):
         raise ValueError(f"Unknown synthetic source version: {active_version}")
     with conn.transaction():
         lock_source_catalog(conn, write=True)
         for source in fixture.sources:
+            revisions = _local_public_revisions(conn, source) if hackathon else source.revisions
+            active = next((revision for revision in revisions if revision.version == active_version), None)
+            if active is None:
+                continue
             conn.execute(
                 """
                 INSERT INTO sources (id, source_system, source_key, external_id, space_key)
-                VALUES (%s, 'document', 'synthetic-v1', %s, 'SYNTHETIC')
+                VALUES (%s, 'document', %s, %s, 'SYNTHETIC')
                 ON CONFLICT (id) DO NOTHING
                 """,
-                (source.document_id, source.external_id),
+                (source.document_id, FIXTURE_SOURCE_KEY, source.external_id),
             )
-            for revision in source.revisions:
+            for revision in revisions:
                 _install_revision(conn, source, revision)
-            active = next(revision for revision in source.revisions if revision.version == active_version)
             _activate_fixture_revision(conn, source, active, hackathon=hackathon)
+
+
+def _local_public_revisions(conn, source: FixtureSource) -> tuple[FixtureRevision, ...]:
+    from backend.documents import PageSnapshot
+    from backend.documents.catalog import is_local_public_page
+
+    expected = {
+        "id": source.document_id, "source_system": "document",
+        "source_key": FIXTURE_SOURCE_KEY, "external_id": source.external_id,
+    }
+    catalog_rows = conn.execute(
+        """
+        SELECT id, source_system, source_key, external_id FROM sources
+        WHERE id = %(id)s OR (source_system = %(source_system)s
+            AND source_key = %(source_key)s AND external_id = %(external_id)s)
+        """,
+        expected,
+    )
+    if any(row != expected for row in catalog_rows):
+        return ()
+    return tuple(
+        revision for revision in source.revisions
+        if is_local_public_page(
+            conn, FIXTURE_SOURCE_KEY, source.external_id,
+            PageSnapshot(source.external_id, revision.version, source.title, revision.text),
+        )
+    )
 
 
 def _activate_fixture_revision(conn, source: FixtureSource, active: FixtureRevision, *, hackathon: bool) -> None:
