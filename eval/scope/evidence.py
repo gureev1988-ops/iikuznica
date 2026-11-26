@@ -77,12 +77,15 @@ def render(selection, allowed):
             "sources": [{"doc": doc, "ref": ref} for doc, ref in refs]}
 
 
-def generate(question, sources, instruction, *, call=complete, model=GEMMA):
+def generate(question, sources, instruction, *, call=complete, model=GEMMA, observe=None):
     enriched, allowed = options(sources)
     # The vetted fork can supply a first draft. The ordinary judge still reviews the
     # full question and originals. On a repair, allow the model to reconsider it.
     if not instruction and procedures.supply_handoff(question) and all(k in allowed for k in SUPPLY_HANDOFF_CLAIMS):
-        return render({"action": "answer", "ids": list(SUPPLY_HANDOFF_CLAIMS)}, allowed)
+        selection = {"action": "answer", "ids": list(SUPPLY_HANDOFF_CLAIMS)}
+        if observe:
+            observe(selection)
+        return render(selection, allowed)
     request = make_request({"question": question, "sources": enriched}, model, SELECT + "\n" + instruction)
     row = call("request", request, "evidence-core")
     if not row["ok"]:
@@ -94,7 +97,10 @@ def generate(question, sources, instruction, *, call=complete, model=GEMMA):
         selection = json.loads(raw)
         if selection.get("action") == "answer" and isinstance(selection.get("ids"), list):
             selection["ids"] = procedures.complete_ids(selection["ids"], allowed, question)
-        return render(selection, allowed)
+        rendered = render(selection, allowed)
+        if observe:
+            observe(selection)
+        return rendered
     except (AttributeError, KeyError, ValueError, TypeError):
         # An invalid selection has no employee-facing instruction. Let the regular judge
         # choose clarification, escalation or the single allowed repair.

@@ -195,8 +195,8 @@ def reuse_calls(args):
                 copyfile(file, name)
 
 
-def run_turn(out, cid, q, past, lookup, winner, *, diagnose=False):
-    calls = Calls(out, cid)
+def run_turn(out, cid, q, past, lookup, winner, *, diagnose=False, observer=None, faq=None, faq_scope=None):
+    calls = observer.calls if observer else Calls(out, cid)
     original = ask.answer
     routed_procedure = False
     details = {"resolution": [], "search": [], "generator_sources": [], "verdicts": []}
@@ -204,14 +204,15 @@ def run_turn(out, cid, q, past, lookup, winner, *, diagnose=False):
     def search(question):
         seeds, pool = lookup(question)
         if diagnose:
-            details["search"].append({"question": question, "seeds": seeds})
+            details["search"].append({"question": question, "seeds": seeds, "pool": pool})
         return seeds, pool
 
     def generate(question, sources, prompt, arm=None):
         if diagnose:
             details["generator_sources"].append([[source["doc"], source["ref"]] for source in sources])
         return evidence.generate(question, sources, prompt,
-                                 call=lambda _, b, d: calls.generate(b, d, arm)["response"])
+                                 call=lambda _, b, d: calls.generate(b, d, arm)["response"],
+                                 observe=observer.selection if observer else None)
 
     def plan(_, body, dataset):
         response = calls.generate(body, dataset)["response"]
@@ -232,13 +233,16 @@ def run_turn(out, cid, q, past, lookup, winner, *, diagnose=False):
             routed_procedure = True
             kw.update(instruction=trial.COVER, add_sources=expand(question, lookup),
                       generate_answer=lambda q, s, prompt: generate(q, s, prompt, winner))
+        if observer:
+            kw["experiment"] = observer
         return original(question, lookup, **kw)
 
     ask.answer = routed
     try:
         answer = dialogue_state.answer(q, search if diagnose else lookup, past=past, model=QWEN,
                                        planner=plan, generate_answer=generate,
-                                       judge=lambda body: evidence.judge(body, call=judge))
+                                       judge=lambda body: evidence.judge(body, call=judge),
+                                       experiment=observer, faq=faq, faq_scope=faq_scope)
     finally:
         ask.answer = original
     row = dict(turn=cid, response=answer, routed=routed_procedure, trace=calls.trace)

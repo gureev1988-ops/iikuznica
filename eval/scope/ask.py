@@ -123,7 +123,7 @@ def focus_repeated_review(body, draft, sources):
 
 def answer(question, search, previous_question="", generate_answer=generate, judge=decide,
            add_sources=None, instruction=None, procedure_mode=False, history=(), faq=None, faq_scope=None,
-           workflow=False):
+           workflow=False, experiment=None):
     question = question.strip()
     if not question:
         raise ValueError("Введи вопрос")
@@ -181,13 +181,20 @@ def answer(question, search, previous_question="", generate_answer=generate, jud
             body = focus_repeated_review(body, current, sources)
         verdict = judge(body)["response"]
         route, final = scoped_result(verdict, current, sources, fact)
+        finding = None
+        replacement = None
+        if experiment:
+            route, final, finding, replacement = experiment.review(
+                question, sources, pool, current, verdict, route, final, attempt, fact)
         if final is not None:
             return final
         if route == "revise" and current["action"] == "answer" and verdict["answers"]["route"]["choice"] == "answer":
             rejected_draft = current
         if not attempt and route == "retrieve":
-            additional = extended(sources, pool, corpus)
-            if procedure_mode:
+            additional = extended(sources, pool, corpus) if replacement is None else replacement
+            if replacement is not None:
+                sources = replacement
+            elif procedure_mode:
                 sources = procedures.augment_sources(procedures.include_sources(sources, additional),
                                                     process, question, matched_facts, corpus)
             else:
@@ -196,6 +203,8 @@ def answer(question, search, previous_question="", generate_answer=generate, jud
         if selection_mode:
             instruction = ("Пересмотри выбор с учётом предыдущего черновика и решения проверяющего. "
                            + json.dumps({"draft": current, "verdict": verdict["answers"]}, ensure_ascii=False))
+            if finding:
+                instruction += "\nПроверь замечание перед публикацией: " + finding
         else:
             instruction = REPAIR
     return procedures.gap_message(fact) if fact else reply("escalate", "gap")

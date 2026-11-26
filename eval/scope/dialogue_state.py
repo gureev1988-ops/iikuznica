@@ -82,7 +82,7 @@ def restore(question, past, model, call):
 
 
 def answer(question, search, *, past=(), model=GEMMA, planner=complete, generate_answer=evidence.generate,
-           judge=evidence.judge, faq=None, faq_scope=None):
+           judge=evidence.judge, faq=None, faq_scope=None, experiment=None):
     """past holds the caller's completed turns, scoped to the same authorized dialogue."""
     options = dict(generate_answer=generate_answer, judge=judge, faq=faq, faq_scope=faq_scope)
     query = question.strip()
@@ -92,11 +92,19 @@ def answer(question, search, *, past=(), model=GEMMA, planner=complete, generate
     pair = conversation.explicit_pair(query)
     if not past and faq and (hit := faq.lookup(query, faq_scope)):
         return dict(hit, resolved_question=query)
+    if experiment:
+        def respond(part, history):
+            return answer(part, search, past=history, model=model, planner=planner, **options)
+
+        split = experiment.split(query, past, respond)
+        if split is not None:
+            return dict(split, resolved_question=query)
     if pair:
         # The first part could be a follow-up; the second explicitly establishes its own scope.
         parts = []
         for i, q in enumerate(pair):
-            response = answer(q, search, past=past if i == 0 else (), model=model, planner=planner, **options)
+            response = answer(q, search, past=past if i == 0 else (), model=model, planner=planner,
+                              experiment=experiment, **options)
             parts.append({"text": q, "query": response["resolved_question"], "result": response})
         return dict(conversation.assemble(parts), resolved_question=query)
     if personal(query):
@@ -111,6 +119,8 @@ def answer(question, search, *, past=(), model=GEMMA, planner=complete, generate
             query = previous["resolved"] + " " + query
         else:
             relation, resolved = restore(query, past, model, planner)
+            if experiment:
+                relation, resolved = experiment.restore(query, past, relation, resolved)
             if relation == "ambiguous":
                 return dict(action="clarify", message=resolved, sources=[], offer_quality_request=False,
                             resolved_question=query)
