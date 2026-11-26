@@ -11,7 +11,7 @@ from backend.contracts.engine import build_engine
 from backend.db import connect
 from backend.dialog import DialogueService, create_router
 from backend.documents import BatchSource, ConfluenceConfig, ConfluenceSource, DocumentSync, PageSnapshot, make_router
-from backend.dion import DionAdapter, DionClient, DionConfig, queue_reply
+from backend.dion import DionAdapter, DionClient, DionConfig, dion_operations_router, queue_reply
 from backend.local_mail import LocalMailbox
 from backend.mailfaq import MailConfig, MailService, build_router
 from backend.mailfaq.transport import ImapInbox, SmtpTransport
@@ -135,6 +135,7 @@ def create_app(settings: Settings | None = None, *, services: Backend | None = N
     app.include_router(create_router(backend.dialog, get_actor))
     app.include_router(build_router(backend.dsn, get_actor, service=backend.mail))
     app.include_router(make_router(backend.documents, require_ops))
+    app.include_router(dion_operations_router(backend.dsn, require_ops))
     modes = {
         "mail": backend.mail_config.mode,
         "dion": "network" if backend.dion else "disabled",
