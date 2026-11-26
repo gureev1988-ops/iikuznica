@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 from psycopg.types.json import Jsonb
 
 from backend.contracts.api import MessageRequest
-from backend.db import append_event, connect
+from backend.db import append_event, connect, lock_source_catalog
 from backend.dialog import Actor, DialogueError, DialogueService
 from backend.runtime import KnownDeliveryFailure, PendingDelivery, enqueue, reconcile_delivery, send_once
 
@@ -31,6 +31,7 @@ def queue_reply(
     source_refs: list[dict] | None = None,
     offer_id: UUID | None = None,
     clarification_id: UUID | None = None,
+    mail_request_id: UUID | None = None,
     reply_message_id: UUID | None = None,
 ) -> bool:
     """Stage a reply in the caller's transaction with the original case and principal."""
@@ -61,16 +62,20 @@ def queue_reply(
         """
         INSERT INTO dion_outbox (
             effect_key, conversation_id, case_id, turn_id, actor_id, text, source_refs,
-            reply_message_id, offer_id, clarification_id
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
+            reply_message_id, offer_id, clarification_id, mail_request_id
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """,
         (
             effect_key, conversation_id, case_id, turn_id, actor_id, text, Jsonb(source_refs or []),
-            reply_message_id, offer_id, clarification_id,
+            reply_message_id, offer_id, clarification_id, mail_request_id,
         ),
     )
     enqueue(conn, queue="background", kind=DELIVER, key=effect_key, payload={"effect_key": effect_key})
     return True
+
+
+def lock_delivery_receipts(conn, bot_id: UUID) -> None:
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s), 31009)", (str(bot_id),))
 
 
 def _classify(update: dict[str, Any], bot_id: UUID) -> tuple[str, UUID | None, UUID | None]:
@@ -166,7 +171,7 @@ class DionAdapter:
                     """,
                     (bot_id, last),
                 )
-        self.reconcile_pending(bot_id)
+            self._reconcile_pending(conn, bot_id)
         return inserted
 
     def _actor(self, external_id: UUID) -> Actor | None:
@@ -179,6 +184,7 @@ class DionAdapter:
         """Route one feed's available inputs in order, publishing case jobs on commit."""
         bot_id = self.client.bot_id
         with connect(self.dsn) as conn:
+            self._reconcile_pending(conn, bot_id)
             first = conn.execute(
                 """
                 SELECT u.chat_id FROM dion_updates u
@@ -203,9 +209,10 @@ class DionAdapter:
                 """,
                 (bot_id, first["chat_id"]),
             ).fetchall()
-            # Match the shared commands' order: source lock, then conversation.
-            conn.execute("SELECT pg_advisory_xact_lock_shared(31007)")
+            routed = 0
             for row in rows:
+                if self._reply_waiting_for_receipt(conn, row):
+                    break
                 case_id, turn_id = self._route(conn, row)
                 conn.execute(
                     """
@@ -214,7 +221,31 @@ class DionAdapter:
                     """,
                     (case_id, turn_id, bot_id, row["update_id"]),
                 )
-            return len(rows)
+                routed += 1
+            return routed
+
+    @staticmethod
+    def _reply_waiting_for_receipt(conn, row) -> bool:
+        target = as_object(row["payload"]["message"].get("reply_to_message"))
+        message_id = as_uuid(target.get("message_id"))
+        if message_id is None:
+            return False
+        waiting = conn.execute(
+            """
+            SELECT 1 FROM dion_updates u
+            WHERE u.bot_id = %s AND u.chat_id = %s AND u.kind = 'message'
+              AND u.processed_at IS NULL AND u.payload->'message'->>'message_id' = %s
+              AND EXISTS (
+                  SELECT 1 FROM dion_feeds f
+                  JOIN dion_outbox o ON o.conversation_id = f.conversation_id
+                  JOIN delivery_attempts a ON a.channel = 'dion' AND a.effect_key = o.effect_key
+                  WHERE f.bot_id = u.bot_id AND f.chat_id = u.chat_id AND a.state = 'sending'
+                    AND a.expires_at > clock_timestamp()
+              )
+            """,
+            (row["bot_id"], row["chat_id"], str(message_id)),
+        ).fetchone()
+        return waiting is not None
 
     def _route(self, conn, row) -> tuple[UUID | None, UUID | None]:
         message = row["payload"]["message"]
@@ -267,17 +298,22 @@ class DionAdapter:
         reply_to = as_uuid(as_object(row["payload"]["message"].get("reply_to_message")).get("message_id"))
         if reply_to is None:
             return None
-        return conn.execute(
+        target = conn.execute(
             """
-            SELECT case_id, offer_id, clarification_id FROM dion_outbox
+            SELECT case_id, offer_id, clarification_id, mail_request_id, effect_key, true AS linked
+            FROM dion_outbox
             WHERE conversation_id = %s AND confirmed_message_id = %s
             UNION ALL
-            SELECT case_id, null::uuid, null::uuid FROM dion_updates
+            SELECT case_id, null::uuid, null::uuid, null::uuid, null::text, true FROM dion_updates
             WHERE bot_id = %s AND chat_id = %s AND message_id = %s AND kind = 'input'
             LIMIT 1
             """,
             (conversation_id, reply_to, row["bot_id"], row["chat_id"], reply_to),
-        ).fetchone() or {"case_id": None, "offer_id": None, "clarification_id": None}
+        ).fetchone()
+        return target or {
+            "case_id": None, "offer_id": None, "clarification_id": None,
+            "mail_request_id": None, "effect_key": None, "linked": False,
+        }
 
     def _route_message(self, conn, actor, conversation_id, row):
         text = row["payload"]["message"]["text"].strip()
@@ -285,6 +321,15 @@ class DionAdapter:
         argument = words[0] if words else ""
         command = command.casefold().rstrip(".!?")
         target = self._reply_target(conn, conversation_id, row)
+        if command == "/mail" or (target and target["mail_request_id"] is not None):
+            return self._mail_followup(conn, actor, conversation_id, row, command, argument, text, target)
+        if target is not None and not target["linked"] and not command.startswith("/"):
+            self._notice(
+                conn, actor, conversation_id, row,
+                "Не удалось определить, к какому обращению относится ответ. "
+                "Используйте команду из исходного сообщения.",
+            )
+            return None, None
         replying_to_clarification = target is not None and target["clarification_id"] is not None
         if (
             command in _APPROVE | _DECLINE
@@ -324,6 +369,46 @@ class DionAdapter:
             conn, actor, conversation_id, MessageRequest(client_message_id=f"dion:{row['message_id']}", **fields)
         )
         return accepted.case_id, accepted.turn_id
+
+    def _mail_followup(self, conn, actor, conversation_id, row, command, argument, text, target):
+        from backend.mailfaq import MailError, send_followup
+
+        expected_inbound_id = None
+        if command == "/mail":
+            args = argument.split(maxsplit=1)
+            request_id = as_uuid(args[0]) if args else None
+            text = args[1] if len(args) > 1 else ""
+        else:
+            request_id = target["mail_request_id"]
+            expected_inbound_id = as_uuid(target["effect_key"].removeprefix("mail:"))
+        request = conn.execute(
+            """
+            SELECT case_id, turn_id, last_inbound_id FROM mail_requests
+            WHERE id = %s AND conversation_id = %s AND actor_id = %s FOR UPDATE
+            """,
+            (request_id, conversation_id, actor.id),
+        ).fetchone()
+        if (
+            request is None or not text.strip()
+            or (expected_inbound_id is not None and request["last_inbound_id"] != expected_inbound_id)
+        ):
+            self._notice(conn, actor, conversation_id, row, "Ответьте на актуальный встречный вопрос.")
+            return None, None
+        try:
+            with conn.transaction():
+                send_followup(
+                    conn, request_id, actor_id=actor.id, client_id=f"dion:{row['message_id']}", text=text,
+                )
+        except MailError as exc:
+            if exc.status not in (404, 409, 422):
+                raise
+            self._notice(conn, actor, conversation_id, row, "Ответьте на актуальный встречный вопрос.")
+            return None, None
+        self._notice(
+            conn, actor, conversation_id, row, "Ответ добавлен в почтовую переписку.",
+            case_id=request["case_id"], turn_id=request["turn_id"],
+        )
+        return request["case_id"], request["turn_id"]
 
     def _offer_decision(self, conn, actor, conversation_id, row, command, argument, target):
         actions = self.dialogue.open_actions(conn, actor, conversation_id)["offers"]
@@ -411,15 +496,20 @@ class DionAdapter:
         if conversation is None:
             raise KnownDeliveryFailure("dion_destination_not_authorized")
         try:
-            text = self.dialogue.delivery_text(
-                conn, actor, outbox["conversation_id"], outbox["text"], outbox["source_refs"]
+            refs = self._delivery_refs(conn, outbox)
+            reevaluate_faq = outbox["effect_key"].startswith("turn:")
+            payload = self.dialogue.delivery_payload(
+                conn, actor, outbox["conversation_id"], outbox["text"], refs,
+                turn_id=outbox["turn_id"], reevaluate_faq=reevaluate_faq,
             )
         except DialogueError as exc:
             if exc.status in (403, 404):
                 raise KnownDeliveryFailure("dion_destination_not_authorized") from None
             raise
-        if text is None:
+        if payload is None:
             raise KnownDeliveryFailure("dion_source_no_longer_available")
+        text, revised_refs = payload
+        footnote_refs = revised_refs if reevaluate_faq else outbox["source_refs"]
 
         footer = []
         if outbox["offer_id"] or outbox["clarification_id"]:
@@ -443,18 +533,68 @@ class DionAdapter:
                     f"Ответьте на это сообщение номером или текстом. Можно отправить /answer {outbox['clarification_id']} и ответ."
                 )
 
+        if outbox["mail_request_id"]:
+            request = conn.execute(
+                """
+                SELECT 1 FROM mail_requests
+                WHERE id = %s AND conversation_id = %s AND actor_id = %s
+                    AND state IN ('counter_question', 'partial') AND last_inbound_id = %s
+                """,
+                (
+                    outbox["mail_request_id"], outbox["conversation_id"], actor.id,
+                    as_uuid(outbox["effect_key"].removeprefix("mail:")),
+                ),
+            ).fetchone()
+            if request is None:
+                raise KnownDeliveryFailure("dion_mail_followup_no_longer_open")
+            footer.append(
+                f"Ответьте на это сообщение или отправьте /mail {outbox['mail_request_id']} и ваш ответ."
+            )
+
         if outbox["case_id"]:
             case_link = f"Обращение {outbox['case_id']}"
             if self.public_base_url and outbox["turn_id"]:
                 case_link += f"\n{self.public_base_url}/v1/turns/{outbox['turn_id']}"
             footer.append(case_link)
-        if outbox["source_refs"]:
-            links = [ref["url"] for ref in outbox["source_refs"] if ref.get("url", "").startswith("/v1/sources/")]
+        if footnote_refs:
+            links = [
+                ref["url"] for ref in footnote_refs if ref.get("url", "").startswith("/v1/sources/")
+            ]
             for url in dict.fromkeys(links[:10]):
                 footer.append(f"{self.public_base_url or ''}{url}")
 
         suffix = _clip("\n\n" + "\n".join(footer), 3000) if footer else ""
         return _clip(text, MAX_TEXT_LENGTH - _html_length(suffix)) + suffix
+
+    @staticmethod
+    def _delivery_refs(conn, outbox):
+        from backend.documents import get_fragment
+        from backend.mailfaq import current_faq_notification
+
+        refs = outbox["source_refs"]
+        if not refs or not outbox["effect_key"].startswith("mail:"):
+            return refs
+        # A published FAQ can be covered by a current public document. The original
+        # recipient still receives the answer after checking the original citation.
+        lock_source_catalog(conn)
+        enforce_current = []
+        for ref in refs:
+            revision_id = as_uuid(ref.get("revision_id"))
+            fragment_id = as_uuid(ref.get("fragment_id"))
+            if (
+                ref.get("kind") == "faq" and revision_id and fragment_id
+                and current_faq_notification(conn, revision_id, fragment_id)
+            ):
+                fragment = get_fragment(conn, revision_id, fragment_id, outbox["actor_id"])
+                quote = ref.get("quote")
+                if (
+                    fragment is not None and fragment.kind == "faq"
+                    and fragment.document_id == as_uuid(ref.get("document_id"))
+                    and isinstance(quote, str) and quote.strip() and quote in fragment.text
+                ):
+                    continue
+            enforce_current.append(ref)
+        return enforce_current
 
     @staticmethod
     def _delivery_event(conn, outbox, state):
@@ -468,42 +608,49 @@ class DionAdapter:
         if bot_id is None:
             bot_id = self.client.bot_id
         with connect(self.dsn) as conn:
-            rows = conn.execute(
-                """
-                SELECT u.update_id, u.kind, u.payload, a.id AS attempt_id, o.effect_key,
-                       o.conversation_id, o.case_id, o.turn_id
-                FROM delivery_attempts a
-                JOIN dion_outbox o ON o.effect_key = a.effect_key
-                JOIN dion_feeds f ON f.conversation_id = o.conversation_id
-                JOIN dion_updates u ON u.bot_id = f.bot_id AND u.message_id::text = a.provider_id
-                  AND (u.chat_id = f.chat_id OR (u.kind = 'message_failed' AND u.chat_id IS NULL))
-                WHERE a.channel = 'dion' AND a.state = 'delivery_unknown' AND f.bot_id = %s
-                  AND u.processed_at IS NULL AND u.kind IN ('message', 'message_failed')
-                ORDER BY u.update_id FOR UPDATE OF a, u SKIP LOCKED
-                """,
-                (bot_id,),
-            ).fetchall()
-            resolved = set()
-            for row in rows:
-                if row["attempt_id"] not in resolved:
-                    state = "sent" if row["kind"] == "message" else "failed"
-                    reconcile_delivery(
-                        self.dsn, attempt_id=row["attempt_id"], state=state,
-                        detail="dion_message_failed" if state == "failed" else None, conn=conn,
-                    )
-                    if state == "sent":
-                        message_id = as_uuid(row["payload"]["message"]["message_id"])
-                        conn.execute(
-                            "UPDATE dion_outbox SET confirmed_message_id = %s WHERE effect_key = %s",
-                            (message_id, row["effect_key"]),
-                        )
-                    self._delivery_event(conn, row, state)
-                    resolved.add(row["attempt_id"])
-                conn.execute(
-                    "UPDATE dion_updates SET processed_at = now() WHERE bot_id = %s AND update_id = %s",
-                    (bot_id, row["update_id"]),
+            return self._reconcile_pending(conn, bot_id)
+
+    def _reconcile_pending(self, conn, bot_id: UUID) -> int:
+        # One reconciliation per bot at a time, with the cursor batch or the
+        # inbound routing transaction. This lock never spans provider I/O.
+        lock_source_catalog(conn)
+        lock_delivery_receipts(conn, bot_id)
+        rows = conn.execute(
+            """
+            SELECT u.update_id, u.kind, u.payload, a.id AS attempt_id, o.effect_key,
+                   o.conversation_id, o.case_id, o.turn_id
+            FROM delivery_attempts a
+            JOIN dion_outbox o ON o.effect_key = a.effect_key
+            JOIN dion_feeds f ON f.conversation_id = o.conversation_id
+            JOIN dion_updates u ON u.bot_id = f.bot_id AND u.message_id::text = a.provider_id
+              AND (u.chat_id = f.chat_id OR (u.kind = 'message_failed' AND u.chat_id IS NULL))
+            WHERE a.channel = 'dion' AND a.state = 'delivery_unknown' AND f.bot_id = %s
+              AND u.processed_at IS NULL AND u.kind IN ('message', 'message_failed')
+            ORDER BY u.update_id FOR UPDATE OF a, u
+            """,
+            (bot_id,),
+        ).fetchall()
+        resolved = set()
+        for row in rows:
+            if row["attempt_id"] not in resolved:
+                state = "sent" if row["kind"] == "message" else "failed"
+                reconcile_delivery(
+                    self.dsn, attempt_id=row["attempt_id"], state=state,
+                    detail="dion_message_failed" if state == "failed" else None, conn=conn,
                 )
-            return len(resolved)
+                if state == "sent":
+                    message_id = as_uuid(row["payload"]["message"]["message_id"])
+                    conn.execute(
+                        "UPDATE dion_outbox SET confirmed_message_id = %s WHERE effect_key = %s",
+                        (message_id, row["effect_key"]),
+                    )
+                self._delivery_event(conn, row, state)
+                resolved.add(row["attempt_id"])
+            conn.execute(
+                "UPDATE dion_updates SET processed_at = now() WHERE bot_id = %s AND update_id = %s",
+                (bot_id, row["update_id"]),
+            )
+        return len(resolved)
 
 
 def _html_length(text: str) -> int:

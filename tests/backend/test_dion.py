@@ -1,5 +1,7 @@
 import json
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from html import unescape
 from uuid import UUID, uuid4
 
@@ -24,6 +26,7 @@ class DionSimulator:
         self.expired = False
         self.sends = []
         self.outcomes = deque()
+        self.on_send = None
         self.counter = FIRST_UPDATE
 
     def client(self):
@@ -83,6 +86,8 @@ class DionSimulator:
         intermediate_id = uuid4()
         body["intermediate_id"] = intermediate_id
         outcome = self.outcomes.popleft() if self.outcomes else "accepted"
+        if self.on_send is not None:
+            self.on_send(body)
         if outcome == "timeout":
             raise httpx.ReadTimeout("provider response lost")
         if outcome == "rejected":
@@ -224,6 +229,7 @@ def test_poll_cursor_and_feed_jobs_commit_and_deduplicate(dsn, dion, monkeypatch
 
 
 def test_dion_ambiguous_confirmation_and_late_delivery_use_original_case(dsn, dion):
+    from backend.db import connect
     from backend.mailfaq import MailService
     from backend.runtime import run_once
 
@@ -265,13 +271,34 @@ def test_dion_ambiguous_confirmation_and_late_delivery_use_original_case(dsn, di
         pass
     assert len(mail.simulator.sent) == 1
 
+    # Give the synthetic document the same question boundary and answer as
+    # the mail reply, so publishing the FAQ archives its duplicate search entry.
+    with connect(dsn) as conn:
+        covering = UUID("20103100-0000-4000-8000-000000000001")
+        conn.execute(
+            "UPDATE source_revisions SET title = %s WHERE id = %s",
+            ("Нужно официальное разъяснение", covering),
+        )
+        conn.execute(
+            "UPDATE source_fragments SET text = %s, heading_path = %s WHERE revision_id = %s",
+            ("Официальный ответ — два дня.", ["Нужно официальное разъяснение"], covering),
+        )
     mail.simulator.reply(
         mail.simulator.sent[0], "Официальный ответ — два дня.",
         message_id="<official-dion@example.invalid>",
     )
     assert mail.poll_inbox() == 1
+    with connect(dsn) as conn:
+        faq = conn.execute(
+            """
+            SELECT s.status, f.covered_revision_id, f.current_revision_id
+            FROM faq_entries f JOIN sources s ON s.id = f.document_id
+            """
+        ).fetchone()
+        assert faq["status"] == "archived" and faq["covered_revision_id"] == covering
     _run(dsn, "background", handlers)
     sent = provider.sends[-1]
+    assert str(faq["current_revision_id"]) in sent["text"]
     assert sent["reply_parameters"] == {"message_id": str(original_message)}
     assert str(request["case_id"]) in sent["text"]
     assert f"https://assistant.example.invalid/v1/turns/{request['turn_id']}" in sent["text"]
@@ -358,3 +385,112 @@ def test_dion_rechecks_source_applicability_before_deferred_send(dsn, dion):
     attempt = _state(dsn)["attempts"][0]
     assert attempt["state"] == "failed"
     assert attempt["detail"] == "dion_source_no_longer_available"
+
+
+def test_dion_native_mail_followup_waits_for_delivery_receipt_and_survives_restart(dsn, dion):
+    from backend.db import connect
+    from backend.dion import DionAdapter
+    from backend.mailfaq import MailService
+    from backend.runtime import run_once
+
+    provider, adapter, dialogue = dion
+    mail = MailService(dsn, dialogue.mail_config)
+    handlers = {**adapter.handlers, **mail.handlers}
+    provider.text("Нужно официальное разъяснение")
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    _run(dsn, "background", handlers)
+    offer_message = provider.settle(provider.sends[-1])
+    provider.text("да", reply=offer_message)
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    while run_once(dsn, "background", handlers) is not None:
+        pass
+    assert len(mail.simulator.sent) == 1
+    initial_mail = mail.simulator.sent[0]
+    mail.simulator.reply(
+        initial_mail, "Уточните категорию документа?", message_id="<counter-dion@example.invalid>",
+    )
+    assert mail.poll_inbox() == 1
+
+    mail_request = _state(dsn)["mail"][0]
+    outcome_pending = Event()
+    release_provider = Event()
+    employee_message = uuid4()
+
+    def receive_before_http_response(sent):
+        assert f"/mail {mail_request['id']}" in unescape(sent["text"])
+        prompt_id = provider.settle(sent)
+        provider.text("Категория договора", reply=prompt_id, message_id=employee_message)
+        outcome_pending.set()
+        assert release_provider.wait(5)
+
+    provider.on_send = receive_before_http_response
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        delivery = executor.submit(run_once, dsn, "background", handlers)
+        try:
+            assert outcome_pending.wait(5)
+            assert adapter.poll_once(timeout=0) == 2
+            assert adapter.route_once() == 0
+            with connect(dsn) as conn:
+                row = conn.execute(
+                    "SELECT processed_at FROM dion_updates WHERE message_id = %s", (employee_message,)
+                ).fetchone()
+                assert row["processed_at"] is None
+        finally:
+            release_provider.set()
+        assert delivery.result(timeout=5) is not None
+    provider.on_send = None
+
+    restarted_client = provider.client()
+    restarted = DionAdapter(dsn, restarted_client, dialogue, adapter.resolve_actor)
+    assert restarted.route_once() == 1
+    handlers.update(restarted.handlers)
+    while run_once(dsn, "background", handlers) is not None:
+        pass
+    assert len(_state(dsn)["turns"]) == 1
+    assert len(mail.simulator.sent) == 2
+    followup = mail.simulator.sent[1]
+    assert "Категория договора" in followup.body
+    assert followup.in_reply_to == "<counter-dion@example.invalid>"
+    assert followup.references == (initial_mail.message_id, "<counter-dion@example.invalid>")
+    restarted_client.close()
+
+
+def test_dion_delivery_ops_reconcile_exact_attempt_and_replay_retry(dsn, dion):
+    from fastapi import FastAPI, Header, HTTPException
+    from fastapi.testclient import TestClient
+
+    from backend.dion import dion_operations_router
+
+    provider, adapter, dialogue = dion
+    provider.text("Сколько дней рассматривают заявку?")
+    provider.outcomes.append("timeout")
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    _run(dsn, "background", adapter.handlers)
+    original = _state(dsn)["attempts"][0]
+    assert original["state"] == "delivery_unknown" and original["provider_id"] is None
+
+    def authorize(x_role: str = Header(default="")):
+        if x_role != "ops":
+            raise HTTPException(403)
+
+    app = FastAPI()
+    app.include_router(dion_operations_router(dsn, authorize))
+    api = TestClient(app)
+    path = f"/v1/ops/dion/delivery-attempts/{original['id']}/reconcile"
+    decision = {"state": "failed", "evidence": "В журнале провайдера подтверждён отказ", "retry": True}
+    assert api.post(path, json=decision).status_code == 403
+    headers = {"X-Role": "ops"}
+    assert api.post(path, json={"state": "sent", "evidence": "Проверено"}, headers=headers).status_code == 422
+    posted = api.post(path, json=decision, headers=headers)
+    assert posted.status_code == 200 and posted.json()["retry_job_id"]
+    assert api.post(path, json=decision, headers=headers).json() == posted.json()
+    _run(dsn, "background", adapter.handlers)
+    assert len(provider.sends) == 2
+    assert api.post(path, json=decision, headers=headers).json() == posted.json()
+    assert len(_state(dsn)["attempts"]) == 2
+    assert _state(dsn)["attempts"][0]["detail"].startswith("operator_reconciliation:")
