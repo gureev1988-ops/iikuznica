@@ -16,3 +16,9 @@ Verify that the artifacts match the application and that the declarations compil
 python -m backend.contracts.export --check
 npm run check --prefix contracts
 ```
+
+## AnswerEngine v1
+
+The application supplies a read-only source snapshot and a request-scoped model attempt recorder on `AnswerRequest`. An engine that calls a model provider uses `request.attempts.call(invoke, role=..., model=..., route=...)` around each physical request. Put the wrapper inside retries and use it for judge calls as well. An optional `trace_id` can correlate related calls.
+
+Return a `ModelAttemptResult` from the callback to record reported token counts, cost, actual model, and actual route. Raise `ModelAttemptFailure` to preserve the same metadata on a technical failure. An unreported cost stays unknown. The synthetic engines work entirely in memory and generate zero physical model attempts.

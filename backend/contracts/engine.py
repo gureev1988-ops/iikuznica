@@ -1,16 +1,65 @@
 """Read-only AnswerEngine v1 port and interchangeable synthetic implementations."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import MappingProxyType
-from typing import ClassVar, Literal, Protocol
+from typing import ClassVar, Generic, Literal, Protocol, TypeVar
 from uuid import UUID
 
 from .fixtures import FixtureScenario, load_fixture
 
 Action = Literal["answer", "clarify", "escalate", "out_of_scope"]
 SourceKind = Literal["document", "faq"]
+
+
+Value = TypeVar("Value")
+
+
+class EngineUnavailable(Exception):
+    """Technical failure before a trustworthy answer could be returned."""
+
+
+@dataclass(frozen=True, slots=True)
+class ModelAttemptResult(Generic[Value]):
+    value: Value
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost: Decimal | int | None = None
+    route: str | None = None
+    model: str | None = None
+
+
+class ModelAttemptFailure(EngineUnavailable):
+    """Technical failure with usage or actual routing reported by the provider."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cost: Decimal | int | None = None,
+        route: str | None = None,
+        model: str | None = None,
+    ):
+        super().__init__(reason)
+        self.result = ModelAttemptResult(None, input_tokens, output_tokens, cost, route, model)
+
+
+class ModelAttemptRecorder(Protocol):
+    def call(
+        self,
+        invoke: Callable[[], Value | ModelAttemptResult[Value]],
+        *,
+        role: str,
+        model: str,
+        route: str,
+        trace_id: str | None = None,
+    ) -> Value:
+        """Invoke and record one physical provider attempt, including retries or judge calls."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +98,7 @@ class AnswerRequest:
     history: tuple[HistoryMessage, ...]
     deadline: datetime
     sources: SourceSnapshot
+    attempts: ModelAttemptRecorder | None = None
 
     def __post_init__(self):
         if self.deadline.utcoffset() is None:
@@ -89,14 +139,8 @@ class AnswerResult:
         object.__setattr__(self, "citations", tuple(self.citations))
 
 
-class EngineUnavailable(Exception):
-    """Technical failure before a trustworthy answer could be returned."""
-
-
 class AnswerEngine(Protocol):
     version: ClassVar[int] = 1
-    model: str
-    route: str
 
     def answer(self, request: AnswerRequest) -> AnswerResult:
         """Return an action or raise EngineUnavailable for technical failure."""

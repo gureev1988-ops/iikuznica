@@ -72,6 +72,16 @@ def test_engines_follow_the_same_port_and_use_permitted_revisions(name):
         engine.answer(replace(request, deadline=datetime.now(UTC)))
 
 
+@pytest.mark.parametrize("name", ["fixture-alpha", "fixture-beta"])
+def test_fixture_engines_do_not_report_physical_attempts(name):
+    class UnexpectedCall:
+        def call(self, *args, **kwargs):
+            pytest.fail("A fixture engine must not call a physical model provider")
+
+    request = replace(fixture_request(), attempts=UnexpectedCall())
+    assert build_engine(name).answer(request).action == "answer"
+
+
 @pytest.mark.parametrize(
     ("first", "second"), [("fixture-alpha", "fixture-beta"), ("fixture-beta", "fixture-alpha")]
 )
