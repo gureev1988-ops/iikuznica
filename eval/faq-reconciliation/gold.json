@@ -1,0 +1,230 @@
+{
+  "cases": [
+    {
+      "id": "F01",
+      "relation": "conflict",
+      "action": "review_mail",
+      "source": "expert",
+      "required_citations": [
+        "F01.m",
+        "A.v2.4"
+      ],
+      "allowed_citations": [
+        "F01.m",
+        "A.v2.4"
+      ],
+      "reason": "Расходятся действующие указания для той же удалённой площадки. Адресат действует по письму, повторное использование требует модерации."
+    },
+    {
+      "id": "F02",
+      "relation": "covered",
+      "action": "archive_duplicate",
+      "source": "rule",
+      "required_citations": [
+        "F02.f",
+        "A.v2.4"
+      ],
+      "allowed_citations": [
+        "F02.f",
+        "A.v2.4",
+        "A.v1.4"
+      ],
+      "reason": "Новая редакция полностью воспроизводит применимую рекомендацию. В активном FAQ дубликат избыточен."
+    },
+    {
+      "id": "F03",
+      "relation": "supplement",
+      "action": "keep_faq",
+      "source": "expert",
+      "required_citations": [
+        "F03.f",
+        "A.v2.4"
+      ],
+      "allowed_citations": [
+        "F03.f",
+        "A.v2.4",
+        "A.v1.4",
+        "A.v2.8"
+      ],
+      "reason": "Подпись совпала, а правило именования в статье отсутствует. Архивирование всей записи потеряет часть ответа."
+    },
+    {
+      "id": "F04",
+      "relation": "conflict",
+      "action": "keep_faq_flag",
+      "source": "expert",
+      "required_citations": [
+        "F04.f",
+        "K.v2.3"
+      ],
+      "allowed_citations": [
+        "F04.f",
+        "K.v2.3",
+        "K.v1.3"
+      ],
+      "reason": "Получатель копии и подписант выполняют разные действия. Подтверждённый FAQ действует до отзыва или замены."
+    },
+    {
+      "id": "F05",
+      "relation": "conflict",
+      "action": "clarify",
+      "source": "rule",
+      "required_citations": [
+        "F05.m",
+        "T.v2.1"
+      ],
+      "allowed_citations": [
+        "F05.m",
+        "T.v2.1",
+        "T.v2.2"
+      ],
+      "reason": "Утверждение расходится с гостевым сроком. Полномочия нужно установить до повторного использования. В исходном обращении есть самостоятельная применимая норма."
+    },
+    {
+      "id": "F06",
+      "relation": "uncertain",
+      "action": "clarify",
+      "source": "none",
+      "required_citations": [
+        "F06.m",
+        "L.v2.3",
+        "L.v2.4"
+      ],
+      "allowed_citations": [
+        "F06.m",
+        "L.v2.3",
+        "L.v2.4"
+      ],
+      "reason": "Пока вид брони неизвестен, нельзя установить применимость и дать один срок."
+    },
+    {
+      "id": "F07",
+      "relation": "irrelevant",
+      "action": "link_rule",
+      "source": "rule",
+      "required_citations": [
+        "F07.m",
+        "T.v2.4"
+      ],
+      "allowed_citations": [
+        "F07.m",
+        "T.v2.4",
+        "T.v2.1"
+      ],
+      "reason": "Эксперт комментирует иной тип пропуска. Для сотрудника есть прямая действующая норма."
+    },
+    {
+      "id": "F08",
+      "relation": "supplement",
+      "action": "publish_faq",
+      "source": "expert",
+      "required_citations": [
+        "F08.m",
+        "L.v2.7"
+      ],
+      "allowed_citations": [
+        "F08.m",
+        "L.v2.7"
+      ],
+      "reason": "У формы есть обязательное поле для переносного стенда, письмо определяет неописанный формат записи."
+    },
+    {
+      "id": "F09",
+      "relation": "irrelevant",
+      "action": "link_rule",
+      "source": "rule",
+      "required_citations": [
+        "F09.w",
+        "T.v2.1"
+      ],
+      "allowed_citations": [
+        "F09.w",
+        "T.v2.1",
+        "F09.f",
+        "T.v1.1"
+      ],
+      "reason": "Отозванный ответ не является действующим источником конфликта; отвечаем по вики."
+    },
+    {
+      "id": "F10",
+      "relation": "conflict",
+      "action": "review_mail",
+      "source": "expert",
+      "required_citations": [
+        "F10.m",
+        "L.v2.4"
+      ],
+      "allowed_citations": [
+        "F10.m",
+        "L.v2.4",
+        "L.v2.3"
+      ],
+      "reason": "Расходится с исключением для ночного прогона; обычные 18:00 здесь неприменимы."
+    },
+    {
+      "id": "F11",
+      "relation": "covered",
+      "action": "archive_duplicate",
+      "source": "rule",
+      "required_citations": [
+        "F11.f",
+        "L.v2.2"
+      ],
+      "allowed_citations": [
+        "F11.f",
+        "L.v2.2",
+        "L.v1.2"
+      ],
+      "reason": "Новый пункт полностью закрывает и канал, и того, кто восстанавливает запись."
+    },
+    {
+      "id": "F12",
+      "relation": "irrelevant",
+      "action": "keep_faq",
+      "source": "expert",
+      "required_citations": [
+        "F12.f",
+        "K.v2.3",
+        "K.v2.9"
+      ],
+      "allowed_citations": [
+        "F12.f",
+        "K.v2.3",
+        "K.v2.9",
+        "K.v1.3"
+      ],
+      "reason": "Событие касается подписания и маршрута копии, а вопрос — повторного направления после исправления. Существующее уточнение в FAQ сохраняется."
+    },
+    {
+      "id": "F13",
+      "relation": "supplement",
+      "action": "publish_faq",
+      "source": "expert",
+      "required_citations": [
+        "F13.m",
+        "T.v2.6"
+      ],
+      "allowed_citations": [
+        "F13.m",
+        "T.v2.6"
+      ],
+      "reason": "Письмо детализирует оформление обязательных полей и не изменяет набор полей."
+    },
+    {
+      "id": "F14",
+      "relation": "conflict",
+      "action": "keep_faq_flag",
+      "source": "expert",
+      "required_citations": [
+        "F14.f",
+        "L.v2.2"
+      ],
+      "allowed_citations": [
+        "F14.f",
+        "L.v2.2",
+        "L.v1.2"
+      ],
+      "reason": "Новый пункт разрешает телефон, действующий эксперт его исключает. Одна норма допускает действие, другая прямо запрещает."
+    }
+  ]
+}
