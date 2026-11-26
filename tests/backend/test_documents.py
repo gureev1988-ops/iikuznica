@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
 
+from backend.contracts.fixtures import FIXTURE_SOURCE_KEY, load_fixture, seed_fixture_sources
 from backend.db import connect
 from backend.documents import (
     BatchSource,
@@ -298,6 +299,97 @@ def test_known_acl_loss_applies_before_new_revision_is_indexed(dsn):
     with connect(dsn) as conn:
         assert get_fragment(conn, old.revision_id, old.fragment_id, 'bob') is None
     assert changes[-1] == (None, old.revision_id)
+
+
+@pytest.mark.parametrize('entrypoint', ['inventory', 'batch'])
+@pytest.mark.parametrize('previously_public', [True, False])
+def test_demo_access_cutoff_survives_stale_public_snapshots(dsn, entrypoint, previously_public):
+    selected = 'demo-page'
+
+    def apply(snapshot):
+        service = DocumentSync(dsn, {'batch': BatchSource((snapshot,))}, public_only=True)
+        if entrypoint == 'inventory':
+            result = service.run(service.request_sync('batch'))
+            assert result.status == 'completed'
+        else:
+            service.import_batch('batch', (snapshot,))
+
+    old = None
+    if previously_public:
+        apply(_snapshot(selected, 1))
+        with connect(dsn) as conn:
+            old = list_fragments(conn, 'alice', hackathon=True)[0]
+
+    closed = replace(_snapshot(selected, 3, acl=frozenset({'alice'})), storage_html='<p>Private revision</p>')
+    apply(closed)
+    apply(replace(closed, version=2))
+    for version in (2, 3):
+        apply(_snapshot(selected, version))
+        with connect(dsn) as conn:
+            assert list_fragments(conn, 'alice', hackathon=True) == ()
+            if old:
+                assert get_fragment(conn, old.revision_id, old.fragment_id, 'alice', hackathon=True) is None
+            cutoff = conn.execute('SELECT blocked_through_version FROM document_demo_access_cutoffs').fetchone()
+            assert cutoff == {'blocked_through_version': 3}
+            versions = conn.execute('SELECT version FROM source_revisions').fetchall()
+            assert versions == ([{'version': 1}] if previously_public else [])
+
+    apply(_snapshot(selected, 4))
+    with connect(dsn) as conn:
+        parts = list_fragments(conn, 'bob', hackathon=True)
+        assert '4 days & hours' in parts[0].text
+        versions = conn.execute('SELECT version FROM source_revisions ORDER BY version').fetchall()
+        assert versions == ([{'version': 1}, {'version': 4}] if previously_public else [{'version': 4}])
+
+
+@pytest.mark.parametrize('previously_public', [True, False])
+def test_demo_seed_respects_access_cutoff(dsn, previously_public):
+    source, other = load_fixture().sources
+    blocked, allowed = source.revisions
+    if previously_public:
+        with connect(dsn) as conn:
+            seed_fixture_sources(conn, active_version=blocked.version, hackathon=True)
+
+    sync = DocumentSync(dsn, {}, public_only=True)
+    closed = PageSnapshot(
+        source.external_id, blocked.version, source.title, '<p>Restricted contents</p>',
+        acl_actor_ids=frozenset({'alice'}),
+    )
+    assert sync.import_batch(FIXTURE_SOURCE_KEY, (closed,)) == ()
+
+    with connect(dsn) as conn:
+        seed_fixture_sources(conn, active_version=blocked.version, hackathon=True)
+        current = {part.document_id: part for part in list_fragments(conn, 'alice', hackathon=True)}
+        assert source.document_id not in current
+        assert other.document_id in current
+        seed_fixture_sources(conn, active_version=allowed.version, hackathon=True)
+        seed_fixture_sources(conn, active_version=blocked.version, hackathon=True)
+        current = {part.document_id: part for part in list_fragments(conn, 'alice', hackathon=True)}
+        assert current[source.document_id].revision_id == allowed.revision_id
+        assert current[other.document_id].revision_id == other.revisions[0].revision_id
+        versions = conn.execute(
+            'SELECT version FROM source_revisions WHERE source_id = %s ORDER BY version',
+            (source.document_id,),
+        ).fetchall()
+        expected = source.revisions if previously_public else (allowed,)
+        assert versions == [{'version': revision.version} for revision in expected]
+
+
+@pytest.mark.parametrize('mark_existing_source', [
+    "UPDATE sources SET acl_actor_ids = ARRAY['alice'] WHERE id = %s",
+    "UPDATE source_revisions SET upstream_url = 'https://example.test/wiki/source' WHERE source_id = %s",
+    "UPDATE sources SET source_key = 'another-source' WHERE id = %s",
+], ids=['source-acl', 'upstream', 'source-identity'])
+def test_demo_seed_does_not_activate_existing_ineligible_sources(db, mark_existing_source):
+    source = load_fixture().sources[0]
+    first, second = source.revisions
+    seed_fixture_sources(db, active_version=first.version)
+    db.execute(mark_existing_source, (source.document_id,))
+    seed_fixture_sources(db, active_version=second.version, hackathon=True)
+    row = db.execute(
+        'SELECT current_revision_id FROM sources WHERE id = %s', (source.document_id,),
+    ).fetchone()
+    assert row['current_revision_id'] == first.revision_id
 
 
 def test_document_sync_http_admin_and_worker_hooks(dsn):

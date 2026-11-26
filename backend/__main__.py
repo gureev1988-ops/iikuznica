@@ -53,26 +53,31 @@ def worker(backend, queue, once):
 def simulator_command(backend, args):
     if backend.mail_config.mode != "simulator":
         raise SystemExit("Local mailbox commands require simulator mode")
-    sent = backend.mailbox.sent()
+    actor = backend.settings.authenticate_token(os.getenv("II_QUALITY_TOKEN"))
+    if not backend.settings.is_quality(actor):
+        raise SystemExit("Local mailbox commands require II_QUALITY_TOKEN for the quality account")
+    config = backend.mail_config
+    sent = []
+    for mid, raw in backend.mailbox.sent():
+        original = BytesParser(policy=policy.default).parsebytes(raw)
+        if not config.hackathon or str(original["To"]).casefold() == config.recipient:
+            sent.append((mid, original))
     if args.mode == "mail-list":
-        for mid, raw in sent:
-            message = BytesParser(policy=policy.default).parsebytes(raw)
+        for mid, message in sent:
             print(mid, message["Subject"])
         return
-    for mid, raw in sent:
+    for mid, original in sent:
         if mid != args.message_id:
             continue
-        original = BytesParser(policy=policy.default).parsebytes(raw)
-        config = backend.mail_config
         message = EmailMessage(policy=policy.SMTP)
-        message["Message-ID"] = make_msgid(domain="quality.example.test")
+        domain = config.recipient.rpartition("@")[2]
+        message["Message-ID"] = make_msgid(domain=domain)
         message["From"] = config.recipient
         message["To"] = original["Reply-To"]
         message["Subject"] = "Re: " + str(original["Subject"])
         message["In-Reply-To"] = mid
-        message["References"] = mid
-        domain = config.recipient.split("@")[-1]
-        message["Authentication-Results"] = f"{config.authserv_id}; dmarc=pass header.from={domain}; auth=pass smtp.auth={config.recipient}"
+        message["References"] = f"{original.get('References', '')} {mid}".strip()
+        message["Authentication-Results"] = f"{config.authserv_id}; auth=pass smtp.auth={config.recipient}"
         message.set_content(args.text)
         print(backend.mailbox.inject(message.as_bytes()))
         return
@@ -103,7 +108,7 @@ def main():
     if args.mode == "seed-fixtures":
         from backend.contracts.fixtures import seed_fixture_sources
         with connect(settings.dsn) as conn:
-            seed_fixture_sources(conn, active_version=args.version)
+            seed_fixture_sources(conn, active_version=args.version, hackathon=settings.hackathon)
         return
     from backend.app import Backend, create_app
     services = Backend(settings)

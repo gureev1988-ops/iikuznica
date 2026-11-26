@@ -8,7 +8,10 @@ from uuid import UUID, uuid4
 
 from backend.db import connect, lock_source_catalog
 
-from .catalog import SnapshotError, activate_revision, deactivate_page, restrict_current_access, stage_revision
+from .catalog import (
+    SnapshotError, activate_revision, deactivate_page, is_local_public_page, record_demo_access_cutoff,
+    restrict_current_access, stage_revision,
+)
 from .confluence import ConfluenceError
 from .ports import DocumentSource, PageProbe, PageSnapshot, PageStatus, RevisionIndexer
 
@@ -58,12 +61,13 @@ def _check_source_key(source_key: str) -> None:
 class DocumentSync:
     def __init__(
         self, dsn: str | None, sources: Mapping[str, DocumentSource], *, indexer: RevisionIndexer | None = None,
-        on_revision_change: Callable | None = None,
+        on_revision_change: Callable | None = None, public_only: bool = False,
     ):
         for source_key in sources:
             _check_source_key(source_key)
         self.dsn = dsn
         self.sources = dict(sources)
+        self.public_only = public_only
         self.indexer = indexer
         self.on_revision_change = on_revision_change or _reconcile_faq
 
@@ -122,7 +126,7 @@ class DocumentSync:
                 """,
                 (run_id,),
             ).fetchone()
-        if run is None:
+        if run is None or (self.public_only and run['source_key'] not in self.sources):
             return None
         run['counts'] = {status.value: (run['counts'] or {}).get(status.value, 0) for status in PageStatus}
         return SyncResult(**run)
@@ -255,24 +259,43 @@ class DocumentSync:
         if snapshot is not None:
             if snapshot.external_id != external_id:
                 raise SnapshotError('Document lookup returned a different external ID')
+        allowed = not self.public_only or is_local_public_page(conn, source_key, external_id, snapshot)
+        if allowed and snapshot is not None:
             revision = self._index(conn, source_key, snapshot, check_lease, renew)
         with conn.transaction():
             if check_lease:
                 check_lease(conn)
             lock_source_catalog(conn, write=True)
-            if snapshot is not None:
-                self._publish(conn, revision, snapshot, activate=True)
-            else:
-                deactivate_page(conn, source_key, external_id, probe.status, self.on_revision_change)
+            currently_allowed = self._reconcile_demo_access(conn, source_key, external_id, snapshot, activate=True)
+            allowed = allowed and currently_allowed
+            outcome = probe.status if allowed else PageStatus.ACCESS_LOST
+            if allowed:
+                if snapshot is not None:
+                    self._publish(conn, revision, snapshot, activate=True)
+                else:
+                    deactivate_page(conn, source_key, external_id, probe.status, self.on_revision_change)
             conn.execute(
                 'INSERT INTO document_sync_seen (run_id, external_id, outcome) VALUES (%s, %s, %s)',
-                (run_id, external_id, probe.status.value),
+                (run_id, external_id, outcome.value),
             )
             if offset is not None:
                 conn.execute(
                     'UPDATE document_sync_runs SET batch_offset = greatest(%s, batch_offset) WHERE id = %s',
                     (offset, run_id),
                 )
+
+    def _reconcile_demo_access(self, conn, source_key, external_id, snapshot, *, activate: bool) -> bool:
+        if not self.public_only or is_local_public_page(conn, source_key, external_id, snapshot):
+            return True
+        if (activate and snapshot is not None
+                and (snapshot.acl_actor_ids is not None or snapshot.upstream_url is not None)
+                and is_local_public_page(conn, source_key, external_id, None)):
+            record_demo_access_cutoff(conn, source_key, external_id, snapshot.version)
+            deactivate_page(
+                conn, source_key, external_id, PageStatus.ACCESS_LOST, self.on_revision_change,
+                through_version=snapshot.version,
+            )
+        return False
 
     def _index(self, conn, source_key, snapshot, check_lease=None, renew=None, *, activate=True):
         if activate and snapshot.acl_actor_ids is not None:
@@ -312,9 +335,16 @@ class DocumentSync:
             conn.autocommit = True
             _session_lock(conn, source_key)
             for snapshot in snapshots:
+                if self.public_only and not is_local_public_page(conn, source_key, snapshot.external_id, snapshot):
+                    with conn.transaction():
+                        lock_source_catalog(conn, write=True)
+                        self._reconcile_demo_access(conn, source_key, snapshot.external_id, snapshot, activate=activate)
+                    continue
                 indexed = self._index(conn, source_key, snapshot, activate=activate)
                 with conn.transaction():
                     lock_source_catalog(conn, write=True)
+                    if not self._reconcile_demo_access(conn, source_key, snapshot.external_id, snapshot, activate=activate):
+                        continue
                     self._publish(conn, indexed, snapshot, activate=activate)
                 imported.append(indexed.revision_id)
         return tuple(imported)

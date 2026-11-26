@@ -10,7 +10,8 @@ from psycopg.types.json import Jsonb
 
 from backend.db import append_event, connect
 from backend.runtime import (
-    DeliveryStateConflict, PermanentJobFailure, enqueue, reconcile_delivery, require_lease, send_once,
+    DeliveryStateConflict, KnownDeliveryFailure, PermanentJobFailure, enqueue, reconcile_delivery,
+    require_lease, send_once,
 )
 
 from .faq import MailError, lock_sources, publish_faq, withdraw_faq
@@ -135,10 +136,11 @@ def _request_for_update(conn, request_id: UUID) -> dict:
 
 
 def send_followup(
-    conn, request_id: UUID, *, actor_id: str, client_id: str, text: str,
+    conn, request_id: UUID, *, actor_id: str, client_id: str, text: str, recipient: str | None = None,
 ) -> UUID:
     request = _request_for_update(conn, request_id)
-    if request["actor_id"] != actor_id or not _has_access(conn, request):
+    if ((recipient is not None and request["recipient"] != recipient)
+            or request["actor_id"] != actor_id or not _has_access(conn, request)):
         raise MailError(404, "mail_request_not_found")
     clean = text.strip()
     if not clean:
@@ -219,17 +221,21 @@ def _note(
         )
 
 
-def _correlate(conn, parsed: ParsedMail) -> tuple[UUID | None, str]:
+def _correlate(conn, parsed: ParsedMail, recipient: str | None) -> tuple[UUID | None, str]:
     rows = conn.execute(
         """
-        SELECT request_id FROM mail_outbound WHERE message_id = ANY(%s)
-        UNION
-        SELECT request_id FROM mail_inbound WHERE message_id = ANY(%s) AND trusted
-            AND request_id IS NOT NULL AND state = 'processed'
-        UNION
-        SELECT id FROM mail_requests WHERE token = ANY(%s)
+        WITH matching AS (
+            SELECT request_id FROM mail_outbound WHERE message_id = ANY(%s)
+            UNION
+            SELECT request_id FROM mail_inbound WHERE message_id = ANY(%s) AND trusted
+                AND request_id IS NOT NULL AND state = 'processed'
+            UNION
+            SELECT id FROM mail_requests WHERE token = ANY(%s)
+        )
+        SELECT m.request_id FROM matching m JOIN mail_requests r ON r.id = m.request_id
+        WHERE (%s::text IS NULL OR r.recipient = %s)
         """,
-        (list(parsed.thread_ids), list(parsed.thread_ids), list(parsed.tokens)),
+        (list(parsed.thread_ids), list(parsed.thread_ids), list(parsed.tokens), recipient, recipient),
     ).fetchall()
     if len(rows) == 1:
         return rows[0]["request_id"], ""
@@ -264,7 +270,7 @@ def _reconcile_reply(conn, parsed: ParsedMail, request_id: UUID) -> None:
         )
 
 
-def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail) -> None:
+def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail, *, hackathon: bool = False) -> None:
     conn.execute(
         "UPDATE mail_inbound SET state = 'processed', request_id = %s, reason = NULL WHERE id = %s",
         (request["id"], inbound_id),
@@ -291,23 +297,46 @@ def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail) ->
         return
 
     if kind == "withdrawal":
+        if request["state"] == "withdrawn":
+            return
         prior = conn.execute(
             "SELECT id, version, status FROM faq_entries WHERE request_id = %s",
             (request["id"],),
         ).fetchone()
         if prior and prior["status"] == "active":
-            withdraw_faq(conn, prior["id"], prior["version"])
+            withdraw_faq(conn, prior["id"], prior["version"], hackathon=hackathon)
         elif not prior:
-            conn.execute(
-                "UPDATE mail_inbound SET state = 'review', reason = 'withdrawal_without_faq' WHERE id = %s",
-                (inbound_id,),
-            )
-            return
+            sent = conn.execute(
+                """
+                SELECT 1 FROM mail_outbound o LEFT JOIN delivery_attempts a
+                    ON a.channel = 'smtp' AND a.effect_key = o.id::text AND a.state = 'sent'
+                WHERE o.request_id = %s AND (o.state = 'sent' OR a.id IS NOT NULL) LIMIT 1
+                """,
+                (request["id"],),
+            ).fetchone()
+            if not sent:
+                conn.execute(
+                    "UPDATE mail_inbound SET state = 'review', reason = 'withdrawal_before_send' WHERE id = %s",
+                    (inbound_id,),
+                )
+                return
         conn.execute(
             "UPDATE mail_requests SET state = 'withdrawn', pending = '[]', updated_at = now() WHERE id = %s",
             (request["id"],),
         )
-        _note(conn, request, inbound_id, kind, "Официальное разъяснение по обращению отозвано.")
+        conn.execute(
+            """
+            UPDATE mail_outbound o SET state = 'cancelled', updated_at = now()
+            WHERE o.request_id = %s AND o.business_key <> 'initial' AND o.state IN ('queued', 'failed')
+              AND NOT EXISTS (
+                  SELECT 1 FROM delivery_attempts a WHERE a.channel = 'smtp' AND a.effect_key = o.id::text
+                      AND a.state IN ('sent', 'delivery_unknown')
+              )
+            """,
+            (request["id"],),
+        )
+        text = "Официальное разъяснение по обращению отозвано." if prior else "Обращение снято с рассмотрения."
+        _note(conn, request, inbound_id, kind, text)
         return
 
     previous = conn.execute(
@@ -318,10 +347,10 @@ def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail) ->
         """,
         (request["id"],),
     ).fetchone()
-    if previous and previous["status"] == "withdrawn" and not parsed.correction:
+    if (request["state"] == "withdrawn" or (previous and previous["status"] == "withdrawn")) and not parsed.correction:
         conn.execute(
-            "UPDATE mail_inbound SET state = 'review', reason = 'faq_withdrawn' WHERE id = %s",
-            (inbound_id,),
+            "UPDATE mail_inbound SET state = 'review', reason = %s WHERE id = %s",
+            ("faq_withdrawn" if previous else "request_withdrawn", inbound_id),
         )
         return
 
@@ -347,7 +376,7 @@ def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail) ->
         text = parsed.public_text
         if previous and request["pending"] and not parsed.correction and text != previous["text"]:
             text = previous["text"] + "\n\n" + text
-        match = publish_faq(conn, updated, text, replace=parsed.correction)
+        match = publish_faq(conn, updated, text, replace=parsed.correction, hackathon=hackathon)
         if match:
             message = match.text
             refs = [match.source_ref()]
@@ -359,7 +388,7 @@ def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail) ->
 
 
 def _store_receipt(conn, mailbox: str, uidvalidity: str, uid: int, raw: bytes,
-                   parsed: ParsedMail, fingerprint: str) -> bool:
+                   parsed: ParsedMail, fingerprint: str, config: MailConfig) -> bool:
     inbound_id = uuid4()
     inserted = conn.execute(
         """
@@ -376,22 +405,26 @@ def _store_receipt(conn, mailbox: str, uidvalidity: str, uid: int, raw: bytes,
     if not parsed.trusted:
         conn.execute("UPDATE mail_inbound SET state = 'rejected' WHERE id = %s", (inbound_id,))
         return True
-    request_id, reason = _correlate(conn, parsed)
+    request_id, reason = _correlate(conn, parsed, config.scoped_recipient)
     if request_id is None or parsed.kind == "unrecognized":
         conn.execute(
             "UPDATE mail_inbound SET request_id = %s, reason = %s WHERE id = %s",
             (request_id, parsed.reason or reason, inbound_id),
         )
         return True
-    _apply_inbound(conn, inbound_id, _request_for_update(conn, request_id), parsed)
+    _apply_inbound(conn, inbound_id, _request_for_update(conn, request_id), parsed, hackathon=config.hackathon)
     return True
 
 
-def bind_inbound(conn, inbound_id: UUID, request_id: UUID) -> dict:
+def bind_inbound(conn, inbound_id: UUID, request_id: UUID, *, config: MailConfig | None = None) -> dict:
     lock_sources(conn)
     row = conn.execute("SELECT * FROM mail_inbound WHERE id = %s FOR UPDATE", (inbound_id,)).fetchone()
-    if row is None:
+    hackathon = config is not None and config.hackathon
+    if row is None or (hackathon and row["mailbox"] != config.cursor_key):
         raise MailError(404, "inbound_mail_not_found")
+    request = _request_for_update(conn, request_id)
+    if hackathon and request["recipient"] != config.recipient:
+        raise MailError(404, "mail_request_not_found")
     if row["state"] == "processed" and row["request_id"] == request_id:
         return row
     if not row["trusted"] or row["state"] != "review" or row["reason"] not in {
@@ -399,19 +432,22 @@ def bind_inbound(conn, inbound_id: UUID, request_id: UUID) -> dict:
     }:
         raise MailError(409, "inbound_mail_cannot_be_bound")
     parsed = ParsedMail(**row["parsed"])
-    request = _request_for_update(conn, request_id)
-    _apply_inbound(conn, inbound_id, request, parsed)
+    _apply_inbound(conn, inbound_id, request, parsed, hackathon=hackathon)
     return conn.execute("SELECT * FROM mail_inbound WHERE id = %s", (inbound_id,)).fetchone()
 
 
 class MailService:
-    def __init__(self, dsn: str | None, config: MailConfig, *, transport=None, inbox=None, resolve_actor=None):
+    def __init__(
+        self, dsn: str | None, config: MailConfig, *, transport=None, inbox=None,
+        resolve_actor=None, quality_enabled=None,
+    ):
         self.dsn = dsn
         self.config = config
         self.simulator = MailSimulator(config) if config.mode == "simulator" else None
         self.transport = transport or self.simulator or SmtpTransport(config)
         self.inbox = inbox or self.simulator or ImapInbox(config)
         self.resolve_actor = resolve_actor
+        self.quality_enabled = quality_enabled
 
     @property
     def handlers(self):
@@ -436,13 +472,18 @@ class MailService:
             row = conn.execute(
                 """
                 SELECT o.*, r.conversation_id, r.actor_email, r.actor_id, r.sender, r.recipient,
-                    r.reply_to, r.token FROM mail_outbound o JOIN mail_requests r ON r.id = o.request_id
+                    r.reply_to, r.token, r.state AS request_state
+                FROM mail_outbound o JOIN mail_requests r ON r.id = o.request_id
                 WHERE o.id = %s
                 """,
                 (outbound_id,),
             ).fetchone()
             if row is None:
                 raise PermanentJobFailure("mail_outbound_not_found")
+            if self.config.hackathon and row["recipient"] != self.config.recipient:
+                raise PermanentJobFailure("mail_outbound_outside_profile")
+            if row["request_state"] == "withdrawn" or row["state"] == "cancelled":
+                return
             if not _has_access(conn, row) or not self._can_send(row):
                 require_lease(conn, job)
                 _request_for_update(conn, row["request_id"])
@@ -462,12 +503,26 @@ class MailService:
             row["message_id"], row["sender"], row["recipient"], row["actor_email"], row["reply_to"],
             _subject(row), row["body"], row["in_reply_to"], tuple(row["references_ids"]),
         )
+
+        def deliver():
+            # The journal already holds a durable sending record. Recheck the
+            # conversation state at the final pre-I/O boundary.
+            with connect(self.dsn) as conn:
+                request = _request_for_update(conn, row["request_id"])
+                outbound = conn.execute(
+                    "SELECT state FROM mail_outbound WHERE id = %s", (outbound_id,),
+                ).fetchone()
+                if request["state"] == "withdrawn" or outbound["state"] == "cancelled":
+                    raise KnownDeliveryFailure("mail_request_withdrawn")
+            return self.transport.send(mail)
+
         result = send_once(
             self.dsn, channel="smtp", effect_key=str(outbound_id), job=job,
-            send=lambda: self.transport.send(mail),
+            send=deliver,
         )
         if result.state == "sending":
             raise RuntimeError("smtp_attempt_pending")
+        cancelled = result.state == "failed" and result.detail == "mail_request_withdrawn"
         with connect(self.dsn) as conn:
             require_lease(conn, job)
             request = _request_for_update(conn, row["request_id"])
@@ -479,9 +534,9 @@ class MailService:
                 UPDATE mail_outbound SET state = %s, attempt_id = %s, updated_at = now()
                 WHERE id = %s
                 """,
-                (state, result.attempt_id, outbound_id),
+                ("cancelled" if cancelled else state, result.attempt_id, outbound_id),
             )
-            if request["state"] == "waiting_send":
+            if request["state"] == "waiting_send" and not cancelled:
                 if state in {"sent", "delivery_unknown"}:
                     state = "waiting_reply"
                 elif job.attempt >= job.max_attempts:
@@ -492,7 +547,7 @@ class MailService:
                     "UPDATE mail_requests SET state = %s, updated_at = now() WHERE id = %s",
                     (state, row["request_id"]),
                 )
-        if result.state == "failed":
+        if result.state == "failed" and not cancelled:
             raise RuntimeError(result.detail or "smtp_rejected")
 
     def poll_job(self, job) -> None:
@@ -532,8 +587,13 @@ class MailService:
                 return 0
             inserted = 0
             for receipt, message, fingerprint in parsed:
+                if (message.trusted and message.kind in {"substantive", "correction", "partial", "counter_question", "withdrawal"}
+                        and self.quality_enabled is not None and not self.quality_enabled()):
+                    message = ParsedMail(
+                        message.message_id, message.sender, False, (), (), "unrecognized", reason="quality_identity_disabled",
+                    )
                 inserted += _store_receipt(
-                    conn, mailbox, page.uidvalidity, receipt.uid, receipt.raw, message, fingerprint,
+                    conn, mailbox, page.uidvalidity, receipt.uid, receipt.raw, message, fingerprint, self.config,
                 )
             conn.execute(
                 """
@@ -555,6 +615,9 @@ class MailService:
             if outbound is None:
                 raise MailError(404, "mail_outbound_not_found")
             request = _request_for_update(conn, outbound["request_id"])
+            if self.config.hackathon and request["recipient"] != self.config.recipient:
+                raise MailError(404, "mail_outbound_not_found")
+            outbound = conn.execute("SELECT state FROM mail_outbound WHERE id = %s", (outbound_id,)).fetchone()
             current = conn.execute(
                 """
                 SELECT a.id, a.state FROM delivery_attempts a
@@ -573,7 +636,8 @@ class MailService:
                 )
             except DeliveryStateConflict:
                 raise MailError(409, "mail_attempt_is_not_ambiguous") from None
-            if retry and (state != "failed" or not _has_access(conn, request) or not self._can_send(request)):
+            if retry and (state != "failed" or request["state"] == "withdrawn" or outbound["state"] == "cancelled"
+                          or not _has_access(conn, request) or not self._can_send(request)):
                 raise MailError(409, "mail_retry_not_allowed")
             out_state = "queued" if retry else result.state
             conn.execute(
