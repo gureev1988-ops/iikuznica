@@ -10,8 +10,13 @@ DEFAULT_OUTPUT = Path(__file__).resolve().parents[2] / "contracts" / "openapi.v1
 def openapi_document() -> dict:
     # The full application is composed alongside the routers in the package branches.
     from backend.app import create_app
+    from backend.config import Settings
 
-    return create_app().openapi()
+    app = create_app(Settings(database_url="postgresql://localhost/unused"))
+    try:
+        return app.openapi()
+    finally:
+        app.state.backend.close()
 
 
 def main() -> None:

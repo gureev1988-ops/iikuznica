@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from backend.db import lock_source_catalog
+
 
 class FixtureRecord(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -60,6 +62,7 @@ def seed_fixture_sources(conn, *, active_version: int = 1) -> None:
     if any(active_version not in {rev.version for rev in source.revisions} for source in fixture.sources):
         raise ValueError(f"Unknown synthetic source version: {active_version}")
     with conn.transaction():
+        lock_source_catalog(conn, write=True)
         for source in fixture.sources:
             conn.execute(
                 """

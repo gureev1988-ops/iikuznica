@@ -128,6 +128,21 @@ class EventView(BaseModel):
         return f"id: {self.cursor}\nevent: {self.kind}\ndata: {self.model_dump_json()}\n\n"
 
 
+class EventCursorExpired(BaseModel):
+    code: Literal["event_cursor_expired"] = "event_cursor_expired"
+    cursor: int
+
+
+class EventCursorExpiredResponse(BaseModel):
+    detail: EventCursorExpired
+
+
+EVENT_CURSOR_EXPIRED = {
+    "model": EventCursorExpiredResponse,
+    "description": "Cursor expired. Read a new conversation snapshot.",
+}
+
+
 EVENT_STREAM = {
     "description": (
         "Server-sent events. Resume with Last-Event-ID from the same conversation. "
@@ -137,6 +152,7 @@ EVENT_STREAM = {
         "text/event-stream": {
             "schema": {"type": "string"},
             "x-event-schema": EventView.model_json_schema(),
+            "x-reset-schema": EventCursorExpired.model_json_schema(),
         }
     },
 }
