@@ -1,11 +1,17 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 import { PGlite } from '@electric-sql/pglite';
 
 const here = (name) => fileURLToPath(new URL(name, import.meta.url));
+const { values: options } = parseArgs({ options: {
+  questions: { type: 'string', default: here('questions.jsonl') },
+  output: { type: 'string', default: here('contexts.jsonl') },
+  timings: { type: 'string' }
+} });
 const passages = JSON.parse(execFileSync('python3', [here('extract.py')], { maxBuffer: 8_000_000 })).filter(p => p.text !== p.section);
-const questions = readFileSync(here('questions.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+const questions = readFileSync(options.questions, 'utf8').trim().split('\n').map(JSON.parse);
 const glossary = new Map();
 for (const line of readFileSync(here('../../corpus/glossary.md'), 'utf8').split('\n')) {
   const match = line.match(/^\| ([^|]+) \| ([^|]+) \|$/);
@@ -55,7 +61,9 @@ try {
     CREATE TEMP TABLE lengths AS SELECT idx, sum(tf) AS n FROM posting GROUP BY idx;
   `);
   const cases = [];
+  const timings = [];
   for (const { id, question } of questions) {
+    const started = performance.now();
     const words = question.match(/[\p{L}\d-]+/gu) || [];
     const expanded = words.filter(w => glossary.has(w)).map(w => glossary.get(w)).join(' ');
     const docs = directorates(question);
@@ -76,9 +84,12 @@ try {
       WHERE cardinality($3::text[]) = 0 OR p.doc = ANY($3)
       GROUP BY p.idx ORDER BY score DESC, p.idx LIMIT 5
     `, [encodeText(question), encodeText(expanded), docs]);
-    cases.push({ id, question, sources: result.rows.map(row => passages[row.idx]) });
+    const sources = result.rows.map(row => passages[row.idx]);
+    cases.push({ id, question, sources });
+    timings.push({ id, question, sources: sources.map(p => p.doc + ' ' + p.ref), lookup_ms: performance.now() - started });
   }
-  writeFileSync(here('contexts.jsonl'), cases.map(x => JSON.stringify(x)).join('\n') + '\n');
+  if (options.timings) writeFileSync(options.timings, timings.map(x => JSON.stringify(x)).join('\n') + '\n');
+  writeFileSync(options.output, cases.map(x => JSON.stringify(x)).join('\n') + '\n');
   console.log(`Indexed ${passages.length} passages from 4 regulations. Retrieved sources for ${cases.length} questions.`);
 } finally {
   await db.close();
