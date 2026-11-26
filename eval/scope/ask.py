@@ -144,9 +144,7 @@ def answer(question, search, previous_question="", generate_answer=generate, jud
     if add_sources is not None:
         sources = add_sources(sources, pool, corpus)
     if procedure_mode:
-        extra = procedures.process_sources(process, question, corpus) if process else []
-        extra.extend(matched_facts)
-        sources = procedures.companion_sources(procedures.include_sources(sources, extra), corpus)
+        sources = procedures.augment_sources(sources, process, question, matched_facts, corpus)
     selection_mode = instruction is not None
     if instruction is None:
         instruction = load_dataset(EVAL / "iikuznitsa_run12/IIkuznitsa_Run_12x3.py")["system"]

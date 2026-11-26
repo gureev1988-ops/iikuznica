@@ -16,6 +16,7 @@ from policy import fingerprint, full_corpus, rows
 from run import cached_call, complete, decide, save
 from run_12x3 import SEARCH_MODELS
 import thresholds
+import procedures
 
 HERE = Path(__file__).resolve().parent
 EVAL = HERE.parent
@@ -57,13 +58,17 @@ def read_keys(bank):
 def coverage(cases, keys, corpus):
     norms = evidence.REGISTRY()
     counts = {}
-    for cid, (_, seeds, pool) in cases.items():
+    for cid, (question, seeds, pool) in cases.items():
         base = linked([corpus[tuple(k)] for k in seeds], corpus, norms)
         extra = evidence.alternatives(base, pool, corpus)
+        fact = procedures.requested_fact(question)
+        matched = procedures.fact_sources(fact, question, corpus) if fact else []
+        process = procedures.operation(question) if not fact else None
+        expanded = procedures.augment_sources(extra, process, question, matched, corpus)
         expected = {reference(r) for r in keys[cid]["evidence"]}
-        counts[cid] = [len(expected), len(expected & set(map(reference, base))),
-                       len(expected & set(map(reference, extra)))]
-    for n, i in (("links_threshold", 1), ("alternative directorates", 2)):
+        counts[cid] = [len(expected)] + [len(expected & set(map(reference, group)))
+                                         for group in (base, extra, expanded)]
+    for n, i in (("links_threshold", 1), ("alternative directorates", 2), ("procedure candidate", 3)):
         denom = sum(bool(v[0]) for v in counts.values())
         hits = sum(0 < v[0] == v[i] for v in counts.values())
         print(f"{n}: all reference clauses available for {hits}/{denom} questions with reference clauses")
@@ -149,8 +154,20 @@ def offline(cases, keys):
         except NeedsModels:
             pass
     correct = sum(r["action"] == keys[cid]["expected_action"] for cid, r in local.items())
-    print(f"Completed before model calls: {len(local)}/50; expected action: {correct}/{len(local)}")
+    print(f"Completed before model calls: {len(local)}/{len(cases)}; expected action: {correct}/{len(local)}")
     return local
+
+
+def public_check():
+    ranks = {r["id"]: r for r in rows(EVAL / "rerank/rankings.jsonl")}
+    cases = {r["id"]: (r["question"], ranks[r["id"]]["methods"]["hybrid_condition"], ranks[r["id"]]["pool"])
+             for r in rows(EVAL / "rerank/questions35.jsonl")}
+    keys = {r["id"]: r for r in rows(EVAL / "rerank/reference35.jsonl")}
+    if set(cases) != set(keys) or len(cases) != 35:
+        raise ValueError("The public 35-question bank and its references differ")
+    local = offline(cases, keys)
+    if any(answer["action"] != keys[cid]["expected_action"] for cid, answer in local.items()):
+        raise ValueError("A local decision contradicted the public reference")
 
 
 def summarize(out, cases):
@@ -198,13 +215,21 @@ def paired(base, challenger, directory):
 if __name__ == "__main__":
     import fcntl
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("packet", type=Path, help="Private IIkuznitsa_Final15.zip")
+    parser.add_argument("packet", nargs="?", type=Path, help="Private IIkuznitsa_Final15.zip")
+    parser.add_argument("--public-check", action="store_true", help="Check local routing and source coverage on the published 35")
     parser.add_argument("--check", action="store_true", help="Run offline routing and coverage checks")
     parser.add_argument("--out", type=Path, default=Path("procedures50-private"))
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--model", choices=SEARCH_MODELS, default=ask.GEMMA)
     group.add_argument("--compare-models", action="store_true", help="Run a blinded Gemma/Qwen pair")
     args = parser.parse_args()
+    if args.public_check:
+        if args.packet or args.check or args.compare_models:
+            parser.error("--public-check runs independently of the private packet and comparison")
+        public_check()
+        raise SystemExit(0)
+    if args.packet is None:
+        parser.error("Specify the private packet, or use --public-check")
     cases, bank = blind_inputs(args.packet)
     if args.check:
         offline(cases, read_keys(bank))

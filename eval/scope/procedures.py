@@ -212,3 +212,8 @@ def companion_sources(sources, corpus):
     if any(("DB", f"8.{i}") in refs for i in (4, 5, 6)):
         needed.extend(corpus["DB", f"8.{i}"] for i in range(4, 9))
     return include_sources(sources, needed)
+
+
+def augment_sources(sources, process, question, matched, corpus):
+    extra = process_sources(process, question, corpus) if process else []
+    return companion_sources(include_sources(sources, [*extra, *matched]), corpus)
