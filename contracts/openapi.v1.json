@@ -327,6 +327,83 @@
         "title": "DialogueErrorResponse",
         "type": "object"
       },
+      "DionDeliveryDecision": {
+        "properties": {
+          "evidence": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Evidence",
+            "type": "string"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "retry": {
+            "default": false,
+            "title": "Retry",
+            "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "sent",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "evidence"
+        ],
+        "title": "DionDeliveryDecision",
+        "type": "object"
+      },
+      "DionDeliveryDecisionResult": {
+        "properties": {
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "retry_job_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Job Id"
+          },
+          "state": {
+            "enum": [
+              "sent",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempt_id",
+          "state",
+          "retry_job_id"
+        ],
+        "title": "DionDeliveryDecisionResult",
+        "type": "object"
+      },
       "EventCursorExpired": {
         "properties": {
           "code": {
@@ -3069,6 +3146,64 @@
           }
         ],
         "summary": "Deliveries"
+      }
+    },
+    "/v1/ops/dion/delivery-attempts/{attempt_id}/reconcile": {
+      "post": {
+        "operationId": "reconcile_dion_delivery_v1_ops_dion_delivery_attempts__attempt_id__reconcile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "attempt_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Attempt Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DionDeliveryDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DionDeliveryDecisionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reconcile Dion Delivery",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/v1/ops/documents/sync/{run_id}": {

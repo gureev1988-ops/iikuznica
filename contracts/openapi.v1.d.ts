@@ -170,6 +170,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/ops/dion/delivery-attempts/{attempt_id}/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reconcile Dion Delivery */
+        post: operations["reconcile_dion_delivery_v1_ops_dion_delivery_attempts__attempt_id__reconcile_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/ops/documents/{source_key}/sync": {
         parameters: {
             query?: never;
@@ -606,6 +623,38 @@ export interface components {
         /** DialogueErrorResponse */
         DialogueErrorResponse: {
             detail: components["schemas"]["DialogueErrorDetail"];
+        };
+        /** DionDeliveryDecision */
+        DionDeliveryDecision: {
+            /** Evidence */
+            evidence: string;
+            /** Message Id */
+            message_id?: string | null;
+            /**
+             * Retry
+             * @default false
+             */
+            retry: boolean;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "sent" | "failed";
+        };
+        /** DionDeliveryDecisionResult */
+        DionDeliveryDecisionResult: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Retry Job Id */
+            retry_job_id: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "sent" | "failed";
         };
         /** EventCursorExpired */
         EventCursorExpired: {
@@ -1912,6 +1961,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeliveryAttempts"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reconcile_dion_delivery_v1_ops_dion_delivery_attempts__attempt_id__reconcile_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DionDeliveryDecision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DionDeliveryDecisionResult"];
                 };
             };
             /** @description Validation Error */

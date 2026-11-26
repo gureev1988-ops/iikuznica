@@ -212,6 +212,11 @@ def test_published_openapi_describes_admission_and_sse_recovery():
     assert request_body["$ref"] == "#/components/schemas/MessageRequest"
     accepted = messages["post"]["responses"]["202"]["content"]["application/json"]["schema"]
     assert accepted["$ref"] == "#/components/schemas/AcceptedMessage"
+    queue_full = messages["post"]["responses"]["503"]["content"]["application/json"]["schema"]
+    assert queue_full["$ref"] == "#/components/schemas/DialogueErrorResponse"
+    for name in ("HistoryView", "TurnView"):
+        followups = contract["components"]["schemas"][name]["properties"]["mail_followups"]
+        assert followups["items"]["$ref"] == "#/components/schemas/MailFollowupView"
 
     events = paths["/v1/conversations/{conversation_id}/events"]["get"]
     resume = {(item["in"], item["name"]) for item in events["parameters"]}
@@ -220,6 +225,11 @@ def test_published_openapi_describes_admission_and_sse_recovery():
     assert sse["x-event-schema"] == EventView.model_json_schema()
     assert sse["x-reset-schema"] == EventCursorExpired.model_json_schema()
     assert "410" in events["responses"]
+
+    dion = paths["/v1/ops/dion/delivery-attempts/{attempt_id}/reconcile"]["post"]
+    assert dion["security"] == [{"HTTPBearer": []}]
+    decision = dion["requestBody"]["content"]["application/json"]["schema"]
+    assert decision["$ref"] == "#/components/schemas/DionDeliveryDecision"
 
 
 def test_published_openapi_matches_composed_api():
