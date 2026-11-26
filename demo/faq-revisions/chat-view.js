@@ -9,37 +9,42 @@
     receipt: 'Подтверждение получения'
   };
 
-  // Capture only the current employee-visible answer and its supporting evidence.
+  // Keep the evidence for this reply independent of subsequent FAQ and wiki changes.
   function snapshot(query) {
-    const byFaq = query.answerKind === 'faq';
+    const byExpert = query.answerKind === 'faq';
     const byRule = query.answerKind === 'regulation';
-    const demoRevision = query.currentRevision === 'v2';
-    const context = demoRevision ? 'Снимок Confluence · демоверсия 2' : 'Снимок Confluence · исходная версия';
+    const discrepancy = query.discrepancy ? {
+      ...query.discrepancy,
+      refs: [...query.discrepancy.refs],
+      differences: query.discrepancy.differences.map(item => ({...item}))
+    } : null;
     const sources = query.sources.map(source => ({
-      label: 'п. ' + source.ref,
+      label: 'п. ' + source.ref + (source.role === 'discrepancy' ? ' · расхождение' : ''),
       title: source.documentTitle,
-      meta: source.revision === 'v2' ? 'Снимок Confluence · демоверсия 2' : 'Снимок Confluence · исходная версия',
-      text: source.text,
-      ref: source.ref,
-      version: source.revision,
-      kind: 'regulation'
+      meta: ['Снимок Confluence', source.revision, source.date].filter(Boolean).join(' · '),
+      text: source.text, ref: source.ref, version: source.revision, date: source.date,
+      role: source.role || 'support', kind: 'regulation'
     }));
-    if (byFaq) {
+    if (byExpert) {
+      const approval = query.approval;
       sources.unshift({
-        label: 'Ответ отдела качества', title: query.question,
-        meta: ['Утверждённый FAQ', query.approval?.subject && ('Письмо «' + query.approval.subject + '»'),
-          query.approval?.mailId && ('Демо-ID ' + query.approval.mailId), query.approval?.actor, query.approval?.date, 'демоданные'].filter(Boolean).join(' · '),
-        text: query.approval?.verifiedText || query.answer, version: query.version, kind: 'faq'
+        label: 'Разъяснение эксперта', title: approval.subject || query.question,
+        meta: ['Подтверждённый FAQ', approval.actor, approval.date, approval.scope,
+          approval.mailId && ('Демо-ID ' + approval.mailId)].filter(Boolean).join(' · '),
+        actor: approval.actor, date: approval.date, mailId: approval.mailId,
+        text: approval.verifiedText || query.answer, version: query.version, role: 'primary', kind: 'faq'
       });
     }
-    const status = byFaq ? 'Ответ отдела качества' : byRule ? 'Ответ по регламенту' : 'Требуется разъяснение';
-    const traceBasis = byFaq ? 'Утверждённый ответ FAQ в области вопроса.' :
-      byRule ? 'Действующие пункты опубликованной в Confluence версии.' : 'Подтверждённое основание для ответа отсутствует.';
-    const pending = query.status === 'review' || (!byRule && !byFaq);
+    const status = byExpert ? 'Ответ службы качества' : byRule ? 'Ответ по регламенту' : 'Требуется разъяснение';
+    const traceBasis = discrepancy
+      ? 'Подтверждённое разъяснение эксперта применимо к вопросу. Расхождение с вики зафиксировано.'
+      : byExpert ? 'Подтверждённое разъяснение эксперта относится к условиям вопроса.'
+      : byRule ? 'Ответ содержится в опубликованной редакции Confluence.' : 'Для этой ситуации требуется уточнение.';
     return {
-      question: query.question, text: query.answer, sources, status, context, traceBasis, pending, demoRevision,
-      note: byRule && query.status === 'review' ? 'Служба качества сверяет прежнее разъяснение с действующим регламентом.' : '',
-      label: titles[query.id] || query.question
+      question: query.question, text: query.answer, sources, status, traceBasis, discrepancy,
+      context: 'Демоданные · снимок Confluence ' + query.currentRevision,
+      pending: !byExpert && !byRule, demoRevision: query.currentRevision === 'v2',
+      note: discrepancy ? discrepancy.note : '', label: titles[query.id] || query.question
     };
   }
   window.FaqRevisionChat = {snapshot};
