@@ -156,6 +156,37 @@ def assemble(parts):
             "offer_quality_request": any(p["result"].get("offer_quality_request") for p in parts)}
 
 
+def explicit_pair(question):
+    """Only split two complete questions when the second establishes its own scope."""
+    chunks = re.fullmatch(r"([^?]+\?)\s+([^?]+\?)", question.strip(), re.S)
+    if not chunks:
+        return []
+    first, second = chunks.groups()
+    second = LEADING_CONNECTOR.sub("", second).strip()
+    refers_back = re.search(r"\b(?:ему|его|её|ее|им|их|него|неё|ней|них|там|тогда|этот|этой|этого|"
+                            r"этим|этом|таком|такой|предыдущ\w*|указанн\w*)\b", second, re.I)
+    if not ask.pay_shortcut(second) and (not procedures.directories(second) or refers_back):
+        return []
+    return [first, second]
+
+
+def answer_explicit(question, search, *, history=(), generate_answer=evidence.generate,
+                    judge=evidence.judge, faq=None, faq_scope=None):
+    """Apply explicit splitting on standalone messages, preserving the baseline elsewhere."""
+    def respond(text, prior):
+        return ask.answer(text, search, history=prior, procedure_mode=True, instruction="",
+                          add_sources=evidence.alternatives, generate_answer=generate_answer,
+                          judge=judge, faq=faq, faq_scope=faq_scope)
+    pair = [] if history else explicit_pair(question)
+    if not pair:
+        return respond(question, history)
+    if faq is not None:
+        direct = faq.lookup(question.strip(), faq_scope)
+        if direct:
+            return direct
+    return assemble([{"text": q, "query": q, "result": respond(q, ())} for q in pair])
+
+
 def answer(question, search, *, history=(), planner=complete, generate_answer=evidence.generate,
            judge=evidence.judge, faq=None, faq_scope=None):
     question = question.strip()

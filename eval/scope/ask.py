@@ -208,7 +208,9 @@ if __name__ == "__main__":
     parser.add_argument("--model-dir", type=Path, help="Pinned MiniLM ONNX model and tokenizer")
     parser.add_argument("--python", default=sys.executable, help="Python with ONNX Runtime and tokenizers")
     parser.add_argument("--evidence", action="store_true", help="Select source-bound registry statements")
-    parser.add_argument("--conversation", action="store_true", help="Plan requests, resolve history and assemble one reply")
+    routes = parser.add_mutually_exclusive_group()
+    routes.add_argument("--explicit-pair", action="store_true", help="Split two explicitly scoped requests")
+    routes.add_argument("--conversation", action="store_true", help="Plan requests, resolve history and assemble one reply")
     parser.add_argument("--history-file", type=Path, help="JSON array of user/assistant pairs for --conversation")
     parser.add_argument("--model", default=GEMMA, help="OpenRouter generator ID for evidence mode")
     parser.add_argument("--faq-file", type=Path, help="Approved publications exported by the quality service")
@@ -226,16 +228,17 @@ if __name__ == "__main__":
     if args.faq_file:
         from quality import ApprovedFAQ
         kwargs.update(faq=ApprovedFAQ.from_file(args.faq_file), faq_scope=args.faq_scope)
-    if args.conversation:
+    if args.conversation or args.explicit_pair:
         import conversation
         import evidence
         history = json.loads(args.history_file.read_text()) if args.history_file else []
         if args.previous_question:
             history = [*history, ["user", args.previous_question]]
-        final = conversation.answer(args.question, search, history=history, faq=kwargs.get("faq"), faq_scope=args.faq_scope,
-                                    generate_answer=lambda *a: evidence.generate(*a, model=args.model))
+        route = conversation.answer_explicit if args.explicit_pair else conversation.answer
+        final = route(args.question, search, history=history, faq=kwargs.get("faq"), faq_scope=args.faq_scope,
+                      generate_answer=lambda *a: evidence.generate(*a, model=args.model))
     else:
         if args.history_file:
-            parser.error("--history-file requires --conversation")
+            parser.error("--history-file requires --conversation or --explicit-pair")
         final = answer(args.question, search, args.previous_question, **kwargs)
     print(json.dumps(final, ensure_ascii=False))

@@ -55,6 +55,13 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(logger.call_args_list[1:], [
             call("k:2", "Лимит вложения"), call("k:4", "Срок хранения"), call("k:2", "Лимит вложения")])
 
+    def test_explicit_pair_keeps_dependent_questions_together(self):
+        self.assertEqual(c.explicit_pair("Кто подписывает договор? А кто в ИБ его готовит?"), [])
+        self.assertEqual(c.explicit_pair("Как оформить отчёт и в какой срок?"), [])
+        self.assertEqual(c.explicit_pair("Кто подписывает договор? А когда?"), [])
+        self.assertEqual(c.explicit_pair("Кто подписывает договор? И как мне повысить себе зарплату?"),
+                         ["Кто подписывает договор?", "как мне повысить себе зарплату?"])
+
     def test_other_topic_after_question_does_not_reuse_directorate(self):
         raw = "Как мне повысить себе зарплату?"
         history = [("user", "Проверяем смету Технической дирекции"), ("assistant", "Какой этап?")]

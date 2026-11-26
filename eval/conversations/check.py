@@ -154,7 +154,7 @@ def probe(cases, lookup):
     return {"retrieval": retrieval_probe(cases, lookup), "routing": traces, "followups_top5": followups}
 
 
-def live(cases, lookup, out, *, candidate=False):
+def live(cases, lookup, out, *, candidate=False, explicit_pair=False):
     if not os.getenv("OPENROUTER_API_KEY"):
         raise RuntimeError("The live run requires OPENROUTER_API_KEY")
     out.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -182,7 +182,10 @@ def live(cases, lookup, out, *, candidate=False):
             if candidate:
                 import conversation
                 try:
-                    response = conversation.answer(turn["question"], lookup, planner=generation, **options)
+                    if explicit_pair:
+                        response = conversation.answer_explicit(turn["question"], lookup, **options)
+                    else:
+                        response = conversation.answer(turn["question"], lookup, planner=generation, **options)
                 except NeedSearch as missing:
                     pending[missing.args[0]] = cid
                     break
@@ -217,6 +220,7 @@ if __name__ == "__main__":
         if name == "live":
             mode.add_argument("--independent-parts", action="store_true")
         if name == "candidate":
+            mode.add_argument("--explicit-pair", action="store_true", help="Baseline with conservative splitting")
             mode.add_argument("--working50", type=Path, help="Private packet with the original working bank")
             mode.add_argument("--model-dir", type=Path, help="Pinned MiniLM for newly contextualized queries")
             mode.add_argument("--python", default=sys.executable)
@@ -265,4 +269,5 @@ if __name__ == "__main__":
         if args.command == "probe":
             save(args.out, json.dumps(probe(cases, lookup), ensure_ascii=False, indent=2))
         else:
-            live(cases, lookup, args.out, candidate=args.command == "candidate")
+            live(cases, lookup, args.out, candidate=args.command == "candidate",
+                 explicit_pair=getattr(args, "explicit_pair", False))
