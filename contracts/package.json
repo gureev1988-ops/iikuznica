@@ -1,0 +1,14 @@
+{
+  "name": "iikuznica-api-contracts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "node generate-types.mjs",
+    "check": "node generate-types.mjs --check && tsc --noEmit --strict openapi.v1.d.ts"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}
