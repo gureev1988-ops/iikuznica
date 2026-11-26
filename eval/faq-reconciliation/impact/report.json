@@ -1,0 +1,152 @@
+{
+  "k": 3,
+  "pool": 16,
+  "ranks": {
+    "U1": {
+      "raw": [
+        "Q01",
+        "Q12",
+        "Q02"
+      ],
+      "linked": [
+        "Q01",
+        "Q02",
+        "Q03"
+      ]
+    },
+    "U2": {
+      "raw": [
+        "Q06",
+        "Q05",
+        "Q07"
+      ],
+      "linked": [
+        "Q06",
+        "Q05",
+        "Q07"
+      ]
+    },
+    "U3": {
+      "raw": [
+        "Q11",
+        "Q10",
+        "Q16"
+      ],
+      "linked": [
+        "Q11",
+        "Q10",
+        "Q16"
+      ]
+    },
+    "U4": {
+      "raw": [
+        "Q13",
+        "Q14",
+        "Q16"
+      ],
+      "linked": [
+        "Q13",
+        "Q14",
+        "Q16"
+      ]
+    }
+  },
+  "scores": {
+    "raw": {
+      "hits": 5,
+      "irrelevant_candidates": 7,
+      "misses": 0,
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.4166666666666667,
+      "per_change": {
+        "U1": {
+          "found": [
+            "Q01"
+          ],
+          "extra": [
+            "Q02",
+            "Q12"
+          ],
+          "missed": []
+        },
+        "U2": {
+          "found": [
+            "Q05",
+            "Q07"
+          ],
+          "extra": [
+            "Q06"
+          ],
+          "missed": []
+        },
+        "U3": {
+          "found": [
+            "Q10",
+            "Q11"
+          ],
+          "extra": [
+            "Q16"
+          ],
+          "missed": []
+        },
+        "U4": {
+          "found": [],
+          "extra": [
+            "Q13",
+            "Q14",
+            "Q16"
+          ],
+          "missed": []
+        }
+      }
+    },
+    "linked": {
+      "hits": 5,
+      "irrelevant_candidates": 7,
+      "misses": 0,
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.4166666666666667,
+      "per_change": {
+        "U1": {
+          "found": [
+            "Q01"
+          ],
+          "extra": [
+            "Q02",
+            "Q03"
+          ],
+          "missed": []
+        },
+        "U2": {
+          "found": [
+            "Q05",
+            "Q07"
+          ],
+          "extra": [
+            "Q06"
+          ],
+          "missed": []
+        },
+        "U3": {
+          "found": [
+            "Q10",
+            "Q11"
+          ],
+          "extra": [
+            "Q16"
+          ],
+          "missed": []
+        },
+        "U4": {
+          "found": [],
+          "extra": [
+            "Q13",
+            "Q14",
+            "Q16"
+          ],
+          "missed": []
+        }
+      }
+    }
+  }
+}
