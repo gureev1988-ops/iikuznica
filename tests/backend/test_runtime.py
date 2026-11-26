@@ -373,3 +373,45 @@ def test_latency_metrics_use_persisted_events(dsn, db):
         "turn_id": str(turn_id), "case_id": str(case_id), "first_useful_seconds": 2,
         "verified_answer_seconds": 45, "human_wait_seconds": 10,
     }]}
+
+
+def test_disabled_job_kinds_park_without_attempts_then_drain(dsn, db):
+    parked_id = enqueue(db, queue="background", kind="dion.deliver", key="parked", payload={})
+    expired_id = enqueue(
+        db, queue="background", kind="dion.deliver", key="expired", payload={},
+        deadline_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    mail_id = enqueue(db, queue="background", kind="mail.send", key="active", payload={})
+    db.commit()
+    handled = []
+    terminal = []
+
+    def terminal_outcome(conn, job, reason):
+        terminal.append((job.id, reason))
+
+    handlers = {"mail.send": lambda job: handled.append(job.id)}
+    assert claim(dsn, "background", active_kinds=[]) is None
+    result = run_once(
+        dsn, "background", handlers, active_kinds=handlers.keys(),
+        terminal_handlers={"dion.deliver": terminal_outcome},
+    )
+    assert result.id == mail_id
+    assert terminal == [(expired_id, "deadline_exceeded")]
+    assert run_once(dsn, "background", handlers, active_kinds=handlers.keys()) is None
+    assert db.execute(
+        "SELECT state, attempt, last_error FROM jobs WHERE id = %s", (parked_id,),
+    ).fetchone() == {"state": "queued", "attempt": 0, "last_error": None}
+
+    handlers["dion.deliver"] = lambda job: handled.append(job.id)
+    assert run_once(dsn, "background", handlers, active_kinds=handlers.keys()).id == parked_id
+    assert handled == [mail_id, parked_id]
+    assert db.execute("SELECT state FROM jobs WHERE id = %s", (parked_id,)).fetchone()["state"] == "succeeded"
+
+
+def test_unfiltered_worker_still_reports_unknown_kinds(dsn, db):
+    job_id = enqueue(db, queue="background", kind="unknown", key="unfiltered", payload={})
+    db.commit()
+    assert run_once(dsn, "background", {}).id == job_id
+    assert db.execute(
+        "SELECT state, last_error FROM jobs WHERE id = %s", (job_id,),
+    ).fetchone() == {"state": "failed", "last_error": "unknown_job_kind"}

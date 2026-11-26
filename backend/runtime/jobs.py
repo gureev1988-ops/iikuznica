@@ -1,6 +1,6 @@
 """PostgreSQL queue and fenced worker lifecycle."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import Event, Thread
@@ -187,8 +187,9 @@ def claim(
     *,
     max_running: int | None = None,
     lease_seconds: float = 30,
+    active_kinds: Collection[str] | None = None,
 ) -> Job | None:
-    """Claim ready work with a fresh token and the earlier of lease and deadline."""
+    """Claim ready work with a fresh token, optionally restricted to active kinds."""
     if lease_seconds <= 0:
         raise ValueError("lease_seconds must be positive")
     with connect(dsn) as conn:
@@ -206,17 +207,23 @@ def claim(
         row = conn.execute(
             """
             WITH next_job AS (
-                SELECT id FROM jobs WHERE queue = %s AND state = 'queued'
+                SELECT id FROM jobs WHERE queue = %(queue)s AND state = 'queued'
                     AND available_at <= clock_timestamp()
                     AND (deadline_at IS NULL OR deadline_at > clock_timestamp())
+                    AND (%(kinds)s::text[] IS NULL OR kind = ANY(%(kinds)s))
                 ORDER BY available_at, created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
             )
-            UPDATE jobs SET state = 'running', attempt = attempt + 1, lease_token = %s,
-                lease_expires_at = least(deadline_at, clock_timestamp() + %s),
+            UPDATE jobs SET state = 'running', attempt = attempt + 1, lease_token = %(token)s,
+                lease_expires_at = least(deadline_at, clock_timestamp() + %(duration)s),
                 first_started_at = coalesce(first_started_at, clock_timestamp())
             FROM next_job WHERE jobs.id = next_job.id RETURNING jobs.*
             """,
-            (queue, uuid4(), timedelta(seconds=lease_seconds)),
+            {
+                "queue": queue,
+                "kinds": list(active_kinds) if active_kinds is not None else None,
+                "token": uuid4(),
+                "duration": timedelta(seconds=lease_seconds),
+            },
         ).fetchone()
         return Job(**row) if row else None
 
@@ -289,13 +296,20 @@ def run_once(
     lease_seconds: float = 30,
     base_retry_seconds: float = 1,
     terminal_handlers: Mapping[str, TerminalHandler] | None = None,
+    active_kinds: Collection[str] | None = None,
 ) -> Job | None:
-    """Recover failed leases, claim one job and call its handler outside a transaction."""
+    """Recover expired work in the queue, then claim and run one eligible job.
+
+    Pass active_kinds to park jobs for disabled integrations until a worker
+    enables their kind. Deadline recovery applies to the whole queue.
+    """
     from .journal import recover_journal
 
     recover_jobs(dsn, queue, base_retry_seconds=base_retry_seconds, terminal_handlers=terminal_handlers)
     recover_journal(dsn)
-    job = claim(dsn, queue, max_running=max_running, lease_seconds=lease_seconds)
+    job = claim(
+        dsn, queue, max_running=max_running, lease_seconds=lease_seconds, active_kinds=active_kinds,
+    )
     if job is None:
         return None
 
