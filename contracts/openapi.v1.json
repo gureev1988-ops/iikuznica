@@ -328,6 +328,7 @@
         "type": "object"
       },
       "DionDeliveryDecision": {
+        "additionalProperties": false,
         "properties": {
           "evidence": {
             "maxLength": 1000,
