@@ -71,22 +71,18 @@ def append_event(
 
     Use the operation's transaction to commit the event and associated state together.
     """
-    with conn.transaction():
-        row = conn.execute(
-            """
+    row = conn.execute(
+        """
+        WITH next_cursor AS (
             UPDATE conversations SET event_cursor = event_cursor + 1
-            WHERE id = %s RETURNING event_cursor
-            """,
-            (conversation_id,),
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Unknown conversation: {conversation_id}")
-        cursor = row["event_cursor"]
-        conn.execute(
-            """
-            INSERT INTO events (conversation_id, cursor, case_id, turn_id, kind, payload)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """,
-            (conversation_id, cursor, case_id, turn_id, kind, Jsonb(payload)),
+            WHERE id = %s RETURNING id, event_cursor
         )
-    return cursor
+        INSERT INTO events (conversation_id, cursor, case_id, turn_id, kind, payload)
+        SELECT id, event_cursor, %s, %s, %s, %s FROM next_cursor
+        RETURNING cursor
+        """,
+        (conversation_id, case_id, turn_id, kind, Jsonb(payload)),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown conversation: {conversation_id}")
+    return row["cursor"]
