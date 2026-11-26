@@ -1,6 +1,5 @@
 """Procedure retrieval, conversation-context probes and live replay on the working bank."""
 import argparse
-from collections import Counter
 import gzip
 import json
 import os
@@ -15,6 +14,7 @@ EVAL = HERE.parent
 sys.path.insert(0, str(EVAL / "scope"))
 import ask
 import evidence
+from procedures import section_neighbors
 from policy import fingerprint, rows
 from run import cached_call, complete, decide, save
 
@@ -95,18 +95,6 @@ def make_cache(cases, python, model_dir, output):
     output.write_bytes(gzip.compress(json.dumps(payload, sort_keys=True).encode(), mtime=0))
 
 
-def section_neighbors(sources, seeds, corpus):
-    # Experimental retrieval of procedure steps. Keys and order come only from real hits.
-    topics = Counter((p["doc"], p["section"]) for p in (corpus[tuple(key)] for key in seeds))
-    result = {evidence.reference(s): s for s in sources}
-    for topic, _ in topics.most_common(2):
-        additions = [p for p in corpus.values() if (p["doc"], p["section"]) == topic
-                     and p["text"] != p["section"] and evidence.reference(p) not in result]
-        for p in additions[:8]:
-            result[evidence.reference(p)] = p
-    return list(result.values())
-
-
 def retrieval_probe(cases, lookup):
     corpus = ask.full_corpus()
     report = []
@@ -158,7 +146,7 @@ def probe(cases, lookup):
     return {"retrieval": retrieval_probe(cases, lookup), "routing": traces, "followups_top5": followups}
 
 
-def live(cases, lookup, out):
+def live(cases, lookup, out, *, candidate=False):
     if not os.getenv("OPENROUTER_API_KEY"):
         raise RuntimeError("The live run requires OPENROUTER_API_KEY")
     out.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -175,14 +163,19 @@ def live(cases, lookup, out):
                     if not result["ok"]:
                         raise RuntimeError(f"{cid} generator HTTP {result['http']}")
                     return {"response": result}
-                return cached_call(out, cid, "generator", body, fetch, lambda r: r["text"])["response"]
+                stage = "planner" if dataset == "conversation-plan" else "generator"
+                return cached_call(out, cid, stage, body, fetch, lambda r: r["text"])["response"]
             def judge(body):
                 return cached_call(out, cid, "judge", body, lambda: decide(body), lambda r: r["answers"])
             # Only user turns, real prior replies and actual search results enter the model.
-            response = ask.answer(turn["question"], lookup, history=history, procedure_mode=True,
-                                  instruction="", add_sources=evidence.alternatives,
-                                  generate_answer=lambda *a: evidence.generate(*a, call=generation),
-                                  judge=lambda b: evidence.judge(b, call=judge))
+            options = dict(history=history, generate_answer=lambda *a: evidence.generate(*a, call=generation),
+                           judge=lambda b: evidence.judge(b, call=judge))
+            if candidate:
+                import conversation
+                response = conversation.answer(turn["question"], lookup, planner=generation, **options)
+            else:
+                response = ask.answer(turn["question"], lookup, procedure_mode=True, instruction="",
+                                      add_sources=evidence.alternatives, **options)
             history.extend([("user", turn["question"]), ("assistant", response["message"])])
             records.append({"turn": cid, "question": turn["question"], "response": response})
             save(out / "replies.jsonl", "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
@@ -197,11 +190,15 @@ if __name__ == "__main__":
     prep.add_argument("--python", default=sys.executable)
     prep.add_argument("--cache", type=Path)
     prep.add_argument("--independent-parts", action="store_true")
-    for name in ("probe", "live"):
+    for name in ("probe", "live", "candidate"):
         mode = modes.add_parser(name)
         mode.add_argument("--cache", type=Path)
         if name == "live":
             mode.add_argument("--independent-parts", action="store_true")
+        if name == "candidate":
+            mode.add_argument("--working50", type=Path, help="Private packet with the original working bank")
+            mode.add_argument("--model-dir", type=Path, help="Pinned MiniLM for newly contextualized queries")
+            mode.add_argument("--python", default=sys.executable)
         mode.add_argument("--out", type=Path, required=True)
     args = cli.parse_args()
     cases = load_bank()
@@ -216,9 +213,24 @@ if __name__ == "__main__":
         cache = json.loads(gzip.decompress(args.cache.read_bytes()))
         if cache["corpus"] != fingerprint(list(ask.full_corpus().values())):
             cli.error("Corpus changed; regenerate the search snapshot")
+        if args.command == "candidate":
+            extra = json.loads(gzip.decompress((HERE / "search-parts.json.gz").read_bytes()))
+            if extra["corpus"] != cache["corpus"]:
+                cli.error("Incompatible independent-question snapshot")
+            cache["inputs"].update(extra["inputs"])
+            if args.working50:
+                from run50 import blind_inputs
+                working, _ = blind_inputs(args.working50)
+                cases = []
+                for cid, (q, seeds, pool) in working.items():
+                    cases.append({"id": cid, "turns": [{"question": q}]})
+                    cache["inputs"][fingerprint(q)] = [seeds, pool]
         def lookup(q):
-            return cache["inputs"][fingerprint(q)]
+            key = fingerprint(q)
+            if key not in cache["inputs"] and args.command == "candidate" and args.model_dir:
+                cache["inputs"][key] = ask.retrieve(q, args.model_dir, args.python)
+            return cache["inputs"][key]
         if args.command == "probe":
             save(args.out, json.dumps(probe(cases, lookup), ensure_ascii=False, indent=2))
         else:
-            live(cases, lookup, args.out)
+            live(cases, lookup, args.out, candidate=args.command == "candidate")

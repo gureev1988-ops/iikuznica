@@ -122,7 +122,8 @@ def focus_repeated_review(body, draft, sources):
 
 
 def answer(question, search, previous_question="", generate_answer=generate, judge=decide,
-           add_sources=None, instruction=None, procedure_mode=False, history=(), faq=None, faq_scope=None):
+           add_sources=None, instruction=None, procedure_mode=False, history=(), faq=None, faq_scope=None,
+           workflow=False):
     question = question.strip()
     if not question:
         raise ValueError("Введи вопрос")
@@ -165,6 +166,8 @@ def answer(question, search, previous_question="", generate_answer=generate, jud
         sources = add_sources(sources, pool, corpus)
     if procedure_mode:
         sources = procedures.augment_sources(sources, process, question, matched_facts, corpus)
+        if workflow:
+            sources = procedures.section_neighbors(sources, seeds, corpus)
     selection_mode = instruction is not None
     if instruction is None:
         instruction = load_dataset(EVAL / "iikuznitsa_run12/IIkuznitsa_Run_12x3.py")["system"]
@@ -205,6 +208,8 @@ if __name__ == "__main__":
     parser.add_argument("--model-dir", type=Path, help="Pinned MiniLM ONNX model and tokenizer")
     parser.add_argument("--python", default=sys.executable, help="Python with ONNX Runtime and tokenizers")
     parser.add_argument("--evidence", action="store_true", help="Select source-bound registry statements")
+    parser.add_argument("--conversation", action="store_true", help="Plan requests, resolve history and assemble one reply")
+    parser.add_argument("--history-file", type=Path, help="JSON array of user/assistant pairs for --conversation")
     parser.add_argument("--model", default=GEMMA, help="OpenRouter generator ID for evidence mode")
     parser.add_argument("--faq-file", type=Path, help="Approved publications exported by the quality service")
     parser.add_argument("--faq-scope", help="Trusted scope of this conversation")
@@ -221,4 +226,16 @@ if __name__ == "__main__":
     if args.faq_file:
         from quality import ApprovedFAQ
         kwargs.update(faq=ApprovedFAQ.from_file(args.faq_file), faq_scope=args.faq_scope)
-    print(json.dumps(answer(args.question, search, args.previous_question, **kwargs), ensure_ascii=False))
+    if args.conversation:
+        import conversation
+        import evidence
+        history = json.loads(args.history_file.read_text()) if args.history_file else []
+        if args.previous_question:
+            history = [*history, ["user", args.previous_question]]
+        final = conversation.answer(args.question, search, history=history, faq=kwargs.get("faq"), faq_scope=args.faq_scope,
+                                    generate_answer=lambda *a: evidence.generate(*a, model=args.model))
+    else:
+        if args.history_file:
+            parser.error("--history-file requires --conversation")
+        final = answer(args.question, search, args.previous_question, **kwargs)
+    print(json.dumps(final, ensure_ascii=False))

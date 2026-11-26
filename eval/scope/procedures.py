@@ -1,5 +1,6 @@
 """Source-scoped decisions for project processes, missing facts and conditional instructions."""
 from dataclasses import dataclass
+from collections import Counter
 import re
 
 DIRECTORATES = (
@@ -133,6 +134,17 @@ def specific_project_gap(fact, question, matches):
 
 def include_sources(sources, additions):
     return list({(s["doc"], s["ref"]): s for s in [*sources, *additions]}.values())
+
+
+def section_neighbors(sources, seeds, corpus):
+    topics = Counter((p["doc"], p["section"]) for p in (corpus[tuple(key)] for key in seeds))
+    result = {(p["doc"], p["ref"]): p for p in sources}
+    for topic, _ in topics.most_common(2):
+        additions = [p for k, p in corpus.items() if (p["doc"], p["section"]) == topic
+                     and p["text"] != p["section"] and k not in result]
+        for p in additions[:8]:
+            result[p["doc"], p["ref"]] = p
+    return list(result.values())
 
 
 def process_sources(process, question, corpus):

@@ -44,9 +44,19 @@ class ApprovedFAQ:
                     offer_quality_request=False)
 
 
-def confirm_request(reply, question, request_id, *, confirmed, register):
+def confirm_request(reply, question, request_id, *, confirmed, register, part_index=None):
     """register accepts an idempotency key and stores the confirmed employee question."""
-    if confirmed is not True or reply.get("action") != "escalate" or reply.get("offer_quality_request") is not True:
+    if confirmed is not True:
+        return None
+    if "requests" in reply:
+        offers = {i: p for i, p in enumerate(reply["requests"]) if p["result"]["action"] == "escalate"
+                  and p["result"].get("offer_quality_request") is True}
+        if part_index is None and len(offers) == 1:
+            part_index = next(iter(offers))
+        if type(part_index) is not int or part_index not in offers:
+            return None
+        question, reply = offers[part_index]["query"], offers[part_index]["result"]
+    if reply.get("action") != "escalate" or reply.get("offer_quality_request") is not True:
         return None
     if not request_id or not question.strip():
         raise ValueError("A request ID and the employee question are required")
