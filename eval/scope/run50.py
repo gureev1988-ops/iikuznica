@@ -90,7 +90,22 @@ def diagnose(cases, keys, corpus, out):
     print("Review all 50 messages against the originals in review.jsonl to determine usable answers.")
 
 
-def run(cases, bank, out, model):
+def reuse_call(previous, cid, stage, body, live, validate):
+    """Reuse an identical model request; never copy a previous final answer."""
+    name = f"{cid}-{stage}-{fingerprint(body)}.json"
+    if previous is not None and (previous / "calls" / name).is_file():
+        def disappeared():
+            raise ValueError(f"Previous checkpoint disappeared: {name}")
+        row = cached_call(previous, cid, stage, body, disappeared, validate)
+        if row["model"] != body["model"]:
+            raise ValueError(f"Model differs in checkpoint {name}")
+        return dict(row, reused=True)
+    return live()
+
+
+def run(cases, bank, out, model, previous=None):
+    if previous is not None and (not (previous / "calls").is_dir() or previous.resolve() == out.resolve()):
+        raise ValueError("Previous run must have its own calls directory; use a fresh --out")
     corpus = full_corpus()
     out.mkdir(parents=True, exist_ok=True, mode=0o700)
     (out / ".gitignore").write_text("*\n")
@@ -116,15 +131,24 @@ def run(cases, bank, out, model):
                 if not r["ok"]:
                     raise RuntimeError(f"{cid} {model} HTTP {r['http']}")
                 return {"response": r}
-            row = cached_call(out, cid, "generate", body, call, lambda r: r["text"])
+            def validate(response):
+                if not response["ok"] or response["request_hash"] != fingerprint(body) or not response["text"]:
+                    raise ValueError(f"{cid}: invalid generator checkpoint")
+            row = cached_call(out, cid, "generate", body,
+                              lambda: reuse_call(previous, cid, "generate", body, call, validate), validate)
             response = row["response"]
-            trace.append({"stage": "generate", "hash": row["request_hash"], "model": body["model"],
+            trace.append({"stage": "generate", "reused": row.get("reused", False), "hash": row["request_hash"], "model": body["model"],
                           "seconds": response["latency_s"], "cost": response["usage"].get("cost")})
             return response
 
         def judge(body):
-            row = cached_call(out, cid, "judge", body, lambda: decide(body), lambda v: v["answers"])
-            trace.append({"stage": "judge", "hash": row["request_hash"], "model": body["model"],
+            def validate(response):
+                if not response["answers"]:
+                    raise ValueError(f"{cid}: empty judge response")
+            row = cached_call(out, cid, "judge", body,
+                              lambda: reuse_call(previous, cid, "judge", body, lambda: decide(body), validate),
+                              validate)
+            trace.append({"stage": "judge", "reused": row.get("reused", False), "hash": row["request_hash"], "model": body["model"],
                           "seconds": row["latency_s"], "cost": row["usage"].get("cost"),
                           "answers": row["response"]["answers"]})
             return row
@@ -178,6 +202,9 @@ def summarize(out, cases):
     summary = dict(cases=len(traces), calls=len(calls), api_seconds_p50=statistics.median(times),
                    api_seconds_p95=times[(95 * len(times) + 99) // 100 - 1],
                    total_api_usd=sum(costs) if all(v is not None for v in costs) else None)
+    new_costs = [r["cost"] for r in calls if not r["reused"]]
+    summary.update(reused_calls=len(calls) - len(new_costs), new_calls=len(new_costs),
+                   new_api_usd=sum(new_costs) if all(c is not None for c in new_costs) else None)
     save(out / "measurements.json", json.dumps(summary, indent=2))
     print(summary)
     records = []
@@ -219,6 +246,7 @@ if __name__ == "__main__":
     parser.add_argument("--public-check", action="store_true", help="Check local routing and source coverage on the published 35")
     parser.add_argument("--check", action="store_true", help="Run offline routing and coverage checks")
     parser.add_argument("--out", type=Path, default=Path("procedures50-private"))
+    parser.add_argument("--reuse-calls", type=Path, help="Root of an earlier run, containing per-model call caches")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--model", choices=SEARCH_MODELS, default=ask.GEMMA)
     group.add_argument("--compare-models", action="store_true", help="Run a blinded Gemma/Qwen pair")
@@ -244,7 +272,8 @@ if __name__ == "__main__":
             folders = []
             for model in (SEARCH_MODELS if args.compare_models else [args.model]):
                 folder = args.out / model.replace("/", "_")
-                run(cases, bank, folder, model)
+                previous = args.reuse_calls / folder.name if args.reuse_calls is not None else None
+                run(cases, bank, folder, model, previous)
                 summarize(folder, cases)
                 folders.append(folder)
             if args.compare_models:

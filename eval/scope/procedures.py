@@ -157,7 +157,39 @@ def letter_status(question):
 
 
 def refused_services(question):
-    return bool(re.search(r"отказал\w* от (?:внедрения|услуг)|(?:услуг\w*|поддержк\w*|внедрени\w*) (?:не нужны?\b|не нужна|не требуются)|не нужны (?:услуги|внедрение)", normalized(question)))
+    """Require a refusal of all services or of both implementation and support."""
+    t = normalized(question)
+    if re.search(r"не (?:отказал|отказыва)|не (?:говорил|сказал|подтвердил)|передумал|однако|\bно\b", t):
+        return False
+    pair = r"(?:внедрени\w* (?:и|или) (?:тех(?:ническ\w* )?)?поддержк\w*|(?:тех)?поддержк\w* (?:и|или) внедрени\w*)"
+    declined = r"не (?:нужн\w*|требу\w*|потребу\w*)"
+    if re.search(rf"(?:{pair})\s+{declined}|{declined}\s+(?:{pair})", t):
+        return True
+    # A refusal of a particular service does not exclude the remaining services.
+    return bool(re.search(rf"(?:отказал\w* от (?:всех )?услуг|услуги {declined}|{declined} услуги)(?=\s*[.!?,;:]|$)", t))
+
+
+def supply_handoff(question):
+    """The IB presales branch for an already chosen product and an explicit refusal."""
+    t = normalized(question)
+    if (directories(t) != {"IB", "PRE"} or not refused_services(t)
+            or re.search(r"не (?:выбра|определил)|\b(?:если|допустим)\b|ли отказал", t)):
+        return False
+    item = r"(?:по\b|программн\w* обеспечени\w*|оборудовани\w*|продукт\w*|решени\w*|лицензи\w*)"
+    selected = re.search(rf"\bвыбра(?:л[аи]?|ны?)\s+{item}|\b{item}\s+(?:уже )?выбран\w*", t)
+    return bool(selected and re.search(r"\bткп\b|предложени\w*|спецификаци\w*", t)
+                and re.search(r"кому|куда|кто (?:готовит|переда)", t))
+
+
+def late_customer_payment(question):
+    """Add the conditional collection rule only for a late receipt from the customer."""
+    t = normalized(question)
+    if directories(t) != {"TECH"} or re.search(r"аванс|предоплат|не просроч|не задерж|нет просрочки|без просрочки", t):
+        return False
+    payer = r"(?:клиент|заказчик)\w*"
+    late = r"(?:задерж\w*|просроч\w*)"
+    payment = r"(?:платеж\w*|оплат\w*)"
+    return bool(re.search(rf"\b{payer}\s+{late}\s+{payment}\b|\b{late}\s+{payment}\s+(?:со стороны |от ){payer}", t))
 
 
 def quoted_share(question):
@@ -180,6 +212,8 @@ def complete_ids(ids, allowed, question):
         attach(["DB:1.1:1"])
     if "DB:1.6:1" in ids and not re.search(r"без подрядчик|подрядчик\w* не (?:привлек|привлеч|участву)", normalized(question)):
         attach(["DB:1.7:1"])
+    if "TECH:23.1:1" in ids and late_customer_payment(question):
+        attach(["TECH:23.2:1"])
     if "TECH:9.1:1" in ids:
         attach(["TECH:9.2:1"])
     if general_early_start(question) and any(key.startswith(("DB:8.4:", "DB:8.5:", "DB:8.6:")) for key in ids):
@@ -216,4 +250,7 @@ def companion_sources(sources, corpus):
 
 def augment_sources(sources, process, question, matched, corpus):
     extra = process_sources(process, question, corpus) if process else []
-    return companion_sources(include_sources(sources, [*extra, *matched]), corpus)
+    expanded = companion_sources(include_sources(sources, [*extra, *matched]), corpus)
+    if late_customer_payment(question) and any((s["doc"], s["ref"]) == ("TECH", "23.1") for s in expanded):
+        return include_sources(expanded, [corpus["TECH", "23.2"]])
+    return expanded

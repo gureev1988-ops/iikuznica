@@ -159,7 +159,11 @@ def answer(question, search, previous_question="", generate_answer=generate, jud
             return final
         if not attempt and route == "retrieve":
             additional = extended(sources, pool, corpus)
-            sources = procedures.companion_sources(procedures.include_sources(sources, additional), corpus) if procedure_mode else additional
+            if procedure_mode:
+                sources = procedures.augment_sources(procedures.include_sources(sources, additional),
+                                                    process, question, matched_facts, corpus)
+            else:
+                sources = additional
             expanded = True
         if selection_mode:
             instruction = ("Пересмотри выбор с учётом предыдущего черновика и решения проверяющего. "
