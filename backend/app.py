@@ -93,12 +93,14 @@ class Backend:
             terminal = {"answer_turn": self.dialog.terminal_outcome}
             limit = self.settings.interactive_concurrency
         else:
-            handlers = {"documents.sync": self.document_job, **self.mail.handlers}
+            handlers = {"documents.sync": self.document_job}
+            if self.mail_config.mode != "disabled":
+                handlers.update(self.mail.handlers)
             if self.dion:
                 handlers.update(self.dion.handlers)
             terminal = {"documents.sync": self.documents.terminal_job}
             limit = self.settings.background_concurrency
-        return run_once(self.dsn, queue, handlers, max_running=limit, terminal_handlers=terminal)
+        return run_once(self.dsn, queue, handlers, max_running=limit, terminal_handlers=terminal, active_kinds=handlers.keys())
 
     def polling(self):
         operations = {"recovery": lambda: any(recover_journal(self.dsn))}

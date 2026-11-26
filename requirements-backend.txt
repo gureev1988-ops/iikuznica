@@ -3,4 +3,3 @@ pydantic==2.14.4
 psycopg[binary]==3.3.9
 httpx==0.29.0
 uvicorn==0.54.0
-beautifulsoup4==4.15.0

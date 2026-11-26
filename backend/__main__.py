@@ -72,7 +72,7 @@ def simulator_command(backend, args):
         message["In-Reply-To"] = mid
         message["References"] = mid
         domain = config.recipient.split("@")[-1]
-        message["Authentication-Results"] = f"{config.authserv_id}; dmarc=pass header.from={domain}"
+        message["Authentication-Results"] = f"{config.authserv_id}; dmarc=pass header.from={domain}; auth=pass smtp.auth={config.recipient}"
         message.set_content(args.text)
         print(backend.mailbox.inject(message.as_bytes()))
         return

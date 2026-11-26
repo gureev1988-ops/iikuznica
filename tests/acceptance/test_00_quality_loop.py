@@ -65,7 +65,7 @@ def test_consent_reply_restart_immediate_faq_and_wiki_conflict(deployment, dsn):
     for key, value in {
         "From": "official@example.test", "To": str(sent["Reply-To"]), "Subject": "Re: " + str(sent["Subject"]),
         "In-Reply-To": mid, "References": mid, "Message-ID": "<accepted-reply@example.test>",
-        "Authentication-Results": "mail-gateway.example.test; dmarc=pass header.from=example.test",
+        "Authentication-Results": "mail-gateway.example.test; dmarc=pass header.from=example.test; auth=pass smtp.auth=official@example.test",
     }.items():
         reply[key] = value
     reply.set_content(ANSWER + "\n\n> Исходная переписка сотрудника")
