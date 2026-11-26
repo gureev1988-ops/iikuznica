@@ -86,3 +86,5 @@ mail_container=$(docker run --rm -d -p 127.0.0.1:3465:3465 -p 127.0.0.1:3993:399
 SSL_CERT_FILE="$stand/loopback.pem" II_LOOPBACK_MAIL=1 python -m pytest -q tests/acceptance/test_network_mail.py
 docker stop "$mail_container"
 ```
+
+Фикстура для веб-клиента содержит фактические HTTP-запросы и ответы синтетического сеанса, снимок открытого согласия и SSE после возобновления с его курсора. Её можно читать без API и базы. [HTTP и SSE v1](../../tests/acceptance/fixtures/web-v1.json) · [Сценарии и версии источников AnswerEngine v1](../../backend/contracts/fixtures/v1.json)

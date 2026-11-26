@@ -54,3 +54,27 @@ def test_sse_disconnect_switch_engine_and_recover(live_http, deployment, dsn):
             assert http.get(base + "/events", headers=credentials("second")).status_code == 404
         finally:
             backend.close()
+
+
+def test_web_fixture_resumes_at_persisted_offer():
+    import json
+    from pathlib import Path
+    from backend.contracts.api import AcceptedMessage, EventView, HistoryView, MessageRequest, OfferDecision
+
+    sample = json.loads((Path(__file__).parent / "fixtures/web-v1.json").read_text())
+    MessageRequest.model_validate(sample["request"]["body"])
+    accepted = AcceptedMessage.model_validate(sample["accepted"])
+    snapshot = HistoryView.model_validate(sample["snapshot"])
+    decision = OfferDecision.model_validate(sample["confirm"]["body"])
+    offer = snapshot.turns[0].offers[0]
+    assert accepted.conversation_id == snapshot.conversation_id and accepted.turn_id == offer.turn_id
+    assert offer.status == "open" and decision.version == offer.version
+    cursor = int(sample["resume"]["last_event_id"])
+    assert cursor == snapshot.cursor
+    for frame in sample["resume"]["frames"]:
+        data = next(line[6:] for line in frame.splitlines() if line.startswith("data: "))
+        event = EventView.model_validate_json(data)
+        assert event.conversation_id == accepted.conversation_id and event.cursor == cursor + 1
+        assert event.kind == "offer.confirmed" and event.payload["offer"]["id"] == str(offer.id)
+        cursor = event.cursor
+    assert cursor > snapshot.cursor
