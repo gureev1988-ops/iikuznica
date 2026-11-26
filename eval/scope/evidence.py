@@ -19,6 +19,7 @@ NON_DIRECT = {
     "escalate": "По доступным регламентам нет подтверждённого ответа. Передать вопрос в отдел качества?",
     "out_of_scope": "Это за пределами пресейла и проектной деятельности."
 }
+SUPPLY_HANDOFF_CLAIMS = ("PRE:1.3:1", "PRE:1.3:5")
 
 
 def alternatives(sources, pool, corpus):
@@ -80,9 +81,8 @@ def generate(question, sources, instruction, *, call=complete, model=GEMMA):
     enriched, allowed = options(sources)
     # The vetted fork can supply a first draft. The ordinary judge still reviews the
     # full question and originals. On a repair, allow the model to reconsider it.
-    supply_claims = ["PRE:1.3:1", "PRE:1.3:5"]
-    if not instruction and procedures.supply_handoff(question) and all(k in allowed for k in supply_claims):
-        return render({"action": "answer", "ids": supply_claims}, allowed)
+    if not instruction and procedures.supply_handoff(question) and all(k in allowed for k in SUPPLY_HANDOFF_CLAIMS):
+        return render({"action": "answer", "ids": list(SUPPLY_HANDOFF_CLAIMS)}, allowed)
     request = make_request({"question": question, "sources": enriched}, model, SELECT + "\n" + instruction)
     row = call("request", request, "evidence-core")
     if not row["ok"]:
