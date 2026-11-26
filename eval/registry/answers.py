@@ -47,6 +47,28 @@ reported_action — действие, выбранное системой; ср�
 Ответ строго JSON с ключами claims (массив объектов {span,verdict,refs,reason}), omissions
 (массив строк), behavior и reason. Текст проверки на русском."""
 
+# The generator, evidence, human reference and substantive judging criteria stay identical.
+FORMAT_RETRIES = (
+    "Верни строго один JSON-объект по указанной схеме. Каждое поле span скопируй "
+    "непрерывной дословной подстрокой из message. Каждый элемент refs должен в точности "
+    "совпадать с ключом context. Для supported и contradicted перечисли подтверждающие "
+    "или опровергающие пункты. Пустой refs для этих двух значений недопустим.",
+    "Ещё раз проверь формат каждого утверждения до ответа. span должен буквально входить "
+    "в message. В refs допустимы только ключи context. У supported и contradicted должен "
+    "быть хотя бы один обоснованный пункт. Не добавляй искусственных ссылок. "
+    "Если основания отсутствуют, примени исходные критерии вердикта.",
+)
+
+
+def grade_request(body, retry):
+    if type(retry) is not int or not 0 <= retry <= len(FORMAT_RETRIES):
+        raise ValueError("Unknown grading request variant")
+    if not retry:
+        return body
+    system, source = body["messages"]
+    return dict(body, response_format={"type": "json_object"},
+                messages=[dict(system, content=system["content"] + "\n\n" + FORMAT_RETRIES[retry - 1]), source])
+
 
 def key(source):
     return source["doc"] + " " + source["ref"]
@@ -190,7 +212,8 @@ def report(out, jobs, success, history):
         values = [a["usage"][field] for a in history if isinstance(a.get("usage", {}).get(field), (int, float))]
         usage[field] = {"known_total": sum(values), "unknown_attempts": len(history) - len(values)}
     summary = dict(complete=len(success) == len(jobs), total=len(jobs), graded=len(success), routes=totals,
-                   grader_attempts=len(history), grader_usage_including_retries=usage,
+                   grader_attempts=len(history), grader_format_retries=sum(bool(a.get("format_retry")) for a in history),
+                   grader_usage_including_retries=usage,
                    api_seconds_grading_only=round(sum(a["latency_s"] for a in history), 3))
     atomic_write(out / "summary.json", json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
     atomic_write(out / "assessments.jsonl", "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in report_rows))
@@ -222,33 +245,47 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         history = judge.recover_log(log)
         success = {}
+        next_retry = {}
         for a in history:
             key = a["id"], a["route"]
+            retry = a.get("format_retry", 0)
             if (a["dataset"] != identity or key not in jobs
-                    or a["request_hash"] != judge.fingerprint(jobs[key]["body"])):
+                    or a["request_hash"] != judge.fingerprint(grade_request(jobs[key]["body"], retry))):
                 p.error("Different grading inputs or model. Use another output folder.")
             if a["ok"]:
                 success[key] = decode(a["text"], jobs[key])
+            elif a.get("invalid_format"):
+                next_retry[key] = retry + 1
+        stop = False
         if args.run:
             for key, j in jobs.items():
                 if key in success:
                     continue
                 qid, route = key
-                a = judge.complete(qid, j["body"], identity)
-                a["route"] = route
-                if a["ok"]:
-                    try:
-                        success[key] = decode(a["text"], j)
-                    except (ValueError, TypeError) as err:
-                        a.update(ok=False, error=str(err))
-                with log.open("a", encoding="utf-8") as stream:
-                    stream.write(json.dumps(a, ensure_ascii=False) + "\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                history.append(a)
-                print(qid, route, a["http"], "ok" if a["ok"] else a.get("error"), flush=True)
-                if a["http"] in (400, 401, 402, 403, 404, 429) or a["http"] is None:
+                for retry in range(next_retry.get(key, 0), len(FORMAT_RETRIES) + 1):
+                    a = judge.complete(qid, grade_request(j["body"], retry), identity)
+                    a.update(route=route, format_retry=retry)
+                    if a["ok"]:
+                        try:
+                            success[key] = decode(a["text"], j)
+                        except (ValueError, TypeError) as err:
+                            a.update(ok=False, invalid_format=True, error=str(err))
+                            next_retry[key] = retry + 1
+                    with log.open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(a, ensure_ascii=False) + "\n")
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    history.append(a)
+                    print(qid, route, a["http"], "ok" if a["ok"] else a.get("error"), flush=True)
+                    if not a.get("invalid_format"):
+                        stop = a["http"] in (400, 401, 402, 403, 404, 429) or a["http"] is None
+                        break
+                if stop:
                     break
+        for (qid, route), retry in next_retry.items():
+            if retry > len(FORMAT_RETRIES) and (qid, route) not in success:
+                print(f"{qid} {route}: format retries exhausted. "
+                      f"Inspect the rejected verdicts in {log}.")
         done = report(args.out, jobs, success, history)
         print(f"Graded {len(success)}/{len(jobs)}. Reports in {args.out}")
         return 0 if done else 2
