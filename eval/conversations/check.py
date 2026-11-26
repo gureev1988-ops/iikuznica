@@ -154,7 +154,7 @@ def probe(cases, lookup):
     return {"retrieval": retrieval_probe(cases, lookup), "routing": traces, "followups_top5": followups}
 
 
-def live(cases, lookup, out, *, candidate=False, explicit_pair=False):
+def live(cases, lookup, out, *, candidate=False, explicit_pair=False, state_model=None):
     if not os.getenv("OPENROUTER_API_KEY"):
         raise RuntimeError("The live run requires OPENROUTER_API_KEY")
     out.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -164,6 +164,7 @@ def live(cases, lookup, out, *, candidate=False, explicit_pair=False):
     pending = {}
     for case in cases:
         history = []
+        past = []
         for index, turn in enumerate(case["turns"], 1):
             cid = f"{case['id']}.{index}"
             def generation(_, body, dataset):
@@ -172,7 +173,7 @@ def live(cases, lookup, out, *, candidate=False, explicit_pair=False):
                     if not result["ok"]:
                         raise RuntimeError(f"{cid} generator HTTP {result['http']}")
                     return {"response": result}
-                stage = "planner" if dataset == "conversation-plan" else "generator"
+                stage = "planner" if dataset in {"conversation-plan", "dialogue-state"} else "generator"
                 return cached_call(out, cid, stage, body, fetch, lambda r: r["text"])["response"]
             def judge(body):
                 return cached_call(out, cid, "judge", body, lambda: decide(body), lambda r: r["answers"])
@@ -182,7 +183,14 @@ def live(cases, lookup, out, *, candidate=False, explicit_pair=False):
             if candidate:
                 import conversation
                 try:
-                    if explicit_pair:
+                    if state_model:
+                        import dialogue_state
+                        response = dialogue_state.answer(turn["question"], lookup, past=past, model=state_model,
+                                                         planner=generation, generate_answer=options["generate_answer"],
+                                                         judge=options["judge"])
+                        past.append(dict(user=turn["question"], assistant=response["message"],
+                                         resolved=response["resolved_question"], action=response["action"]))
+                    elif explicit_pair:
                         response = conversation.answer_explicit(turn["question"], lookup, **options)
                     else:
                         response = conversation.answer(turn["question"], lookup, planner=generation, **options)
@@ -220,7 +228,9 @@ if __name__ == "__main__":
         if name == "live":
             mode.add_argument("--independent-parts", action="store_true")
         if name == "candidate":
-            mode.add_argument("--explicit-pair", action="store_true", help="Baseline with conservative splitting")
+            routes = mode.add_mutually_exclusive_group()
+            routes.add_argument("--state-model", help="Model used only to resolve a follow-up against its topics")
+            routes.add_argument("--explicit-pair", action="store_true", help="Baseline with conservative splitting")
             mode.add_argument("--working50", type=Path, help="Private packet with the original working bank")
             mode.add_argument("--model-dir", type=Path, help="Pinned MiniLM for newly contextualized queries")
             mode.add_argument("--python", default=sys.executable)
@@ -270,4 +280,4 @@ if __name__ == "__main__":
             save(args.out, json.dumps(probe(cases, lookup), ensure_ascii=False, indent=2))
         else:
             live(cases, lookup, args.out, candidate=args.command == "candidate",
-                 explicit_pair=getattr(args, "explicit_pair", False))
+                 explicit_pair=getattr(args, "explicit_pair", False), state_model=getattr(args, "state_model", None))

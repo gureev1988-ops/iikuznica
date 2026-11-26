@@ -209,6 +209,7 @@ if __name__ == "__main__":
     parser.add_argument("--python", default=sys.executable, help="Python with ONNX Runtime and tokenizers")
     parser.add_argument("--evidence", action="store_true", help="Select source-bound registry statements")
     routes = parser.add_mutually_exclusive_group()
+    routes.add_argument("--state-model", help="Resolve follow-ups using this model and a turn-state JSON file")
     routes.add_argument("--explicit-pair", action="store_true", help="Split two explicitly scoped requests")
     routes.add_argument("--conversation", action="store_true", help="Plan requests, resolve history and assemble one reply")
     parser.add_argument("--history-file", type=Path, help="JSON array of user/assistant pairs for --conversation")
@@ -228,7 +229,16 @@ if __name__ == "__main__":
     if args.faq_file:
         from quality import ApprovedFAQ
         kwargs.update(faq=ApprovedFAQ.from_file(args.faq_file), faq_scope=args.faq_scope)
-    if args.conversation or args.explicit_pair:
+    if args.state_model:
+        import dialogue_state
+        import evidence
+        if args.previous_question:
+            parser.error("--state-model requires completed turns in --history-file")
+        past = json.loads(args.history_file.read_text()) if args.history_file else []
+        final = dialogue_state.answer(args.question, search, past=past, model=args.state_model,
+                                      faq=kwargs.get("faq"), faq_scope=args.faq_scope,
+                                      generate_answer=lambda *a: evidence.generate(*a, model=args.model))
+    elif args.conversation or args.explicit_pair:
         import conversation
         import evidence
         history = json.loads(args.history_file.read_text()) if args.history_file else []
@@ -239,6 +249,6 @@ if __name__ == "__main__":
                       generate_answer=lambda *a: evidence.generate(*a, model=args.model))
     else:
         if args.history_file:
-            parser.error("--history-file requires --conversation or --explicit-pair")
+            parser.error("--history-file requires --conversation, --explicit-pair or --state-model")
         final = answer(args.question, search, args.previous_question, **kwargs)
     print(json.dumps(final, ensure_ascii=False))
