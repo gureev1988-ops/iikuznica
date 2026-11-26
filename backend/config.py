@@ -35,7 +35,7 @@ class Settings(ConfigModel):
     database_url: SecretStr
     public_base_url: str = "http://localhost:8000"
     identities: list[Identity] = Field(default_factory=list)
-    engine: str = "deterministic"
+    engine: str = "fixture-alpha"
     integrations: dict = Field(default_factory=dict)
     max_pending: int = Field(default=32, ge=10)
     interactive_concurrency: int = Field(default=8, ge=1)
