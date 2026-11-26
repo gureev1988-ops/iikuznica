@@ -313,3 +313,48 @@ def test_dion_async_failure_and_timeout_never_count_as_sent(dsn, dion):
         )
     _run(dsn, "background", adapter.handlers)
     assert len(provider.sends) == 2
+
+
+def test_dion_routes_numbered_clarification_to_the_same_case(dsn, dion):
+    from backend.db import connect
+
+    provider, adapter, dialogue = dion
+    provider.text("Как подать заявку?")
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    _run(dsn, "background", adapter.handlers)
+    prompt = provider.sends[-1]
+    assert "1. Сотруднику" in prompt["text"]
+    reply_to = provider.settle(prompt)
+    adapter.poll_once(timeout=0)
+
+    provider.text("1", reply=reply_to)
+    adapter.poll_once(timeout=0)
+    assert adapter.route_once() == 1
+    with connect(dsn) as conn:
+        case = conn.execute("SELECT id, conditions FROM cases").fetchone()
+        assert case["conditions"] == {"requester": "employee"}
+        assert conn.execute("SELECT status FROM clarifications").fetchone()["status"] == "resolved"
+        turns = conn.execute("SELECT case_id FROM turns").fetchall()
+        assert [row["case_id"] for row in turns] == [case["id"], case["id"]]
+
+
+def test_dion_rechecks_source_applicability_before_deferred_send(dsn, dion):
+    from backend.contracts.fixtures import seed_fixture_sources
+    from backend.db import connect
+
+    provider, adapter, dialogue = dion
+    provider.text("Сколько дней рассматривают заявку?")
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    assert _state(dsn)["outbox"][0]["source_refs"]
+
+    with connect(dsn) as conn:
+        seed_fixture_sources(conn, active_version=2)
+    _run(dsn, "background", adapter.handlers)
+    assert provider.sends == []
+    attempt = _state(dsn)["attempts"][0]
+    assert attempt["state"] == "failed"
+    assert attempt["detail"] == "dion_source_no_longer_available"
