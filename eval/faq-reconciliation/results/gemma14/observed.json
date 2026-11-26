@@ -1,0 +1,69 @@
+{
+  "model": "google/gemma-4-26b-a4b-it",
+  "evidence": "Observed in the cloud runner's final results; batch inference on synthetic data.",
+  "cases": 14,
+  "positive": 5,
+  "negative": 9,
+  "preparation": {
+    "original_clauses": 18,
+    "accepted_cards": 17,
+    "rejected": [
+      "T.v2.6"
+    ],
+    "initial_checkout": "b807dfefef819e8f3ecea5888365369b87975109",
+    "decision_checkout": "d159830a930cd4690d8a43b640d4b2c55f996d18",
+    "reused_audit": "First complete boolean response; missing reason is permitted, false still drops card."
+  },
+  "arms": {
+    "raw": {
+      "relation": 11,
+      "action": 10,
+      "source": 11,
+      "evidence": 11,
+      "exact": 7,
+      "conflict": {
+        "tp": 4,
+        "fp": 1,
+        "fn": 1,
+        "tn": 8
+      },
+      "hazard_cases": 3
+    },
+    "registry": {
+      "relation": 8,
+      "action": 8,
+      "source": 10,
+      "evidence": 11,
+      "exact": 5,
+      "conflict": {
+        "tp": 4,
+        "fp": 3,
+        "fn": 1,
+        "tn": 6
+      },
+      "hazard_cases": 4
+    }
+  },
+  "usage": {
+    "attempts": 5,
+    "model_reported_usd": 0.00416296,
+    "total_input_tokens": 29470,
+    "total_output_tokens": 5923,
+    "aggregate_wall_seconds": 24.721,
+    "raw_decision": {
+      "provider": "Makora",
+      "input_tokens": 7077,
+      "output_tokens": 1453,
+      "usd": 0.00104377,
+      "batch_s": 3.467
+    },
+    "registry_decision": {
+      "provider": "NextBit",
+      "input_tokens": 13829,
+      "output_tokens": 1524,
+      "usd": 0.00170181,
+      "batch_s": 7.603
+    }
+  },
+  "cloud_zip_sha256": "989af20daa35a7a60e62e62536c2b1ad8f00c385b7683c394ec6e826ef9294b3"
+}
