@@ -85,6 +85,14 @@ class ResultView(BaseModel):
     notice: str | None = None
 
 
+class MailFollowupView(BaseModel):
+    request_id: UUID
+    case_id: UUID
+    turn_id: UUID
+    state: Literal["counter_question", "partial"]
+    pending: list[str]
+
+
 class TurnView(BaseModel):
     turn_id: UUID
     conversation_id: UUID
@@ -97,6 +105,7 @@ class TurnView(BaseModel):
     clarifications: list[ClarificationView]
     offers: list[OfferView]
     cursor: int
+    mail_followups: list[MailFollowupView] = Field(default_factory=list)
 
 
 class HistoryView(BaseModel):
@@ -104,6 +113,7 @@ class HistoryView(BaseModel):
     cursor: int
     messages: list[MessageView]
     turns: list[TurnView]
+    mail_followups: list[MailFollowupView] = Field(default_factory=list)
 
 
 class SourceView(BaseModel):
