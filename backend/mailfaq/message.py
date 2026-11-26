@@ -2,6 +2,7 @@
 
 from dataclasses import asdict, dataclass
 from email import policy
+from email.errors import MessageError
 from email.parser import BytesParser
 from hashlib import sha256
 from html.parser import HTMLParser
@@ -11,7 +12,7 @@ import unicodedata
 from .transport import MailConfig, Receipt
 
 
-MESSAGE_ID = re.compile(r"<[^<>\s@]+@[^<>\s@]+>")
+MESSAGE_ID = re.compile(r"<[^<>\s@\x00-\x1f\x7f]+@[^<>\s@\x00-\x1f\x7f]+>")
 TOKEN = re.compile(r"\[case:([A-Za-z0-9_-]{24,64})\]", re.I)
 REPLY_BOUNDARY = re.compile(
     r"^(?:--\s*$|_{3,}|-{2,}\s*(?:original message|исходное сообщение|forwarded|"
@@ -107,7 +108,9 @@ def _address(message) -> str:
     if len(addresses) != 1:
         return ""
     address = addresses[0]
-    return address.addr_spec.casefold() if address.username and address.domain else ""
+    if not address.username or not address.domain or not address.addr_spec.isprintable():
+        return ""
+    return address.addr_spec.casefold()
 
 
 def _authenticated(message, sender: str, config: MailConfig, *, dsn: bool) -> bool:
@@ -224,7 +227,15 @@ def parse_receipt(receipt: Receipt, config: MailConfig) -> tuple[ParsedMail, str
         parsed = ParsedMail(None, "", False, (), (), "unrecognized", reason=receipt.error)
         return parsed, sha256(f"{receipt.uid}:{receipt.error}".encode()).hexdigest()
 
-    message = BytesParser(policy=policy.default).parsebytes(receipt.raw)
+    fingerprint = sha256(receipt.raw).hexdigest()
+    try:
+        message = BytesParser(policy=policy.default).parsebytes(receipt.raw)
+        return _parse_message(message, config), fingerprint
+    except (MessageError, UnicodeError, ValueError, IndexError, RecursionError):
+        return ParsedMail(None, "", False, (), (), "unrecognized", reason="malformed_mime"), fingerprint
+
+
+def _parse_message(message, config: MailConfig) -> ParsedMail:
     sender = _address(message)
     ids = _message_ids(message.get_all("Message-ID", []))
     message_id = ids[0] if len(ids) == 1 and len(message.get_all("Message-ID", [])) == 1 else None
@@ -257,10 +268,10 @@ def parse_receipt(receipt: Receipt, config: MailConfig) -> tuple[ParsedMail, str
     elif reports:
         kind = "delivery_failed" if "failed" in actions else "delivery_notice"
         parsed = ParsedMail(**base, kind=kind)
-    elif ((auto := str(message.get("Auto-Submitted", "no")).split(";")[0].strip().casefold()) != "no"
+    elif (str(message.get("Auto-Submitted", "no")).split(";")[0].strip().casefold() != "no"
           or str(message.get("Precedence", "")).casefold() in {"bulk", "junk", "list", "auto_reply"}
           or message.get("X-Autoreply") or message.get("X-Autorespond")):
-        parsed = ParsedMail(**base, kind="automatic", reason=auto)
+        parsed = ParsedMail(**base, kind="automatic", reason="auto_reply")
     else:
         sections = _sections(body)
         text = clean_public_text(sections.get("correction", sections.get("resolution", sections.get("plain", ""))))
@@ -282,4 +293,4 @@ def parse_receipt(receipt: Receipt, config: MailConfig) -> tuple[ParsedMail, str
             parsed = ParsedMail(**base, kind="counter_question", prompt=prompt or text, pending=pending)
         else:
             parsed = ParsedMail(**base, kind="unrecognized", reason="no_substantive_reply")
-    return parsed, sha256(receipt.raw).hexdigest()
+    return parsed

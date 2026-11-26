@@ -93,6 +93,9 @@ def test_ordinary_reply_publishes_only_safe_excerpt_and_replays_after_uid_reset(
     with connect(dsn) as conn:
         active = find_faq(conn, "  КАКОЙ срок согласования? ", {})
         assert active.text == ANSWER
+        assert conn.execute(
+            "SELECT title FROM source_revisions WHERE id = %s", (active.revision_id,),
+        ).fetchone()["title"] == "Официальное разъяснение"
         assert find_faq(conn, QUESTION, {"region": "west"}) is None
         assert conn.execute("SELECT count(*) AS n FROM mail_outbound").fetchone()["n"] == 1
         event = conn.execute(

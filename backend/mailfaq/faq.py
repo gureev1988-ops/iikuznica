@@ -246,7 +246,7 @@ def publish_faq(conn, request: dict, text: str, *, replace: bool = False) -> Faq
         """,
         (
             revision_id, document_id, version,
-            clean_public_text(request["question"]) or "Официальное разъяснение",
+            "Официальное разъяснение",
             sha256(text.encode("utf-8")).hexdigest(),
         ),
     )
