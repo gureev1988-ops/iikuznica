@@ -91,6 +91,25 @@ class ProcedureTests(unittest.TestCase):
         self.assertEqual(evidence.generate(question, [], "", call=repair)["action"], "clarify")
         self.assertEqual(repair.call_count, 2)
 
+    def test_repeated_draft_gets_a_distinct_review_with_all_sources(self):
+        from test_scope import decision
+        q = "Какие сроки указаны для предварительной оценки?"
+        partial = decision()
+        partial["answers"]["complete"]["noul"] = .3
+        for second, expected in [(decision(), "answer"), (partial, "escalate")]:
+            judge = Mock(side_effect=[{"response": partial}, {"response": second}])
+            draft = {"action": "answer", "message": "Ответ с проверяемой ссылкой.",
+                     "sources": [{"doc": "DB", "ref": "1.6"}]}
+            result = ask.answer(q, lambda _: ([("DB", "1.7"), ("DB", "1.6")], []),
+                                generate_answer=Mock(return_value=draft), judge=judge, instruction="",
+                                procedure_mode=True)
+            self.assertEqual(result["action"], expected)
+            a, b = [call.args[0] for call in judge.call_args_list]
+            self.assertNotEqual(a["questions"]["complete"], b["questions"]["complete"])
+            before, after = [json.loads(body["state"])["sources"] for body in (a, b)]
+            self.assertCountEqual(before, after)
+            self.assertEqual(after[0]["ref"], "1.6")
+
     def test_supply_fork_requires_scope_selection_and_a_full_refusal(self):
         stem = "ИБ. Клиент выбрал оборудование. Кому передать предложение? "
         for extra in ("От внедрения отказались, поддержка всё ещё нужна.", "Клиент не отказался от услуг.",

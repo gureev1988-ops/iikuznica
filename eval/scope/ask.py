@@ -101,6 +101,26 @@ def generate(question, sources, instruction):
     return draft(row["text"])
 
 
+def focus_repeated_review(body, draft, sources):
+    """A second identical review cannot expose why the requested action is incomplete."""
+    cited = {(s.get("doc"), s.get("ref")) for s in draft["sources"]}
+    if not cited or not cited.issubset({(s["doc"], s["ref"]) for s in sources}):
+        return body
+    state = json.loads(body["state"])
+    # Keep every original available to catch real conflicts and missing conditions.
+    state["sources"] = sorted(sources, key=lambda s: (s["doc"], s["ref"]) not in cited)
+    questions = dict(body["questions"])
+    completeness = questions["complete"]
+    questions["complete"] = dict(completeness, instructions=completeness["instructions"] + (
+        " Это повторная сверка прямого ответа. Выдели конкретные просьбы сотрудника. "
+        "По процитированным оригиналам проверь действие, исполнителя, получателя и условия, "
+        "которые нужны именно для этих просьб. Сверь остальные источники на применимые исключения. "
+        "Если все запрошенные действия подтверждены, считай ответ полным. "
+        "Шаги из взаимоисключающих ветвей требуются только при неясности ситуации."
+    ))
+    return dict(body, state=json.dumps(state, ensure_ascii=False), questions=questions)
+
+
 def answer(question, search, previous_question="", generate_answer=generate, judge=decide,
            add_sources=None, instruction=None, procedure_mode=False, history=(), faq=None, faq_scope=None):
     question = question.strip()
@@ -149,14 +169,19 @@ def answer(question, search, previous_question="", generate_answer=generate, jud
     if instruction is None:
         instruction = load_dataset(EVAL / "iikuznitsa_run12/IIkuznitsa_Run_12x3.py")["system"]
     expanded = False
+    rejected_draft = None
     for attempt in range(2):
         current = generate_answer(question, sources, instruction)
         body = decision_body(question, current, sources, expanded)
         body["questions"] = dict(body["questions"], scope=SCOPE)
+        if procedure_mode and rejected_draft is not None and current == rejected_draft:
+            body = focus_repeated_review(body, current, sources)
         verdict = judge(body)["response"]
         route, final = scoped_result(verdict, current, sources, fact)
         if final is not None:
             return final
+        if route == "revise" and current["action"] == "answer" and verdict["answers"]["route"]["choice"] == "answer":
+            rejected_draft = current
         if not attempt and route == "retrieve":
             additional = extended(sources, pool, corpus)
             if procedure_mode:
