@@ -1,0 +1,116 @@
+{
+  "n": 35,
+  "complete": true,
+  "variants": {
+    "baseline": {
+      "correct_actions": 33,
+      "correct_by_action": {
+        "clarify": 3,
+        "answer": 28,
+        "escalate": 1,
+        "out_of_scope": 1
+      },
+      "incorrect_action_ids": [
+        "Q11",
+        "Q20"
+      ],
+      "regressed_action_ids": [],
+      "safe_controls_lost_direct_answer": [],
+      "api_s": {
+        "p50": 1.555,
+        "p95": 4.038
+      },
+      "usd": 0.004840312
+    },
+    "links": {
+      "correct_actions": 34,
+      "correct_by_action": {
+        "clarify": 4,
+        "answer": 28,
+        "escalate": 1,
+        "out_of_scope": 1
+      },
+      "incorrect_action_ids": [
+        "Q20"
+      ],
+      "regressed_action_ids": [],
+      "safe_controls_lost_direct_answer": [],
+      "api_s": {
+        "p50": 1.642,
+        "p95": 6.671
+      },
+      "usd": 0.008205318
+    },
+    "conditions": {
+      "correct_actions": 34,
+      "correct_by_action": {
+        "clarify": 4,
+        "answer": 28,
+        "escalate": 1,
+        "out_of_scope": 1
+      },
+      "incorrect_action_ids": [
+        "Q20"
+      ],
+      "regressed_action_ids": [],
+      "safe_controls_lost_direct_answer": [],
+      "api_s": {
+        "p50": 1.809,
+        "p95": 6.804
+      },
+      "usd": 0.008205318
+    },
+    "baseline_threshold": {
+      "correct_actions": 35,
+      "correct_by_action": {
+        "clarify": 4,
+        "answer": 28,
+        "escalate": 2,
+        "out_of_scope": 1
+      },
+      "incorrect_action_ids": [],
+      "regressed_action_ids": [],
+      "safe_controls_lost_direct_answer": [],
+      "api_s": {
+        "p50": 1.555,
+        "p95": 4.038
+      },
+      "usd": 0.004840312
+    },
+    "links_threshold": {
+      "correct_actions": 35,
+      "correct_by_action": {
+        "clarify": 4,
+        "answer": 28,
+        "escalate": 2,
+        "out_of_scope": 1
+      },
+      "incorrect_action_ids": [],
+      "regressed_action_ids": [],
+      "safe_controls_lost_direct_answer": [],
+      "api_s": {
+        "p50": 1.642,
+        "p95": 6.671
+      },
+      "usd": 0.008205318
+    },
+    "conditions_threshold": {
+      "correct_actions": 35,
+      "correct_by_action": {
+        "clarify": 4,
+        "answer": 28,
+        "escalate": 2,
+        "out_of_scope": 1
+      },
+      "incorrect_action_ids": [],
+      "regressed_action_ids": [],
+      "safe_controls_lost_direct_answer": [],
+      "api_s": {
+        "p50": 1.809,
+        "p95": 6.804
+      },
+      "usd": 0.008205318
+    }
+  },
+  "controls_with_condition_repair": []
+}
