@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "questions": ["Сколько дней рассматривают заявку?", "What is the review deadline?"],
+      "action": "answer",
+      "document_id": "10103100-0000-4000-8000-000000000001"
+    },
+    {
+      "questions": ["Как подать заявку?", "How do I submit a request?"],
+      "action": "clarify",
+      "text": "Уточните, кому нужна заявка.",
+      "document_id": "10103100-0000-4000-8000-000000000002",
+      "condition_key": "requester",
+      "options": [
+        {"id": "employee", "text": "Сотруднику"},
+        {"id": "contractor", "text": "Подрядчику"}
+      ]
+    },
+    {
+      "questions": ["Нужно официальное разъяснение", "I need an official clarification"],
+      "action": "escalate",
+      "text": "Предлагаю запросить официальное разъяснение."
+    },
+    {
+      "questions": ["Сбой модели", "Simulate a model failure"],
+      "action": "technical_failure"
+    }
+  ],
+  "sources": [
+    {
+      "document_id": "10103100-0000-4000-8000-000000000001",
+      "external_id": "review-deadline",
+      "title": "Учебный регламент рассмотрения заявки",
+      "anchor": "review-deadline",
+      "revisions": [
+        {
+          "version": 1,
+          "revision_id": "20103100-0000-4000-8000-000000000001",
+          "fragment_id": "30103100-0000-4000-8000-000000000001",
+          "text": "Заявку рассматривают в течение 2 дней."
+        },
+        {
+          "version": 2,
+          "revision_id": "20103100-0000-4000-8000-000000000002",
+          "fragment_id": "30103100-0000-4000-8000-000000000002",
+          "text": "Заявку рассматривают в течение 7 дней."
+        }
+      ]
+    },
+    {
+      "document_id": "10103100-0000-4000-8000-000000000002",
+      "external_id": "submission",
+      "title": "Учебный регламент подачи заявки",
+      "anchor": "submission",
+      "revisions": [
+        {
+          "version": 1,
+          "revision_id": "20103100-0000-4000-8000-000000000003",
+          "fragment_id": "30103100-0000-4000-8000-000000000003",
+          "text": "Заявку подают через учебный портал."
+        },
+        {
+          "version": 2,
+          "revision_id": "20103100-0000-4000-8000-000000000004",
+          "fragment_id": "30103100-0000-4000-8000-000000000004",
+          "text": "Учебную заявку подают через форму портала."
+        }
+      ]
+    }
+  ]
+}
