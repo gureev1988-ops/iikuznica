@@ -27,6 +27,19 @@
         "title": "AcceptedMessage",
         "type": "object"
       },
+      "AuthenticationError": {
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "AuthenticationError",
+        "type": "object"
+      },
       "ClarificationOptionView": {
         "properties": {
           "conditions": {
@@ -104,6 +117,29 @@
           "options"
         ],
         "title": "ClarificationView",
+        "type": "object"
+      },
+      "CommandValidationError": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DialogueErrorDetail"
+              },
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ValidationIssue"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "CommandValidationError",
         "type": "object"
       },
       "CoverFaqBody": {
@@ -252,6 +288,74 @@
           "deliveries"
         ],
         "title": "DeliveryAttempts",
+        "type": "object"
+      },
+      "DialogueErrorDetail": {
+        "additionalProperties": true,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "DialogueErrorDetail",
+        "type": "object"
+      },
+      "DialogueErrorResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/DialogueErrorDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "DialogueErrorResponse",
+        "type": "object"
+      },
+      "EventCursorExpired": {
+        "properties": {
+          "code": {
+            "const": "event_cursor_expired",
+            "default": "event_cursor_expired",
+            "title": "Code",
+            "type": "string"
+          },
+          "cursor": {
+            "title": "Cursor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cursor"
+        ],
+        "title": "EventCursorExpired",
+        "type": "object"
+      },
+      "EventCursorExpiredResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/EventCursorExpired"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "EventCursorExpiredResponse",
         "type": "object"
       },
       "FaqConflict": {
@@ -431,6 +535,13 @@
           "cursor": {
             "title": "Cursor",
             "type": "integer"
+          },
+          "mail_followups": {
+            "items": {
+              "$ref": "#/components/schemas/MailFollowupView"
+            },
+            "title": "Mail Followups",
+            "type": "array"
           },
           "messages": {
             "items": {
@@ -705,6 +816,49 @@
         "title": "Liveness",
         "type": "object"
       },
+      "MailFollowupView": {
+        "properties": {
+          "case_id": {
+            "format": "uuid",
+            "title": "Case Id",
+            "type": "string"
+          },
+          "pending": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Pending",
+            "type": "array"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "counter_question",
+              "partial"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "turn_id": {
+            "format": "uuid",
+            "title": "Turn Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "case_id",
+          "turn_id",
+          "state",
+          "pending"
+        ],
+        "title": "MailFollowupView",
+        "type": "object"
+      },
       "MailStatus": {
         "properties": {
           "cursor": {
@@ -854,6 +1008,20 @@
             ],
             "title": "Role",
             "type": "string"
+          },
+          "source_refs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SourceReference"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Refs"
           },
           "text": {
             "title": "Text",
@@ -1329,6 +1497,11 @@
       },
       "ReconciliationBody": {
         "properties": {
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
           "detail": {
             "maxLength": 400,
             "minLength": 1,
@@ -1350,6 +1523,7 @@
           }
         },
         "required": [
+          "attempt_id",
           "state",
           "detail"
         ],
@@ -1737,6 +1911,12 @@
             "title": "Started At"
           },
           "status": {
+            "enum": [
+              "queued",
+              "running",
+              "incomplete",
+              "completed"
+            ],
             "title": "Status",
             "type": "string"
           }
@@ -1867,6 +2047,13 @@
             ],
             "title": "Error"
           },
+          "mail_followups": {
+            "items": {
+              "$ref": "#/components/schemas/MailFollowupView"
+            },
+            "title": "Mail Followups",
+            "type": "array"
+          },
           "offers": {
             "items": {
               "$ref": "#/components/schemas/OfferView"
@@ -1958,6 +2145,54 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "ValidationIssue": {
+        "properties": {
+          "ctx": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ctx"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Loc",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Msg",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationIssue",
         "type": "object"
       }
     },
@@ -2256,18 +2491,65 @@
             },
             "description": "Server-sent events. Resume with Last-Event-ID from the same conversation. After a 410 response, read the conversation snapshot and resume at its cursor."
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationError"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "This operation requires the employee role."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist or is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The command conflicts with current state."
+          },
           "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventCursorExpiredResponse"
+                }
+              }
+            },
             "description": "Cursor expired. Read a new conversation snapshot."
           },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/CommandValidationError"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The command or request body is invalid."
           }
         },
         "security": [
@@ -2307,15 +2589,45 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationError"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "This operation requires the employee role."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist or is unavailable."
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/CommandValidationError"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The command or request body is invalid."
           }
         },
         "security": [
@@ -2363,15 +2675,65 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationError"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "This operation requires the employee role."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist or is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The command conflicts with current state."
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/CommandValidationError"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The command or request body is invalid."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The interactive queue cannot accept the command."
           }
         },
         "security": [
@@ -2476,15 +2838,65 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationError"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "This operation requires the employee role."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist or is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The command conflicts with current state."
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/CommandValidationError"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The command or request body is invalid."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The interactive queue cannot accept the command."
           }
         },
         "security": [
@@ -2534,15 +2946,55 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationError"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "This operation requires the employee role."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist or is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The command conflicts with current state."
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/CommandValidationError"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The command or request body is invalid."
           }
         },
         "security": [
@@ -3430,15 +3882,45 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationError"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "This operation requires the employee role."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist or is unavailable."
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/CommandValidationError"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The command or request body is invalid."
           }
         },
         "security": [
@@ -3478,15 +3960,45 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationError"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "This operation requires the employee role."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist or is unavailable."
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/CommandValidationError"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The command or request body is invalid."
           }
         },
         "security": [
@@ -3515,6 +4027,7 @@
             }
           },
           {
+            "description": "Attempt shown on the failed turn snapshot.",
             "in": "query",
             "name": "attempt",
             "required": false,
@@ -3528,6 +4041,7 @@
                   "type": "null"
                 }
               ],
+              "description": "Attempt shown on the failed turn snapshot.",
               "title": "Attempt"
             }
           }
@@ -3543,15 +4057,65 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationError"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "This operation requires the employee role."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist or is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The command conflicts with current state."
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/CommandValidationError"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The command or request body is invalid."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogueErrorResponse"
+                }
+              }
+            },
+            "description": "The interactive queue cannot accept the command."
           }
         },
         "security": [

@@ -481,6 +481,11 @@ export interface components {
              */
             turn_id: string;
         };
+        /** AuthenticationError */
+        AuthenticationError: {
+            /** Detail */
+            detail: string;
+        };
         /** ClarificationOptionView */
         ClarificationOptionView: {
             /** Conditions */
@@ -520,6 +525,11 @@ export interface components {
             turn_id: string;
             /** Version */
             version: number;
+        };
+        /** CommandValidationError */
+        CommandValidationError: {
+            /** Detail */
+            detail: components["schemas"]["DialogueErrorDetail"] | components["schemas"]["ValidationIssue"][];
         };
         /** CoverFaqBody */
         CoverFaqBody: {
@@ -584,6 +594,19 @@ export interface components {
             /** Deliveries */
             deliveries: components["schemas"]["DeliveryAttempt"][];
         };
+        /** DialogueErrorDetail */
+        DialogueErrorDetail: {
+            /** Code */
+            code: string;
+            /** Cursor */
+            cursor?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** DialogueErrorResponse */
+        DialogueErrorResponse: {
+            detail: components["schemas"]["DialogueErrorDetail"];
+        };
         /** EventCursorExpired */
         EventCursorExpired: {
             /**
@@ -594,6 +617,10 @@ export interface components {
             code: "event_cursor_expired";
             /** Cursor */
             cursor: number;
+        };
+        /** EventCursorExpiredResponse */
+        EventCursorExpiredResponse: {
+            detail: components["schemas"]["EventCursorExpired"];
         };
         /** EventView */
         EventView: {
@@ -692,6 +719,8 @@ export interface components {
             conversation_id: string;
             /** Cursor */
             cursor: number;
+            /** Mail Followups */
+            mail_followups?: components["schemas"]["MailFollowupView"][];
             /** Messages */
             messages: components["schemas"]["MessageView"][];
             /** Turns */
@@ -797,6 +826,31 @@ export interface components {
              */
             status: "ok";
         };
+        /** MailFollowupView */
+        MailFollowupView: {
+            /**
+             * Case Id
+             * Format: uuid
+             */
+            case_id: string;
+            /** Pending */
+            pending: string[];
+            /**
+             * Request Id
+             * Format: uuid
+             */
+            request_id: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "counter_question" | "partial";
+            /**
+             * Turn Id
+             * Format: uuid
+             */
+            turn_id: string;
+        };
         /** MailStatus */
         MailStatus: {
             cursor: components["schemas"]["CursorSummary"] | null;
@@ -847,6 +901,8 @@ export interface components {
              * @enum {string}
              */
             role: "user" | "assistant" | "system";
+            /** Source Refs */
+            source_refs?: components["schemas"]["SourceReference"][] | null;
             /** Text */
             text: string;
             /** Turn Id */
@@ -1009,6 +1065,11 @@ export interface components {
         };
         /** ReconciliationBody */
         ReconciliationBody: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
             /** Detail */
             detail: string;
             /**
@@ -1208,8 +1269,11 @@ export interface components {
             source_key: string;
             /** Started At */
             started_at: string | null;
-            /** Status */
-            status: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "incomplete" | "completed";
         };
         /** TurnLatencies */
         TurnLatencies: {
@@ -1255,6 +1319,8 @@ export interface components {
             cursor: number;
             /** Error */
             error: string | null;
+            /** Mail Followups */
+            mail_followups?: components["schemas"]["MailFollowupView"][];
             /** Offers */
             offers: components["schemas"]["OfferView"][];
             /** Question */
@@ -1282,6 +1348,21 @@ export interface components {
             /** Message */
             msg: string;
             /** Error Type */
+            type: string;
+        };
+        /** ValidationIssue */
+        ValidationIssue: {
+            /** Ctx */
+            ctx?: {
+                [key: string]: unknown;
+            } | null;
+            /** Input */
+            input?: unknown;
+            /** Loc */
+            loc: (string | number)[];
+            /** Msg */
+            msg: string;
+            /** Type */
             type: string;
         };
     };
@@ -1432,20 +1513,58 @@ export interface operations {
                     "text/event-stream": string;
                 };
             };
+            /** @description A valid bearer token is required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthenticationError"];
+                };
+            };
+            /** @description This operation requires the employee role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist or is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The command conflicts with current state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
             /** @description Cursor expired. Read a new conversation snapshot. */
             410: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["EventCursorExpiredResponse"];
+                };
             };
-            /** @description Validation Error */
+            /** @description The command or request body is invalid. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["CommandValidationError"];
                 };
             };
         };
@@ -1470,13 +1589,40 @@ export interface operations {
                     "application/json": components["schemas"]["HistoryView"];
                 };
             };
-            /** @description Validation Error */
+            /** @description A valid bearer token is required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthenticationError"];
+                };
+            };
+            /** @description This operation requires the employee role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist or is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The command or request body is invalid. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["CommandValidationError"];
                 };
             };
         };
@@ -1505,13 +1651,58 @@ export interface operations {
                     "application/json": components["schemas"]["AcceptedMessage"];
                 };
             };
-            /** @description Validation Error */
+            /** @description A valid bearer token is required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthenticationError"];
+                };
+            };
+            /** @description This operation requires the employee role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist or is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The command conflicts with current state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The command or request body is invalid. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["CommandValidationError"];
+                };
+            };
+            /** @description The interactive queue cannot accept the command. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
                 };
             };
         };
@@ -1575,13 +1766,58 @@ export interface operations {
                     "application/json": components["schemas"]["OfferView"];
                 };
             };
-            /** @description Validation Error */
+            /** @description A valid bearer token is required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthenticationError"];
+                };
+            };
+            /** @description This operation requires the employee role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist or is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The command conflicts with current state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The command or request body is invalid. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["CommandValidationError"];
+                };
+            };
+            /** @description The interactive queue cannot accept the command. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
                 };
             };
         };
@@ -1610,13 +1846,49 @@ export interface operations {
                     "application/json": components["schemas"]["OfferView"];
                 };
             };
-            /** @description Validation Error */
+            /** @description A valid bearer token is required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthenticationError"];
+                };
+            };
+            /** @description This operation requires the employee role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist or is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The command conflicts with current state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The command or request body is invalid. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["CommandValidationError"];
                 };
             };
         };
@@ -2119,13 +2391,40 @@ export interface operations {
                     "application/json": components["schemas"]["SourceView"];
                 };
             };
-            /** @description Validation Error */
+            /** @description A valid bearer token is required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthenticationError"];
+                };
+            };
+            /** @description This operation requires the employee role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist or is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The command or request body is invalid. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["CommandValidationError"];
                 };
             };
         };
@@ -2150,13 +2449,40 @@ export interface operations {
                     "application/json": components["schemas"]["TurnView"];
                 };
             };
-            /** @description Validation Error */
+            /** @description A valid bearer token is required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthenticationError"];
+                };
+            };
+            /** @description This operation requires the employee role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist or is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The command or request body is invalid. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["CommandValidationError"];
                 };
             };
         };
@@ -2164,6 +2490,7 @@ export interface operations {
     retry_v1_turns__turn_id__retry_post: {
         parameters: {
             query?: {
+                /** @description Attempt shown on the failed turn snapshot. */
                 attempt?: number | null;
             };
             header?: never;
@@ -2183,13 +2510,58 @@ export interface operations {
                     "application/json": components["schemas"]["AcceptedMessage"];
                 };
             };
-            /** @description Validation Error */
+            /** @description A valid bearer token is required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthenticationError"];
+                };
+            };
+            /** @description This operation requires the employee role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist or is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The command conflicts with current state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
+                };
+            };
+            /** @description The command or request body is invalid. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["CommandValidationError"];
+                };
+            };
+            /** @description The interactive queue cannot accept the command. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DialogueErrorResponse"];
                 };
             };
         };
