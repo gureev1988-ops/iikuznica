@@ -110,7 +110,10 @@ def test_upgrade_keeps_attempt_audit_after_events_are_pruned(legacy_dsn):
             "attempt_id": str(sent_attempt), "state": "sent", "provider_id": provider_id,
         })
 
-    assert db.migrate(legacy_dsn) == (MIGRATION,)
+    pending = tuple(sorted(
+        path.name for path in db.MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql") if path.name >= MIGRATION
+    ))
+    assert db.migrate(legacy_dsn) == pending
     assert db.migrate(legacy_dsn) == ()
     with db.connect(legacy_dsn) as conn:
         assert conn.execute("SELECT * FROM dion_dispatches").fetchall() == [{
