@@ -74,12 +74,14 @@ class SourceReference(BaseModel):
     kind: SourceKind
     quote: str
     url: str
+    claim: str | None = None
 
 
 class ResultView(BaseModel):
     action: Action
     text: str
     sources: list[SourceReference] = Field(default_factory=list)
+    notice: str | None = None
 
 
 class TurnView(BaseModel):
