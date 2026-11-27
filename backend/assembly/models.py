@@ -2,18 +2,24 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 import json
+import logging
 import math
 import os
 import time
-from urllib.error import HTTPError
 
 from backend.contracts.engine import EngineUnavailable, ModelAttemptFailure, ModelAttemptResult
-from eval.openrouter import complete
-from eval.decider.run import decide
 from eval.decider.policy import GEMMA, MODEL as DECIDER
 from eval.search_core.core import QWEN, model_settings
+from .transport import UpstreamFailure, complete, decide
 
 PROVIDERS = {GEMMA: "deepinfra/fp8", QWEN: "alibaba"}
+RESERVE_ENV = {GEMMA: "II_GEMMA_RESERVE_PROVIDER", QWEN: "II_QWEN_RESERVE_PROVIDER"}
+ATTEMPT_SECONDS = {GEMMA: (3, 3.5), QWEN: (5, 5), DECIDER: (2.5, 3)}
+LATENCY_LOG = logging.getLogger("backend.assembly.latency")
+
+
+class RetryableModelAttempt(ModelAttemptFailure):
+    """A physical call failed transiently and can use the stage's second attempt."""
 
 
 class ModelCalls:
@@ -25,29 +31,50 @@ class ModelCalls:
 
     def chat(self, case, body, stage):
         model = body["model"]
-        body = model_settings(body, model, PROVIDERS[model], min(body.get("max_tokens", 1536), 8192))
+        primary = PROVIDERS[model]
+        reserve = os.getenv(RESERVE_ENV[model], "").strip() or primary
 
-        def invoke(timeout):
-            row = complete(case, body, stage, timeout=timeout)
-            if not row["ok"]:
-                raise ModelAttemptFailure(f"Chat failed (HTTP {row['http']})", **self.usage(row, "chat"))
+        def invoke(timeout, provider):
+            payload = model_settings(body, model, provider, min(body.get("max_tokens", 1536), 8192))
+            try:
+                row = complete(case, payload, stage, timeout=timeout)
+            except UpstreamFailure as error:
+                snapshot = error.row or {}
+                self.observe(stage, model, provider, snapshot, "failed")
+                failure = RetryableModelAttempt if error.retryable else ModelAttemptFailure
+                raise failure(str(error), **self.usage(snapshot, "chat")) from None
+            self.observe(stage, model, provider, row, "succeeded")
             return ModelAttemptResult(row, **self.usage(row, "chat"))
 
-        return self.call(invoke, stage, model, f"openrouter/chat/{PROVIDERS[model]}")
+        return self.call(invoke, stage, model, "chat", (primary, reserve))
 
     def decisions(self, body):
-        def invoke(timeout):
+        def invoke(timeout, provider):
+            started = time.monotonic()
             try:
                 result = decide(body, timeout=timeout)
-            except (HTTPError, OSError, ValueError) as exc:
-                code = getattr(exc, "code", None)
-                raise ModelAttemptFailure(f"Decisions failed (HTTP {code})") from None
+            except UpstreamFailure as error:
+                self.observe("judge", DECIDER, provider, {"latency_s": time.monotonic() - started}, "failed")
+                failure = RetryableModelAttempt if error.retryable else ModelAttemptFailure
+                raise failure(str(error)) from None
             reply = result["response"]
             if not decisions_valid(reply.get("answers"), body["questions"]):
+                self.observe("judge", DECIDER, provider, {**reply, "latency_s": result["latency_s"]}, "failed")
                 raise ModelAttemptFailure("Decisions returned a malformed answer", **self.usage(reply, "decisions"))
+            self.observe("judge", DECIDER, provider, {**reply, "latency_s": result["latency_s"]}, "succeeded")
             return ModelAttemptResult(result, **self.usage(reply, "decisions"))
 
-        return self.call(invoke, "judge", DECIDER, "openrouter/decisions/perplexity")
+        return self.call(invoke, "judge", DECIDER, "decisions", ("perplexity", "perplexity"))
+
+    def observe(self, stage, model, provider, row, state):
+        usage = row.get("usage") or {}
+        details = usage.get("completion_tokens_details") or {}
+        LATENCY_LOG.info(
+            "turn=%s stage=%s model=%s provider=%s state=%s elapsed_s=%s ttft_s=%s output_tokens=%s reasoning_tokens=%s",
+            getattr(self.request, "turn_id", None), stage, row.get("served_model") or model,
+            row.get("provider") or provider, state, row.get("latency_s"), row.get("ttft_s"),
+            usage.get("completion_tokens", usage.get("output_tokens")), details.get("reasoning_tokens"),
+        )
 
     @staticmethod
     def usage(row, endpoint):
@@ -60,22 +87,28 @@ class ModelCalls:
                     model=row.get("served_model") or row.get("model"),
                     route=f"openrouter/{endpoint}/{provider}" if provider else None)
 
-    def call(self, invoke, role, model, route):
+    def call(self, invoke, role, model, endpoint, providers):
         if not os.getenv("OPENROUTER_API_KEY"):
             raise EngineUnavailable("OPENROUTER_API_KEY is missing")
-        for attempt in range(2):
-            remaining = self.remaining()
-            if remaining <= 0:
+        for attempt, (provider, limit) in enumerate(zip(providers, ATTEMPT_SECONDS[model])):
+            def perform():
+                # The recorder may take time before it starts the physical call.
+                remaining = self.remaining() - 0.15
+                if remaining <= 0:
+                    raise EngineUnavailable("Engine deadline exceeded")
+                return invoke(min(remaining, limit), provider)
+
+            if self.remaining() <= 0.15:
                 raise EngineUnavailable("Engine deadline exceeded")
             try:
-                perform = lambda: invoke(min(remaining, 45))
                 if self.request.attempts is not None:
-                    return self.request.attempts.call(perform, role=role, model=model, route=route)
+                    return self.request.attempts.call(perform, role=role, model=model,
+                                                      route=f"openrouter/{endpoint}/{provider}")
                 return perform().value
-            except ModelAttemptFailure as exc:
-                if attempt or self.remaining() < 2 or not any(f"HTTP {n}" in str(exc) for n in (429, 502, 503, 504)):
+            except RetryableModelAttempt:
+                if attempt or self.remaining() < 0.6:
                     raise
-                time.sleep(0.75)
+                time.sleep(0.1)
 
 
 def probability(value):

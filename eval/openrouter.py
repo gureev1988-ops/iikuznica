@@ -24,12 +24,48 @@ def make_request(case, model, system):
             "temperature": 0, "max_tokens": 1536, "stream": True, "stream_options": {"include_usage": True}}
 
 
+def chat_row(case_id, body, dataset_id):
+    return {"id": case_id, "model": body["model"], "dataset": dataset_id, "request_hash": fingerprint(body),
+            "utc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "ok": False, "http": None,
+            "text": "", "ttft_s": None, "usage": {}, "provider": None, "served_model": None,
+            "completion_id": None, "finish": None}
+
+
+def read_chat_line(row, line, started):
+    if not line.startswith(b"data:"):
+        return False
+    frame = line[5:].strip()
+    if frame == b"[DONE]":
+        return True
+    obj = json.loads(frame)
+    if obj.get("error"):
+        row["stream_error_code"] = obj["error"].get("code")
+        raise ValueError("OpenRouter stream error")
+    for dest, src in (("completion_id", "id"), ("served_model", "model"), ("provider", "provider")):
+        if obj.get(src):
+            row[dest] = obj[src]
+    if obj.get("usage"):
+        row["usage"] = obj["usage"]
+    for choice in obj.get("choices") or []:
+        part = (choice.get("delta") or {}).get("content")
+        if isinstance(part, str) and part:
+            if row["ttft_s"] is None and part.strip():
+                row["ttft_s"] = round(time.monotonic() - started, 3)
+            row["text"] += part
+        if choice.get("finish_reason"):
+            row["finish"] = choice["finish_reason"]
+    return False
+
+
+def finish_chat(row, done):
+    row["ok"] = bool(done and row["text"].strip() and row["finish"] == "stop")
+    if not row["ok"]:
+        row["error"] = "Empty, truncated or incomplete response"
+
+
 def complete(case_id, body, dataset_id, *, timeout=150):
     started = time.monotonic()
-    row = {"id": case_id, "model": body["model"], "dataset": dataset_id, "request_hash": fingerprint(body),
-           "utc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "ok": False, "http": None,
-           "text": "", "ttft_s": None, "usage": {}, "provider": None, "served_model": None,
-           "completion_id": None, "finish": None}
+    row = chat_row(case_id, body, dataset_id)
     headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
     key = os.environ.get("OPENROUTER_API_KEY")
     if key:
@@ -44,32 +80,10 @@ def complete(case_id, body, dataset_id, *, timeout=150):
             for line in response:
                 if time.monotonic() - started >= timeout:
                     raise TimeoutError("Model deadline exceeded")
-                if not line.startswith(b"data:"):
-                    continue
-                frame = line[5:].strip()
-                if frame == b"[DONE]":
+                if read_chat_line(row, line, started):
                     done = True
                     break
-                obj = json.loads(frame)
-                if obj.get("error"):
-                    row["stream_error_code"] = obj["error"].get("code")
-                    raise ValueError("OpenRouter stream error")
-                for dest, src in (("completion_id", "id"), ("served_model", "model"), ("provider", "provider")):
-                    if obj.get(src):
-                        row[dest] = obj[src]
-                if obj.get("usage"):
-                    row["usage"] = obj["usage"]
-                for choice in obj.get("choices") or []:
-                    part = (choice.get("delta") or {}).get("content")
-                    if isinstance(part, str) and part:
-                        if row["ttft_s"] is None and part.strip():
-                            row["ttft_s"] = round(time.monotonic() - started, 3)
-                        row["text"] += part
-                    if choice.get("finish_reason"):
-                        row["finish"] = choice["finish_reason"]
-            row["ok"] = bool(done and row["text"].strip() and row["finish"] == "stop")
-            if not row["ok"]:
-                row["error"] = "Empty, truncated or incomplete response"
+            finish_chat(row, done)
     except error.HTTPError as exc:
         row["http"] = exc.code
         try:
