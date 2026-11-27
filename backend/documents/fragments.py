@@ -102,3 +102,48 @@ def extract_fragments(storage_html: str) -> tuple[Fragment, ...]:
     parser = _StorageParser()
     parser.feed(storage_html)
     return parser.finish()
+
+
+class _LinkParser(_StorageParser):
+    """Track hyperlink positions in the same normalized text used for indexing."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.section_links: dict[str, list[tuple[int, int, str]]] = {}
+        self._links: list[tuple[int, int, str]] = []
+        self._link: tuple[list[str], int, str] | None = None
+
+    def handle_starttag(self, tag, attrs):
+        super().handle_starttag(tag, attrs)
+        if not self._hidden and tag == 'a':
+            parts = self._heading if self._heading is not None else self._parts
+            href = dict(attrs).get('href') or ''
+            self._link = (parts, len(parts), href)
+
+    def handle_endtag(self, tag):
+        if not self._hidden and tag == 'a' and self._link:
+            parts, start, href = self._link
+            label = _text(parts[start:])
+            if label and (parts is self._parts or parts is self._heading):
+                end = len(_text(parts))
+                self._links.append((end - len(label), end, href))
+            self._link = None
+        super().handle_endtag(tag)
+
+    def _flush(self):
+        before = len(self.fragments)
+        super()._flush()
+        if len(self.fragments) > before:
+            self.section_links[self.fragments[-1].anchor] = self._links
+        self._links = []
+        self._link = None
+
+
+def links_in_fragment(storage_html: str, anchor: str, text: str) -> list[tuple[int, int, str]]:
+    """Return spans only when the saved HTML reproduces the exact indexed fragment."""
+    parser = _LinkParser()
+    parser.feed(storage_html)
+    for fragment in parser.finish():
+        if fragment.anchor == anchor and fragment.text == text:
+            return parser.section_links[anchor]
+    return []

@@ -370,6 +370,10 @@ button.chat-row:hover {background:#eeeae4}
 .tech-block {max-width:1120px;margin-inline:auto;padding-block:15px 21px;scroll-margin-top:12px}
 .tech-block + .tech-block {border-top:1px solid var(--line)}
 .tech-block:target h3 {color:var(--red)}
+#tech-pilot ul {max-width:82ch;margin:0;padding-inline-start:22px}
+#tech-pilot li {padding-block:3px}
+#tech-pilot h4 {margin-top:18px;font-size:16px}
+#tech-pilot .tech-pilot-risk {margin-top:5px;padding:8px 12px;border-left:3px solid #b28259;background:#f7f0e4}
 .tech-block h3 {margin:0 0 12px;font-size:20px}
 .tech-block h4 {margin:0 0 5px;font-size:14px}
 .tech-block p {margin-block:4px 9px}

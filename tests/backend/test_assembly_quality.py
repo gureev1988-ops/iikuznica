@@ -212,3 +212,78 @@ def test_legacy_faq_editions_survive_first_new_expert_action(dsn, tmp_path):
         assert [entry["version"] for entry in after["history"]] == [1, 2, 3]
         assert after["history"][0]["action"] == "archived_revision"
         assert after["history"][-1]["action"] == "withdraw"
+
+
+def test_retry_cannot_overwrite_an_expert_withdrawal(dsn, tmp_path, monkeypatch):
+    from backend.assembly import quality
+    from backend.assembly.quality_checks import evidence
+
+    seed(dsn, tmp_path)
+    seed_quality(dsn, tmp_path)
+    unavailable = {**evidence("unconfirmed", "Временный сбой проверки."), "unavailable": True}
+    with connect(dsn) as conn:
+        card = conn.execute(quality.CARD_SELECT, quality.SCOPE).fetchone()
+        quality.save_check(conn, card, unavailable, quality.catalog(conn), bump=False)
+        conn.execute("UPDATE assembly_quality_checks SET retry_after=now()-interval '1 minute'")
+
+    def judge(conn, question, answer, conditions):
+        with connect(dsn) as other:
+            quality.change_card(other, card["id"], quality.Version(version=card["version"]), "withdraw", "Эксперт")
+        return evidence("no_source", "Подходящий пункт отсутствует.")
+
+    monkeypatch.setattr(quality, "judge", judge)
+    assert not quality.recheck_revision(SimpleNamespace(dsn=dsn))
+    with connect(dsn) as conn:
+        current = quality.get_card(conn, card["id"])
+        assert current["stored_status"] == "withdrawn" and current["outcome"] == "unconfirmed"
+    assert not quality.recheck_revision(SimpleNamespace(dsn=dsn))
+
+
+def test_upgrade_recovers_first_failed_check_and_its_original_message(request, monkeypatch, tmp_path):
+    from shutil import copyfile
+    from psycopg.types.json import Jsonb
+    from backend import db
+    from backend.assembly import quality
+    from backend.mailfaq.faq import find_faq
+
+    migration = "024_quality_mail_review_retry.sql"
+    legacy = tmp_path / "before_retry"
+    legacy.mkdir()
+    for path in db.MIGRATIONS.glob("*.sql"):
+        if path.name < migration:
+            copyfile(path, legacy / path.name)
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "MIGRATIONS", legacy)
+        dsn = request.getfixturevalue("dsn")
+    seed(dsn, tmp_path)
+    seed_quality(dsn, tmp_path)
+    with connect(dsn) as conn:
+        row = conn.execute("""SELECT f.*,r.conversation_id,r.case_id,r.turn_id FROM faq_entries f
+                              JOIN mail_requests r ON r.id=f.request_id""").fetchone()
+        conn.execute("""INSERT INTO assembly_quality_checks (faq_id,faq_revision_id,outcome,catalog,reason)
+            VALUES (%s,%s,'unconfirmed','{}','Судья недоступен. Повторите проверку.')""",
+            (row["id"], row["current_revision_id"]))
+        match = find_faq(conn, QUESTION, {})
+        note = conn.execute("""INSERT INTO messages(conversation_id,case_id,turn_id,role,text,source_refs)
+            VALUES (%s,%s,%s,'assistant',%s,%s) RETURNING id""",
+            (row["conversation_id"], row["case_id"], row["turn_id"], "Разъяснение Отдела качества\n" + match.text,
+             Jsonb([match.source_ref()]))).fetchone()
+    assert migration in db.migrate(dsn)
+    assert db.migrate(dsn) == ()
+    with connect(dsn) as conn:
+        check = conn.execute("SELECT retry_after<=now() AS due,pending_message_id FROM assembly_quality_checks").fetchone()
+        assert check == {"due": True, "pending_message_id": note["id"]}
+        conn.execute("UPDATE sources SET acl_actor_ids=ARRAY['private'] WHERE source_system='document'")
+    assembly = SimpleNamespace(dsn=dsn)
+    assert quality.recheck_revision(assembly)
+    assert not quality.recheck_revision(assembly)
+    with connect(dsn) as conn:
+        check = conn.execute("SELECT outcome,retry_after,pending_message_id FROM assembly_quality_checks").fetchone()
+        assert check == {"outcome": "no_source", "retry_after": None, "pending_message_id": note["id"]}
+        conn.execute("UPDATE sources SET acl_actor_ids=NULL WHERE source_system='document'")
+    assert quality.recheck_revision(assembly)
+    with connect(dsn) as conn:
+        check = conn.execute("SELECT outcome,pending_message_id FROM assembly_quality_checks").fetchone()
+        assert check == {"outcome": "conflict", "pending_message_id": None}
+        message = conn.execute("SELECT source_refs FROM messages WHERE id=%s", (note["id"],)).fetchone()
+        assert [ref["kind"] for ref in message["source_refs"]] == ["document", "faq"]

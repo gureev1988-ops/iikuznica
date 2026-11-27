@@ -160,7 +160,7 @@ export function createCards({api, requireExpert, run, status, openSource, refres
     const cards = await api(cardsUrl);
     const list = node("ul", "faq-list");
     list.setAttribute("aria-label", "Разъяснения отдела");
-    const noEntries = empty("Карточек с таким статусом нет.");
+    const noEntries = empty(cards.length ? "Карточек с таким статусом нет." : "Разъяснений пока нет.");
     function draw() {
       const matching = cards.filter((card) => filter === "all" || card.status === filter)
         .sort((a, b) => stateOrder[a.status] - stateOrder[b.status]

@@ -43,6 +43,64 @@ def test_open_documents_uses_current_catalog_and_numbered_choice():
     assert document_answer(req) is None
 
 
+def test_document_lookup_requires_its_topic_and_directorate():
+    db = fragment("Проектная деятельность ДБРЦТ", "Правило ДБРЦТ.")
+    presale = fragment("Пресейловая деятельность Дирекции ИБ", "Правило пресейла.")
+    project = fragment("Проектная деятельность Дирекции ИБ", "Правило ИБ.")
+    tech = fragment("Организация проектной деятельности Тех дирекции", "Техническое правило.")
+    req = SimpleNamespace(sources=SourceSnapshot((db, presale, project, tech)),
+                          conditions={}, clarification=None, history=())
+    for query in (
+        "Где найти регламент о командировках ДБРЦТ?",
+        "Где найти регламент о проектировании ДБРЦТ?",
+        "Дайте ссылку на регламент по пресейлу ДБРЦТ.",
+        "Открой регламент о премиях дирекции ИБ.",
+        "Где регламент по проектной деятельности юридической дирекции?",
+        "Где регламент о командировках для сотрудников ИБ?",
+    ):
+        req.question = query
+        result = document_answer(req)
+        assert result.action == "escalate" and not result.citations
+        assert result.escalation_question == query
+
+    for query, expected in (
+        ("Пришлите сам регламент про пресейл ИБ.", presale),
+        ("Где найти регламент по предпродажной деятельности ДИБ?", presale),
+        ("Где можно посмотреть положение о продажах Дирекции информационной безопасности?", presale),
+        ("Где найти регламент по пресейлу для сотрудников ИБ?", presale),
+        ("Где найти регламент по пресейлу у нас в ИБ?", presale),
+        ("Где регламент об управлении проектом в ИБ?", project),
+        ("Дай ссылку на регламент по управлению проектами технической дирекции.", tech),
+        ("Где регламент по проектам департамента бизнес-решений и цифровых технологий?", db),
+    ):
+        req.question = query
+        assert document_answer(req).citations[0].fragment_id == expected.fragment_id
+
+    req.question = "Где регламент по проектной деятельности?"
+    assert {o.text for o in document_answer(req).options if o.id != "unknown"} == {
+        db.title, project.title, tech.title}
+    req.conditions = {"directorate": "Дирекция ИБ"}
+    assert document_answer(req).citations[0].fragment_id == project.fragment_id
+    req.question = "Где найти регламент о проектах ДБРЦТ?"
+    assert document_answer(req).citations[0].fragment_id == db.fragment_id
+    req.question = "Где посмотреть регламент?"
+    req.history = (SimpleNamespace(role="assistant", resolved="Кто ведёт пресейл?", question=None, text=""),)
+    assert document_answer(req).citations[0].fragment_id == presale.fragment_id
+
+    req.history = ()
+    req.conditions = {"directorate": "не ИБ"}
+    req.question = "Где регламент по проектам?"
+    assert {o.text for o in document_answer(req).options if o.id != "unknown"} == {db.title, tech.title}
+    req.conditions = {"directorate": "ИБ", "stage": "не пресейл"}
+    req.question = "Где найти регламент?"
+    assert document_answer(req).citations[0].fragment_id == project.fragment_id
+    req.conditions = {"directorate": "ДБРЦТ"}
+    req.question = "Где найти регламент по пресейлу?"
+    assert document_answer(req).action == "escalate"
+    req.question = "Где найти регламент по пресейлу в ИБ?"
+    assert document_answer(req).citations[0].fragment_id == presale.fragment_id
+
+
 def test_cross_reference_requires_grounded_origin_and_destination():
     origin = fragment("Действия", "Срок установлен инструкцией о перевозке.")
     target = fragment("Инструкция о перевозке", "Перевозка занимает 3 дня.")
@@ -87,19 +145,34 @@ def test_semantic_mail_quotes_must_be_from_the_correct_message():
     answer, later = "Доставляем за 3 дня.", "Согласование ещё проверяем."
     partial = verified_reply(parsed, {"kind": "partial", "answer": [answer], "status": [later]},
                              f"Здравствуйте! {answer} {later}", [])
-    assert partial.public_text == answer and partial.pending == (later,)
+    assert partial.public_text == answer and partial.pending == () and partial.work_status == (later,)
     final = "Согласование отдельное."
     merged = verified_reply(parsed, {"kind": "substantive", "answer": [final], "retain": [answer]},
                             final, [answer])
     assert merged.public_text == f"{answer}\n\n{final}"
+    restricted = "Только для проектов ИБ срок — 7 дней."
+    selection = {"kind": "substantive", "answer": [final], "retain": ["срок — 7 дней."]}
+    assert verified_reply(parsed, selection, final, [restricted]).public_text == f"{restricted}\n\n{final}"
+    assert verified_reply(parsed, selection, final, [restricted, "Для проектов АБ срок — 7 дней."]).kind == "unrecognized"
     scoped = "Для участка Зета срок составляет 4 дня, кроме выходных."
     assert verified_reply(parsed, {"kind": "substantive", "answer": ["срок составляет 4 дня"]},
                           scoped, []).public_text == scoped
     assert verified_reply(parsed, {"kind": "substantive", "answer": [answer]}, final, []).kind == "unrecognized"
-    assert verified_reply(parsed, {"kind": "status", "status": [later]}, later, []).kind == "status"
+    assert verified_reply(parsed, {"kind": "status", "status": [later]}, later, []).work_status == (later,)
+    question = "Какая категория?"
+    counter = verified_reply(parsed, {"kind": "counter_question", "pending": [question], "status": [later]},
+                             later + " " + question, [])
+    assert counter.public_text == "" and counter.pending == (question,) and counter.work_status == (later,)
 
 
-def test_number_and_explicit_mail_consent_freeze_only_the_current_case(dsn, monkeypatch):
+@pytest.mark.parametrize("review_path", ["consistent", "retry_consistent", "retry_conflict", "retry_conflict_after_new_offer"])
+def test_number_and_explicit_mail_consent_freeze_only_the_current_case(dsn, tmp_path, monkeypatch, review_path):
+    from backend.assembly import quality
+    from backend.assembly.corpus import seed
+    from backend.assembly.quality_checks import evidence
+
+    seed(dsn, tmp_path)
+
     identity = uuid4()
     actor = Actor(f"guest:{identity}", frozenset({"employee"}), f"guest-{identity.hex}@{DOMAIN}", "guest")
     conversation = uuid4()
@@ -107,6 +180,8 @@ def test_number_and_explicit_mail_consent_freeze_only_the_current_case(dsn, monk
 
     class Engine:
         def answer(self, request):
+            if request.question == "Новый вопрос":
+                return AnswerResult("escalate", "Передать новый вопрос?", escalation_question=request.question)
             if request.question == "Старый личный вопрос":
                 return AnswerResult("out_of_scope", "Частная тема.")
             if not request.conditions:
@@ -154,7 +229,8 @@ def test_number_and_explicit_mail_consent_freeze_only_the_current_case(dsn, monk
     initial = mail.simulator.sent[0]
     assert initial.subject == "Обращение ОК2"
     responses = iter([dict(kind="status", status=["Передали владельцу."]),
-                      dict(kind="partial", answer=["Подача через портал."], pending=["Какая категория?"]),
+                      dict(kind="partial", answer=["Подача через портал."], pending=["Какая категория?"],
+                           status=["Ждём владельца."]),
                       dict(kind="substantive", retain=["Подача через портал."], answer=["Для категории А — 4 дня."])])
     def classify(dsn, job, request, raw, parsed, history):
         from email import policy
@@ -162,16 +238,82 @@ def test_number_and_explicit_mail_consent_freeze_only_the_current_case(dsn, monk
         body = BytesParser(policy=policy.default).parsebytes(raw).get_body().get_content()
         return verified_reply(parsed, next(responses), body, [p.get("public_text","") for p in history])
     monkeypatch.setattr("backend.mailfaq.interpret.interpret", classify)
-    monkeypatch.setattr("backend.assembly.quality.prepare_review", lambda *args: None)
-    for i, body in enumerate(["Передали владельцу.", "Подача через портал. Какая категория?", "Для категории А — 4 дня."]):
-        mail.simulator.reply(initial, body, message_id=f"<part-{i}@assembly.test>")
+    reviews = []
+    def judge(conn, question, answer, conditions):
+        reviews.append(answer)
+        if review_path.startswith("retry_") and len(reviews) < 3:
+            return {**evidence("unconfirmed", "Судья временно недоступен."), "unavailable": True}
+        source = conn.execute("""SELECT fr.id,fr.anchor,fr.text,r.title,r.id AS revision_id,s.id AS source_id
+            FROM source_fragments fr JOIN source_revisions r ON r.id=fr.revision_id
+            JOIN sources s ON s.current_revision_id=r.id WHERE s.external_id='DB' AND fr.anchor='1.6'""").fetchone()
+        return evidence("conflict" if "conflict" in review_path else "consistent", "Результат сверки.", source, source["text"])
+
+    monkeypatch.setattr(quality, "judge", judge)
+    parts = ["Передали владельцу.", "Подача через портал. Ждём владельца. Какая категория?", "Для категории А — 4 дня."]
+    for i, body in enumerate(parts):
+        mid = f"<part-{i}@assembly.test>"
+        mail.simulator.reply(initial, body, message_id=mid)
         assert mail.poll_inbox() == 1
         assert run_once(dsn, "background", mail.handlers, active_kinds=mail.handlers)
         with connect(dsn) as conn:
             assert conn.execute("SELECT count(*) n FROM faq_entries").fetchone()["n"] == (i == 2)
-            assert conn.execute("SELECT state FROM mail_requests").fetchone()["state"] == (
-                "waiting_reply", "partial", "resolved")[i]
+            request = conn.execute("SELECT state,pending FROM mail_requests").fetchone()
+            assert request["state"] == ("waiting_reply", "partial", "resolved")[i]
+            if i == 1:
+                assert request["pending"] == ["Какая категория?"]
+                note = conn.execute("SELECT text FROM messages ORDER BY created_at DESC LIMIT 1").fetchone()["text"]
+                assert "Частичный ответ Отдела качества\nПодача через портал." in note
+                assert "Остаётся открытым:\nКакая категория?" in note and "Ход работы:\nЖдём владельца." in note
+                mail.simulator.reply(initial, body, message_id=mid)
+                mail.poll_inbox()
     assert mail.poll_inbox() == 0
+    assert reviews == ["Подача через портал.\n\nДля категории А — 4 дня."]
+    with connect(dsn) as conn:
+        row = conn.execute("SELECT * FROM assembly_quality_checks").fetchone()
+        initial_msg = conn.execute("SELECT id,source_refs FROM messages ORDER BY created_at DESC LIMIT 1").fetchone()
+        assert [r["kind"] for r in initial_msg["source_refs"]] == (
+            ["faq"] if review_path.startswith("retry_") else ["document", "faq"])
+    if review_path.endswith("after_new_offer"):
+        # A new question and offer arrive in the same case while the old judge is offline.
+        send("Новый вопрос", "next-question", case_id=first.case_id)
+        answer()
+        with connect(dsn) as conn:
+            next_offer = conn.execute("SELECT id FROM offers WHERE status='open'").fetchone()["id"]
+    assembly = SimpleNamespace(dsn=dsn)
+    if review_path.startswith("retry_"):
+        assert row["retry_after"] and row["pending_message_id"] == initial_msg["id"]
+        for _ in range(2):
+            assert not quality.recheck_revision(assembly)
+            with connect(dsn) as conn:
+                conn.execute("UPDATE assembly_quality_checks SET retry_after=now()-interval '1 minute'")
+            assert quality.recheck_revision(assembly)
+    assert not quality.recheck_revision(assembly)
+    with connect(dsn) as conn:
+        note = conn.execute("SELECT text,source_refs FROM messages WHERE id=%s", (initial_msg["id"],)).fetchone()
+        assert [r["kind"] for r in note["source_refs"]] == ["document", "faq"]
+        assert all(ref["quote"] and str(ref["fragment_id"]) in ref["url"] for ref in note["source_refs"])
+        if review_path.endswith("consistent"):
+            assert note["text"].count("Для категории А — 4 дня.") == 1
+            assert "Действующий регламент [1] · Разъяснение Отдела качества [2]" in note["text"]
+        else:
+            assert "Руководствуйтесь регламентом" in note["text"]
+            active = conn.execute("SELECT id,payload FROM offers WHERE status='open'").fetchall()
+            assert len(active) == 1
+            if review_path.endswith("after_new_offer"):
+                assert active[0]["id"] == next_offer and active[0]["payload"]["question"] == "Новый вопрос"
+                assert "Передать расхождение" not in note["text"]
+        assert conn.execute("SELECT count(*) n FROM faq_entries").fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) n FROM events WHERE kind='mail.partial'").fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) n FROM events WHERE kind='mail.resolution'").fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) n FROM assembly_faq_uses").fetchone()["n"] == 0
+        assert conn.execute("SELECT pending_message_id,retry_after FROM assembly_quality_checks").fetchone() == {
+            "pending_message_id": None, "retry_after": None}
+    if review_path.endswith("after_new_offer"):
+        send("Да, передай", "confirm-next", case_id=first.case_id)
+        with connect(dsn) as conn:
+            agreed = conn.execute("SELECT question FROM mail_requests WHERE offer_id=%s", (next_offer,)).fetchone()
+            assert agreed["question"] == "Новый вопрос"
+
 
 
 def test_conflict_review_compares_the_same_action_and_survives_provider_outage():

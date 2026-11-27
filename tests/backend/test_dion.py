@@ -720,3 +720,145 @@ def test_legacy_dion_history_uses_known_turn_evidence_or_redacts(dsn, dion):
         conn.execute("UPDATE sources SET acl_actor_ids = %s WHERE id = %s", (["bob"], ref["document_id"]))
         denied = dialogue.history(conn, actor, outbox["conversation_id"])
         assert all(message["id"] != attempt_id for message in denied["messages"])
+
+
+@pytest.fixture(params=[False, True], ids=["fixture", "semantic"])
+def stage_dion(dion, monkeypatch, request):
+    from backend.contracts.engine import AnswerResult, ClarificationOption
+
+    provider, adapter, dialogue = dion
+    options = (ClarificationOption("pre", "Пресейл"), ClarificationOption("work", "Реализация проекта"))
+    monkeypatch.setattr(dialogue.engine, "answer", lambda req: AnswerResult(
+        "clarify", "Какой этап?", options=options, clarification_key="stage"))
+    if request.param:
+        def interpret(clarification, text, recorder):
+            assert clarification["prompt"] == "Какой этап?"
+            if text == "Срок реализации проекта":
+                return "new_question", None, {}
+            if text == "Уже реализуем проект":
+                return "selected", "work", {}
+            assert text in {"не реализация проекта", "кроме пресейла"}
+            return "free", None, {}
+
+        monkeypatch.setattr(dialogue.engine, "interpret_choice", interpret, raising=False)
+    return provider, adapter, dialogue
+
+
+@pytest.mark.parametrize("reply,condition", [
+    ("2", "Реализация проекта"),
+    ("Реализация проекта", "Реализация проекта"),
+    ("Уже реализуем проект", "Реализация проекта"),
+    ("не реализация проекта", "не реализация проекта"),
+    ("кроме пресейла", "кроме пресейла"),
+])
+def test_dion_unthreaded_new_question_preserves_list_for_later_answer(dsn, stage_dion, reply, condition):
+    from backend.db import connect
+
+    provider, adapter, dialogue = stage_dion
+    independent = "Срок реализации проекта"
+    provider.text("Кто согласовывает смету?")
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    _run(dsn, "background", adapter.handlers)
+    old_prompt = provider.settle(provider.sends[-1])
+    adapter.poll_once(timeout=0)
+    with connect(dsn) as conn:
+        old_case = conn.execute("SELECT case_id FROM clarifications").fetchone()["case_id"]
+
+    provider.text(independent)
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    with connect(dsn) as conn:
+        second = conn.execute("SELECT case_id FROM turns WHERE question=%s", (independent,)).fetchone()
+        assert second and second["case_id"] != old_case
+        assert conn.execute("SELECT status FROM clarifications").fetchone()["status"] == "open"
+
+    provider.text(reply)
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    with connect(dsn) as conn:
+        row = conn.execute("SELECT status,resolved_value FROM clarifications WHERE case_id=%s", (old_case,)).fetchone()
+        assert row == {"status": "resolved", "resolved_value": condition}
+        assert conn.execute("SELECT count(*) AS n FROM turns WHERE case_id=%s", (old_case,)).fetchone()["n"] == 2
+        assert conn.execute("SELECT conditions FROM cases WHERE id=%s", (old_case,)).fetchone()["conditions"] == {"stage": condition}
+        assert conn.execute("SELECT text FROM messages WHERE case_id=%s ORDER BY created_at DESC LIMIT 1",
+                            (old_case,)).fetchone()["text"] == reply
+
+    provider.text("1", reply=old_prompt)
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    assert len(_state(dsn)["turns"]) == 3
+
+
+def test_dion_two_open_lists_require_an_addressed_answer(dsn, stage_dion):
+    from backend.db import connect
+
+    provider, adapter, dialogue = stage_dion
+    provider.text("Как подать заявку?")
+    provider.text("Как подать заявку?")
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    for _ in range(2):
+        _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+        _run(dsn, "background", adapter.handlers)
+    prompts = [provider.settle(message) for message in provider.sends]
+    adapter.poll_once(timeout=0)
+    provider.text("Срок реализации проекта")
+    provider.text("2")
+    provider.text("Уже реализуем проект")
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    with connect(dsn) as conn:
+        assert conn.execute("SELECT count(*) AS n FROM clarifications WHERE status='open'").fetchone()["n"] == 2
+        independent = conn.execute("SELECT case_id FROM turns WHERE question='Срок реализации проекта'").fetchone()
+        assert independent
+        assert conn.execute("SELECT 1 FROM clarifications WHERE case_id=%s", (independent["case_id"],)).fetchone() is None
+        assert len(_state(dsn)["turns"]) == 3
+    provider.text("1", reply=prompts[1])
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    turns = _state(dsn)["turns"]
+    with connect(dsn) as conn:
+        addressed = conn.execute("SELECT case_id FROM dion_outbox WHERE confirmed_message_id=%s",
+                                 (prompts[1],)).fetchone()["case_id"]
+        assert turns[-1]["case_id"] == addressed
+        assert conn.execute("SELECT case_id FROM clarifications WHERE status='open'").fetchone()["case_id"] != addressed
+
+
+@pytest.mark.parametrize("pairs,visible", [(1, True), (500, False)], ids=["fits", "exceeds-escaped-budget"])
+def test_dion_sends_only_complete_related_document_link(dsn, dion, monkeypatch, pairs, visible):
+    from html import escape
+
+    from backend.contracts.engine import AnswerResult, Citation
+    from backend.documents import DocumentSync, PageSnapshot
+
+    provider, adapter, dialogue = dion
+    title = "Методика расчёта"
+    url = "https://docs.example/method?v=2" + "&x=1" * pairs
+    quote = f"См. {title}."
+    page = PageSnapshot("pricing", 1, "Правила оценки",
+                        f'<h2>Оценка</h2><p>См. <a href="{escape(url)}">{title}</a>.</p>')
+    DocumentSync(dsn, {}).import_batch("fixture", (page,))
+
+    def answer(request):
+        source = next(fragment for fragment in request.sources.fragments if quote in fragment.text)
+        citation = Citation(source.document_id, source.revision_id, source.fragment_id, quote, linked_document=title)
+        return AnswerResult("answer", quote, citations=(citation,))
+
+    monkeypatch.setattr(dialogue.engine, "answer", answer)
+    provider.text("Где описана оценка?")
+    adapter.poll_once(timeout=0)
+    adapter.route_once()
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    ref, = _state(dsn)["outbox"][0]["source_refs"]
+    assert ref["related_url"] == url
+    _run(dsn, "background", adapter.handlers)
+    sent = provider.sends[-1]["text"]
+    assert adapter.public_base_url + ref["url"] in unescape(sent)
+    if visible:
+        assert unescape(sent).splitlines()[-1] == f"Связанный документ: {url}"
+        assert escape(url) in sent
+    else:
+        assert len(url) < 3000 < len(escape(url))
+        assert "Связанный документ" not in sent and "docs.example" not in sent
