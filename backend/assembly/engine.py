@@ -3,6 +3,7 @@ import json
 import os
 from functools import cached_property
 import re
+from time import perf_counter
 
 from dataclasses import replace
 
@@ -12,8 +13,8 @@ from eval.search_core import core
 from registry import compile_records
 
 from .fast_answers import VerifiedAnswers, faq_candidate
-from .models import GEMMA, QWEN, ModelCalls, json_reply
-from .search import Search, linked_norms
+from .models import GEMMA, LATENCY_LOG, QWEN, ModelCalls, json_reply
+from .search import SEARCH_TURN, Search, linked_norms
 
 CLARIFY = """Уточни один факт, который сотрудник может сообщить и от которого зависит применимость
 регламента. Сравни варианты по доступным пунктам. Не задавай вопрос, если вывод совпадает.
@@ -57,13 +58,21 @@ class A1Engine:
         return compile_records()
 
     def answer(self, request):
+        started = perf_counter()
+        trace = SEARCH_TURN.set(request.turn_id)
+        path = "full"
         try:
             verified = self.fast_answers.answer(request)
             if verified is not None:
+                path = "local"
                 return verified
             return self._answer(request, ModelCalls(request))
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise EngineUnavailable("Invalid A1 model response or search evidence") from exc
+        finally:
+            SEARCH_TURN.reset(trace)
+            LATENCY_LOG.info("turn=%s stage=engine path=%s elapsed_s=%.3f",
+                             request.turn_id, path, perf_counter() - started)
 
     def _answer(self, request, calls):
         corpus, lookup, refs, originals = self.search.snapshot(request.sources.fragments)
