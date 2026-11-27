@@ -1,0 +1,31 @@
+{
+  "warm_or_reused": false,
+  "changed_visible": {},
+  "arms": {
+    "control": {
+      "counts": {
+        "clarify": 5,
+        "answer": 40,
+        "escalate": 3,
+        "out_of_scope": 2
+      },
+      "calls": 82,
+      "known_cost_usd": 0.011100972,
+      "missing_costs": 0,
+      "wall_seconds": {
+        "p50": 0.93,
+        "p95": 1.592
+      },
+      "model_seconds": {
+        "p50": 0.389,
+        "p95": 1.139
+      },
+      "stages": {
+        "evidence-core": 41,
+        "judge": 41
+      },
+      "events": {},
+      "candidate_errors": 0
+    }
+  }
+}

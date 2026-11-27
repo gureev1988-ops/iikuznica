@@ -71,5 +71,11 @@ python3 "$T" --suite working50 --working50 "$WORKING_ZIP" \
 
 На 50 вопросах основной тип действия совпал с рабочим ключом в **50/50**. Из 40 прямых ответов 38 содержат все ссылки рабочего ключа. В Q16 верно указан инициатор оплаты, но опущено условие подписания акта обеими сторонами (ИБ §32.3). В Q49 верно указано закрытие по этапам, но не назван ответственный РП (ИБ §33.1).
 
-Во всех трёх каталогах `qwen-panel`, `qwen-42` и `qwen-50` под `/workspace/scratch/answer-quality-pr26/final-experiments` сохранены `summary.json` и `pairs.json`. Blind20 в этом прогоне не запускался.
+| Прогон | Сводка | Пары видимых ответов |
+|---|---|---|
+| Рабочая панель | [summary.json](results/final-qwen-search/panel/summary.json) | [pairs.json](results/final-qwen-search/panel/pairs.json) |
+| Контроль 42 | [summary.json](results/final-qwen-search/working42/summary.json) | [pairs.json](results/final-qwen-search/working42/pairs.json) |
+| Контроль 50 | [summary.json](results/final-qwen-search/working50/summary.json) | [pairs.json](results/final-qwen-search/working50/pairs.json) |
+
+Blind20 в этом прогоне не запускался.
 
