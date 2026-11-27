@@ -14,6 +14,7 @@ from backend.mailfaq.message import TOKEN, clean_public_text
 from backend.mailfaq.transport import Outbound, SmtpTransport
 from backend.runtime import enqueue, reconcile_delivery, require_lease, send_once
 
+from .demo_project import display_example, display_text
 from .quality_checks import evidence, judge
 from .quality_views import MailThread, QualityCard, QualityReport, ThreadHeader
 from .smtp_gateway import BOT, DOMAIN, QUALITY
@@ -141,7 +142,7 @@ def serialize(conn, row):
                 actor="Архив Отдела качества",
             )
         )
-    return value
+    return display_example(value)
 
 
 def remember(conn, row, actor, action):
@@ -333,7 +334,7 @@ def read_threads(conn, rows):
                 to=QUALITY,
                 cc=row["actor_email"],
                 subject=f"Обращение ОК{row['case_number']}",
-                text=TOKEN.sub("", item["body"]).strip(),
+                text=display_text(TOKEN.sub("", item["body"]).strip()),
                 at=item["created_at"],
             )
         )
@@ -358,7 +359,7 @@ def read_threads(conn, rows):
                 to=str(msg.get("To", "")),
                 cc=str(msg.get("Cc", "")),
                 subject=TOKEN.sub("", str(msg.get("Subject", ""))).strip(),
-                text=TOKEN.sub("", content).strip(),
+                text=display_text(TOKEN.sub("", content).strip()),
                 at=item["created_at"],
                 processing=item["state"] if item["state"] in ("interpreting", "review") else None,
             )
@@ -387,6 +388,7 @@ def read_threads(conn, rows):
 
 
 def report_thread(row):
+    row = display_example(row)
     msg = dict(
         message_id=f"<quality-report-{row['id']}@{DOMAIN}>",
         sender=BOT,
@@ -574,7 +576,7 @@ def build_router(assembly):
     @router.post("/checks", response_model=QualityReport)
     def check(body: Check, _=Depends(browser)):
         with connect(assembly.dsn) as conn:
-            return run_checks(conn, body.command_id)
+            return display_example(run_checks(conn, body.command_id))
 
     def change(id_, body, action, actor):
         try:

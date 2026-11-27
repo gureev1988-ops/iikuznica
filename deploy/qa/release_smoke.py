@@ -13,13 +13,33 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import build_opener, HTTPCookieProcessor, HTTPRedirectHandler, HTTPSHandler, Request
-from uuid import uuid4
+from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[2]
 DIRECT = "На инициации проекта дирекции ИБ, если все входные данные уже переданы, кто выделяет руководителя проекта и какой у него срок?"
 UNKNOWN = "Я менеджер по продаже решений в проекте ИБ. Не знаю, все ли данные переданы координатору. Через день РП точно назначат?"
 NAVIGATION = "Пришлите сам регламент про пресейл ИБ. По моему запросу ресурс-менеджер не ответил уже рабочий день — к кому могу подключиться?"
-GAP = "Какой точный процент минимальной маржинальности применяется к проекту пресейла ИБ по внутреннему регламенту контроля маржинальности?"
+
+
+PROJECT = "Тестовый проект iishka"
+MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня",
+          "июля", "августа", "сентября", "октября", "ноября", "декабря")
+
+
+def estimate_scope(work):
+    now = datetime.now(ZoneInfo("Europe/Moscow"))
+    prepared = f"{now.day} {MONTHS[now.month - 1]} {now.year} года в {now:%H:%M:%S} МСК"
+    return f'проекта «{PROJECT}» по смете «{work} от {prepared}»'
+
+
+def estimate_question(scope):
+    return f"Какой индивидуальный порог маржинальности согласован на пресейле ИБ для {scope}?"
+
+
+def answered_estimate(turn, scope):
+    return any(ref["kind"] == "faq" and scope.casefold() in ref["quote"].casefold()
+               for ref in turn["result"]["sources"])
 
 
 class CheckFailure(Exception):
@@ -205,46 +225,89 @@ def live_mail(employee, expert, reader):
     check(login and password, "Mail check requires the stand's configured expert credentials")
     check(expert.json("/v1/browser/mail/login", {"login": login, "password": password})["mail"],
           "Expert session unavailable")
-    tag = "QA-" + uuid4().hex[:10]
-    question = GAP + f" Это только для учебного проекта {tag}."
+    # Manual Actions runs share a concurrency group. Independently launched
+    # clients can also start together; give them different kinds of work.
+    works = ("Сопровождение клиентского портала", "Проверка защиты рабочих станций",
+             "Настройка сетевого мониторинга", "Обслуживание почтового сервера")
+    first = UUID(employee.conversation).int % len(works)
+    for work in works[first:] + works[:first]:
+        scope = estimate_scope(work)
+        subject = check_mail_case(employee, expert, reader, scope)
+        if subject:
+            check(not expert.json("/v1/browser/mail/logout", {})["mail"], "Logout failed")
+            record(check="mail round trip", project=PROJECT, subject=subject, faq_reused=True)
+            return
+        # The next estimate should also have a new preparation time when the
+        # stand can return an existing FAQ within a second.
+        time.sleep(1)
+    raise CheckFailure("All candidate estimates already have a consultation")
+
+
+def check_mail_case(employee, expert, reader, scope):
+    question = estimate_question(scope)
     gap, _ = employee.answer(question)
     offer = next((o for o in gap["offers"] if o["status"] == "open"), None)
+    if not offer and answered_estimate(gap, scope):
+        return None
     check(offer, "No escalation offered for the marked gap")
-    employee.answer("Да, передай", case_id=gap["case_id"])
+    consent, _ = employee.answer("Да, передай", case_id=gap["case_id"])
+    request_id = consent["result"]["mail_request_id"]
+    own = employee.json("/v1/browser/correspondence")
+    check([item["id"] for item in own if item["case_id"] == gap["case_id"]] == [request_id],
+          "Expected exactly one mail request for the new case")
+    subject = f"Обращение ОК{consent['result']['case_number']}"
+
     def matching_thread():
-        hits = expert.json("/v1/browser/quality/threads?q=" + tag)
-        check(len(hits) <= 1, "Duplicate synthetic thread")
-        if hits:
-            thread = expert.json("/v1/browser/quality/threads/" + hits[0]["id"])
+        hits = expert.json("/v1/browser/quality/threads?q=" + quote(subject))
+        matching = [item for item in hits if item["subject"] == subject]
+        check(len(matching) <= 1, "Duplicate synthetic thread")
+        if matching:
+            check(matching[0]["id"] == request_id, "Wrong correspondence for the request")
+            thread = expert.json("/v1/browser/quality/threads/" + request_id)
             if thread["reply_message_id"] and thread["open"]:
                 return thread
     thread = wait_for(matching_thread, 100, "synthetic QA email")
-    check(re.fullmatch(r"Обращение ОК\d+", thread["subject"]), "Missing stable request number")
     original = next(m for m in thread["messages"] if m["message_id"] == thread["reply_message_id"])
     check(original["sender"] == "bot@assembly.test" and original["to"] == "quality@assembly.test"
           and re.fullmatch(r"guest-[a-f0-9]{32}@assembly\.test", original["cc"]),
           "Unexpected sender, recipient or copy address for the test request")
-    check(tag in original["text"] and "Да, передай" in original["text"] and all(
+    check(scope in original["text"] and "Да, передай" in original["text"] and all(
         section in original["text"] for section in ("Вопрос от сотрудника", "Почему направлено обращение", "Диалог до отправки")
     ), "Missing request content, consent or mail section")
     command = {"message_id": thread["reply_message_id"], "command_id": str(uuid4()),
-               "text": f"Только для учебного проекта {tag} минимальный порог маржинальности составляет 18 процентов."}
+               "text": f"Для {scope} на пресейле ИБ согласован индивидуальный порог маржинальности — 18 процентов."}
     expert.json("/v1/browser/mail/reply", command)
+
     def delivered_reply():
         messages = employee.json(f"/v1/conversations/{employee.conversation}/messages")["messages"]
-        return any(tag in m["text"] and "18 процентов" in m["text"] and m["role"] != "user" for m in messages)
-    wait_for(delivered_reply, 150, "expert response in original chat")
+        for message in messages:
+            if (message["case_id"] == gap["case_id"] and message["role"] == "assistant"
+                    and "18 процентов" in message["text"]):
+                for ref in message["source_refs"] or []:
+                    if ref["kind"] == "faq":
+                        return ref
+    published = wait_for(delivered_reply, 150, "expert response in original chat")
     closed = expert.json("/v1/browser/quality/threads/" + thread["id"])
     replies = [message for message in closed["messages"] if
                message["message_id"] == f"<judge-{command['command_id']}@assembly.test>"]
     check(not closed["open"] and len(replies) == 1, "Expected one expert reply in the closed training case")
+    check(command["text"] in replies[0]["text"], "Expert reply lost the estimate or the project name")
     check(replies[0]["sender"] == "quality@assembly.test" and replies[0]["to"] == "bot@assembly.test"
           and replies[0]["cc"] == original["cc"], "Unexpected recipient or copy address in expert reply")
     repeated, _ = reader.answer(question)
-    check("18" in repeated["result"]["text"] and any(ref["kind"] == "faq" for ref in repeated["result"]["sources"]),
-          "Independent guest did not receive the synthetic FAQ")
-    check(not expert.json("/v1/browser/mail/logout", {})["mail"], "Logout failed")
-    record(check="mail round trip", project=tag, subject=thread["subject"], faq_reused=True)
+    check("18" in repeated["result"]["text"], "Independent guest did not receive the expert answer")
+    if any(ref["kind"] == "faq" and ref["fragment_id"] == published["fragment_id"]
+           for ref in repeated["result"]["sources"]):
+        return subject
+    # If another client published a consultation for the very same estimate
+    # while ours was in flight, exercise a fresh estimate from start to finish.
+    if answered_estimate(repeated, scope):
+        cards = expert.json("/v1/browser/quality/cards")
+        cited = {ref["quote"] for ref in repeated["result"]["sources"] if ref["kind"] == "faq"}
+        if any(card["request_id"] != request_id and scope.casefold() in card["answer"].casefold()
+               and card["answer"] in cited for card in cards):
+            return None
+    raise CheckFailure("Independent guest did not receive the FAQ from this correspondence")
 
 
 def main():

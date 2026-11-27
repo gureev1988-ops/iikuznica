@@ -10,8 +10,8 @@ from pydantic import BaseModel
 from backend.contracts.api import SourceReference
 from backend.db import connect
 from backend.documents import get_fragment
-from backend.assembly.fast_answers import faq_candidate
-from backend.assembly.faq_scope import compatible_ids
+from backend.assembly.demo_project import display_text
+from backend.assembly.fast_answers import faq_candidate, faq_identity_matches
 from eval.scope.procedures import directories, normalized
 
 
@@ -71,7 +71,7 @@ EXAMPLES = {
                  "Какой срок подготовки бюджетной оценки для торгов у Технической дирекции?",),
     "clarify": ("В какой срок должны назначить руководителя проекта?",),
     "gap": ("Кто замещает координатора проектов Дирекции ИБ на время отпуска?",
-            "Какой точный процент минимальной маржинальности применяется к проекту пресейла ИБ по внутреннему регламенту контроля маржинальности?"),
+            "Какой минимальный процент маржинальности требуется на пресейле ИБ для проекта «Тестовый проект iishka»?"),
 }
 PROMPTS = {
     "simple": "Начните с простого вопроса и откройте пункт регламента.",
@@ -87,10 +87,13 @@ def example_hint(conn, session, stage):
         # Exclude an example when an active explanation could answer it. Be
         # conservative if its different phrasing cannot be ruled out.
         faqs = conn.execute("""
-            SELECT question_key, conditions_key FROM faq_entries WHERE status='active'
+            SELECT f.question_key, f.conditions_key, fr.text AS answer, r.question AS original_question
+            FROM faq_entries f JOIN mail_requests r ON r.id=f.request_id
+            JOIN source_fragments fr ON fr.id=f.current_fragment_id WHERE f.status='active'
         """).fetchall()
         examples = [q for q in examples if not any(
-            faq_candidate(row, directories(q), normalized(q), {}) and compatible_ids(row["question_key"], q, {})
+            faq_candidate(row, directories(q), normalized(q), {})
+            and faq_identity_matches(row["question_key"], row["answer"], q, {}, row["original_question"])
             for row in faqs)]
         if not examples:
             return Hint(stage="done", text="", action="none")
@@ -142,7 +145,7 @@ def next_hint(conn, session):
         if request["reused"]:
             return Hint(stage="done", text="", action="none")
         return Hint(stage="repeat", text="Задайте вопрос ещё раз, чтобы проверить новое разъяснение.",
-                    example=request["question"], thread_id=request["id"])
+                    example=display_text(request["question"]), thread_id=request["id"])
 
     stage = "simple"
     source_to_open = None

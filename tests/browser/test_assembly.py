@@ -13,12 +13,13 @@ from uuid import uuid4
 
 import pytest
 
+from deploy.qa.release_smoke import answered_estimate, estimate_question, estimate_scope
+
 playwright = pytest.importorskip("playwright.sync_api")
 URL = os.getenv("II_BROWSER_URL")
 pytestmark = pytest.mark.skipif(not URL, reason="Set II_BROWSER_URL for the live assembled stand")
 DIRECT = "На инициации проекта дирекции ИБ, если все входные данные уже переданы, кто выделяет руководителя проекта и какой у него срок?"
 AMBIGUOUS = "За сколько мне назначат руководителя проекта?"
-GAP = "Какой точный процент минимальной маржинальности применяется к проекту пресейла ИБ по внутреннему регламенту контроля маржинальности?"
 
 
 @pytest.fixture(scope="session")
@@ -125,22 +126,20 @@ def login(page):
     playwright.expect(page.get_by_role("button", name="Обновить входящие")).to_be_visible()
 
 
-def opened_mail(page, snippet):
+def reply(page, request, text):
     search = page.get_by_role("searchbox", name="Поиск по письмам")
-    search.fill(snippet)
-    mailbox = page.locator(".mail-reader")
+    subject = f"Обращение ОК{request['case_number']}"
+    search.fill(subject)
+    row = page.locator(f'.mail-row[data-mail-id="{request["mail_request_id"]}"]')
     deadline = monotonic() + 40
-    while monotonic() < deadline:
-        if mailbox.get_by_text(snippet, exact=False).count() and mailbox.get_by_role("button", name="Ответить", exact=True).count():
-            mailbox.get_by_role("button", name="Ответить", exact=True).click()
-            return mailbox
+    while not row.count() and monotonic() < deadline:
         page.get_by_role("button", name="Обновить входящие").click()
         page.wait_for_timeout(350)
-    pytest.fail("Matching open thread absent from the mailbox")
-
-
-def reply(page, snippet, text):
-    item = opened_mail(page, snippet)
+    playwright.expect(row.locator(".mail-row-subject")).to_have_text(subject)
+    row.click()
+    item = page.locator(".mail-reader")
+    playwright.expect(item.get_by_role("heading", name=subject, exact=True)).to_be_visible()
+    item.get_by_role("button", name="Ответить", exact=True).click()
     item.get_by_role("textbox", name="Текст ответа").fill(text)
     with page.expect_response(lambda r: r.url.endswith("/v1/browser/mail/reply") and r.request.method == "POST") as event:
         item.get_by_role("button", name="Отправить ответ").click()
@@ -149,16 +148,24 @@ def reply(page, snippet, text):
     return event.value.json()["command_id"]
 
 
-def request_mail(page, question, *, decline=False):
-    turn = answer(page, question, new=True)
-    assert turn["result"] is not None and turn["offers"], turn
+def ask_new_estimate(page, work):
+    for _ in range(3):
+        scope = estimate_scope(work)
+        turn = answer(page, estimate_question(scope), new=True)
+        if turn["offers"]:
+            return scope, turn
+        assert answered_estimate(turn, scope), turn
+        page.wait_for_timeout(1000)
+    pytest.fail("Could not open a fresh estimate")
+
+
+def request_mail(page, work, *, decline=False):
+    scope, _ = ask_new_estimate(page, work)
     if decline:
         answer(page, "Нет, не отправляй")
         assert not page.request.get(URL + "/v1/browser/correspondence").json()
-        turn = answer(page, question, new=True)
-        assert turn["offers"], turn
-    answer(page, "Да, передай")
-    return turn
+        scope, _ = ask_new_estimate(page, work)
+    return scope, answer(page, "Да, передай")["result"]
 
 
 def test_01_direct_citation(guest):
@@ -219,19 +226,13 @@ def test_03_compound_procedure_and_permission(guest):
         assert re.search(r"нельзя|не может|только после", turn["result"]["text"], re.I)
 
 
-@pytest.fixture(scope="session")
-def run_tag():
-    return uuid4().hex[:8]
-
-
-def test_04_late_reply_after_closed_tab(guest, run_tag):
+def test_04_late_reply_after_closed_tab(guest):
     employee, judge = guest(), guest()
-    question = GAP + f" Код тестового проекта {run_tag}."
-    request_mail(employee, question, decline=True)
+    scope, request = request_mail(employee, "Обновление системы контроля доступа", decline=True)
     context = employee.context
     employee.close()
     login(judge)
-    command = reply(judge, run_tag, "Для указанного тестового проекта минимальный порог маржинальности составляет 18 процентов.")
+    command = reply(judge, request, f"Для {scope} на пресейле ИБ согласован индивидуальный порог маржинальности — 18 процентов.")
     employee = context.new_page()
     open_chat(employee)
     playwright.expect(employee.locator("#dion-messages").get_by_text("18 процентов", exact=False)).to_be_visible(timeout=45_000)
@@ -245,31 +246,45 @@ def test_04_late_reply_after_closed_tab(guest, run_tag):
                        env=variables, check=True)
         playwright.expect(employee.locator("#dion-messages").get_by_text("18 процентов", exact=False)).to_have_count(1)
 
-
-def test_05_paraphrased_faq_and_scope(guest, run_tag):
+    # Check this same reply from an independent browser before testing the
+    # directorate boundary. It must also work when this one test runs alone.
+    own_link = employee.locator("#dion-messages").get_by_text("18 процентов", exact=False).locator("a").first
+    expected_faq = own_link.get_attribute("href")
+    assert expected_faq
     second = guest()
-    turn = answer(second, f"Какой нижний предел маржи установлен на пресейле информационной безопасности для тестового проекта {run_tag}?")
+    turn = answer(second, f"Какую минимальную маржу отдельно согласовали на пресейле информационной безопасности для {scope}?")
     assert turn["result"] and "18 процентов" in turn["result"]["text"] and not turn["offers"], turn
+    assert any(ref["kind"] == "faq" and ref["url"] == expected_faq for ref in turn["result"]["sources"])
     source(second, turn)
-    other = answer(guest(), f"Какова минимальная маржа для проекта {run_tag} на пресейле в технической дирекции?")
+    other = answer(guest(), f"Какова минимальная маржа для {scope} на пресейле в технической дирекции?")
     assert other["result"] and "18 процентов" not in other["result"]["text"], other
 
 
 def test_06_seven_profiles_reverse_replies(guest):
     pages = [guest() for _ in range(7)]
-    tags = [uuid4().hex[:8] for _ in pages]
-    turns = [submit(page, GAP + f" Код тестового проекта {tag}.") for page, tag in zip(pages, tags)]
-    for i, (page, tag, data) in enumerate(zip(pages, tags, turns)):
-        playwright.expect(page.locator("#dion-messages").get_by_text(tag, exact=False)).to_be_visible()
-        for other in set(tags) - {tag}:
+    works = (
+        "Монтаж серверного оборудования", "Настройка резервного копирования",
+        "Миграция корпоративной почты", "Аудит сетевой инфраструктуры",
+        "Сопровождение рабочих мест", "Внедрение электронной подписи",
+        "Обновление системы мониторинга",
+    )
+    scopes = [estimate_scope(work) for work in works]
+    turns = [submit(page, estimate_question(scope)) for page, scope in zip(pages, scopes)]
+    requests = []
+    for i, (page, scope, data) in enumerate(zip(pages, scopes, turns)):
+        playwright.expect(page.locator("#dion-messages .dion-own").get_by_text(scope, exact=False)).to_be_visible()
+        for other in set(scopes) - {scope}:
             assert other not in page.locator("#dion-messages").text_content()
         if i < 2:
-            assert result(page, data)["offers"]
-            answer(page, "Да, передай")
+            turn = result(page, data)
+            if not turn["offers"]:
+                assert answered_estimate(turn, scope), turn
+                scopes[i], _ = ask_new_estimate(page, works[i])
+            requests.append(answer(page, "Да, передай")["result"])
     for judge in pages[5:]:
         login(judge)
-    reply(pages[6], tags[1], "Для второго тестового проекта порог составляет 21 процент.")
-    reply(pages[5], tags[0], "Для первого тестового проекта порог составляет 19 процентов.")
+    reply(pages[6], requests[1], f"Для {scopes[1]} порог составляет 21 процент.")
+    reply(pages[5], requests[0], f"Для {scopes[0]} порог составляет 19 процентов.")
     for i, text in enumerate(("19 процентов", "21 процент")):
         playwright.expect(pages[i].locator("#dion-messages").get_by_text(text, exact=False)).to_be_visible(timeout=45_000)
         assert ("21 процент" if i == 0 else "19 процентов") not in pages[i].locator("#dion-messages").text_content()
@@ -278,15 +293,14 @@ def test_06_seven_profiles_reverse_replies(guest):
     assert pages[5].request.get(URL + "/v1/browser/mail/inbox").status == 401
     pages[5].get_by_role("button", name="Демо чат DION", exact=True).click()
     open_chat(pages[5])
-    playwright.expect(pages[5].locator("#dion-messages")).to_contain_text(tags[5])
+    playwright.expect(pages[5].locator("#dion-messages")).to_contain_text(scopes[5])
 
 
 def test_07_out_of_scope_and_external_document(guest):
     page = guest()
     casual = answer(page, "Что приготовить из баклажанов на ужин?")
     assert casual["result"]["action"] == "out_of_scope" and not casual["offers"], casual
-    gap = answer(page, GAP + f" Для проекта {uuid4().hex[:8]}.", new=True)
-    assert gap["result"] is not None and gap["offers"], gap
+    ask_new_estimate(page, "Защита почтового шлюза")
 
 
 def test_08_reload_and_idempotent_admit(guest):
@@ -323,17 +337,16 @@ def test_08_reload_and_idempotent_admit(guest):
 def test_09_smtp_failure_and_recovery(guest):
     compose = shlex.split(os.environ["II_BROWSER_COMPOSE"])
     employee, judge = guest(), guest()
-    tag = uuid4().hex[:8]
     subprocess.run([*compose, "stop", "smtp"], check=True)
     try:
-        request_mail(employee, GAP + f" Код тестового проекта {tag}.")
+        scope, request = request_mail(employee, "Поддержка резервного центра")
         playwright.expect(employee.locator(".mail-state")).to_contain_text("очереди")
         login(judge)
-        assert tag not in judge.locator("#quality-content").text_content()
+        assert not judge.locator(f'.mail-row[data-mail-id="{request["mail_request_id"]}"]').count()
         assert answer(guest(), DIRECT)["result"]["sources"]
     finally:
         subprocess.run([*compose, "start", "smtp"], check=True)
-    reply(judge, tag, "В этом тестовом проекте порог составляет 22 процента.")
+    reply(judge, request, f"Для {scope} порог составляет 22 процента.")
     playwright.expect(employee.locator("#dion-messages").get_by_text("22 процента", exact=False)).to_have_count(1, timeout=45_000)
 
 
@@ -358,7 +371,7 @@ def test_quality_readonly_workspace(guest, width):
     playwright.expect(page.locator(".mail-reader h3")).to_be_visible()
     if width < 600:
         page.get_by_role("button", name="К письмам").click()
-    page.get_by_role("searchbox", name="Поиск по письмам").fill(uuid4().hex)
+    page.get_by_role("searchbox", name="Поиск по письмам").fill("Письмо из антарктической обсерватории")
     playwright.expect(page.get_by_text("Письма не найдены.", exact=True)).to_be_visible()
     page.get_by_role("button", name="Источники", exact=True).click()
     page.get_by_text("Регламенты", exact=True).click()

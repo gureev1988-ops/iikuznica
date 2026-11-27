@@ -10,7 +10,8 @@ from uuid import uuid5
 
 from backend.contracts.engine import Action, AnswerResult, Citation, ClarificationOption
 from backend.db import connect
-from .faq_scope import compatible_ids
+from .demo_project import asks_about_demo_project, display_text, renamed_faq
+from .faq_scope import answer_entities, compatible_ids
 from eval.retrieval.extract import TITLES
 from eval.scope.procedures import clarify, directories, normalized
 
@@ -388,6 +389,12 @@ def faq_candidate(row, question_scope, normalized_question, conditions):
     )
 
 
+def faq_identity_matches(key, answer, question, conditions, original=None):
+    if asks_about_demo_project(question, conditions) and renamed_faq(key, answer, original):
+        key, answer = display_text(key), display_text(answer)
+    return compatible_ids(key + "\n" + answer_entities(answer), question, conditions)
+
+
 def potential_faq(conn, question, conditions, fragments):
     blocked, _ = _check_faq(conn, question, conditions, fragments)
     return blocked
@@ -399,7 +406,7 @@ def _check_faq(conn, question, conditions, fragments):
     if not faq:
         return False, None
     rows = conn.execute("""
-        SELECT f.current_fragment_id, f.question_key, f.conditions_key, f.status, r.pending,
+        SELECT f.current_fragment_id, f.question_key, f.conditions_key, f.status, r.pending, r.question AS original_question,
                seed.faq_id IS NOT NULL AS is_seed
         FROM faq_entries f JOIN mail_requests r ON r.id=f.request_id
         LEFT JOIN assembly_quality_seed seed ON seed.faq_id=f.id
@@ -411,11 +418,11 @@ def _check_faq(conn, question, conditions, fragments):
     intent = text.removesuffix("?").rstrip()
     applicable_seed = None
     for row in rows:
-        if not compatible_ids(row["question_key"], question, conditions):
+        fragment = faq[row["current_fragment_id"]]
+        if not faq_identity_matches(row["question_key"], fragment.text, question, conditions, row.get("original_question")):
             continue
         if not faq_candidate(row, scope, text, conditions):
             continue
-        fragment = faq[row["current_fragment_id"]]
         if not _is_reviewed_seed(row, fragment):
             return True, None
         if _DB_APPOINTMENT.fullmatch(intent) or _DB_EARLY_START.fullmatch(intent):

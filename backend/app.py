@@ -185,7 +185,11 @@ def create_app(settings: Settings | None = None, *, services: Backend | None = N
             raise HTTPException(403, "Operations role required")
         return actor
 
-    app.include_router(create_router(backend.dialog, get_actor))
+    if backend.assembly:
+        from backend.assembly.demo_project import display_example
+        app.include_router(create_router(backend.dialog, get_actor, present=display_example))
+    else:
+        app.include_router(create_router(backend.dialog, get_actor))
     app.include_router(build_router(backend.dsn, get_actor, service=backend.mail, is_quality=backend.settings.is_quality))
     app.include_router(make_router(backend.documents, require_ops))
     app.include_router(dion_operations_router(backend.dsn, require_ops))

@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.db import connect, lock_source_catalog
+from .demo_project import display_example
 from .statistics import VISIBLE_DOCUMENT, group_questions, summary
 
 
@@ -241,4 +242,4 @@ def mount_analytics(app, backend):
         browser.authorized_inbox(request)
         response.headers["Cache-Control"] = "private, no-store"
         with connect(backend.dsn) as conn:
-            return group_questions(conn, group_id)
+            return display_example(group_questions(conn, group_id))
