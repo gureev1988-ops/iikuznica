@@ -280,6 +280,10 @@ class Assembly:
         frontend = Path(__file__).with_name("frontend")
         app.mount("/assets", StaticFiles(directory=frontend), name="assets")
 
+        @app.api_route("/favicon.ico", methods=["GET", "HEAD"], include_in_schema=False)
+        def favicon():
+            return FileResponse(frontend / "favicon.ico", media_type="image/vnd.microsoft.icon")
+
         @app.get("/", include_in_schema=False)
         def index():
             return FileResponse(frontend / "index.html", headers={
