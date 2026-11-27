@@ -25,9 +25,22 @@ class Backend:
         self.dsn = settings.dsn
         self.closeables = []
         hackathon = settings.hackathon
-        self.engine = build_engine(settings.engine) if hackathon else engine or build_engine(settings.engine)
+        assembly = settings.profile == "assembly"
+        self.assembly = None
+        indexer = None
+        if assembly:
+            from backend.assembly.engine import A1Engine
+            from backend.assembly.search import RevisionIndexer
+            from backend.assembly.web import Assembly
+
+            self.assembly = Assembly(settings)
+            self.engine = A1Engine(self.dsn)
+            indexer = RevisionIndexer(self.dsn)
+        else:
+            self.engine = build_engine(settings.engine) if hackathon else engine or build_engine(settings.engine)
         self.mail_config = (
             MailConfig.for_hackathon() if hackathon
+            else self.assembly.mail if assembly
             else mail_config or MailConfig.from_env(quality_address=INTEGRATED_QUALITY_EMAIL)
         )
         self.mailbox = None if hackathon else mailbox
@@ -38,21 +51,22 @@ class Backend:
         self.mail = MailService(
             self.dsn, self.mail_config, transport=transport, inbox=inbox,
             resolve_actor=lambda actor_id: self.resolve_actor(actor_id, "web"),
-            quality_enabled=lambda: settings.quality_admin is not None,
+            quality_enabled=lambda: assembly or settings.quality_admin is not None,
         )
         self.dialog = DialogueService(dsn=self.dsn, engine=self.engine, mail_config=self.mail_config,
-                                     max_pending=settings.max_pending, queue_reply=queue_reply,
+                                     max_pending=settings.max_pending, deadline_seconds=settings.deadline_seconds,
+                                     queue_reply=None if assembly else queue_reply,
                                      resolve_actor=self.resolve_actor, hackathon=hackathon)
         connection_config = None
         if hackathon or sources is None:
             sources, connection_config = configure_sources(settings)
             self.closeables.extend(source for source in sources.values() if hasattr(source, "close"))
         self.documents = DocumentSync(
-            self.dsn, sources, public_only=hackathon, connection_config=connection_config,
+            self.dsn, sources, public_only=hackathon, connection_config=connection_config, indexer=indexer,
             on_revision_change=partial(reconcile_document_revision, hackathon=True) if hackathon else None,
         )
         self.dion = None
-        if hackathon:
+        if hackathon or assembly:
             dion_client = None
         elif dion_client is None and (cfg := settings.integrations.get("dion")):
             dion_client = DionClient(DionConfig(**cfg))
@@ -62,6 +76,8 @@ class Backend:
                                     public_base_url=settings.public_base_url)
 
     def resolve_actor(self, actor_id, channel):
+        if self.assembly and actor_id.startswith("guest:"):
+            return self.assembly.actor_by_id(actor_id)
         identity = self.settings.by_actor_id(actor_id)
         return identity.actor(channel) if identity else None
 
@@ -114,6 +130,9 @@ class Backend:
             if self.dion:
                 handlers.update(self.dion.handlers)
             terminal = {"documents.sync": self.documents.terminal_job}
+            if self.assembly:
+                handlers.update(self.assembly.handlers)
+                terminal.update(self.assembly.terminal_handlers)
             limit = self.settings.background_concurrency
             source_keys = self.document_source_keys(enabled_only=True)
         return run_once(self.dsn, queue, handlers, max_running=limit, terminal_handlers=terminal,
@@ -149,7 +168,7 @@ def create_app(settings: Settings | None = None, *, services: Backend | None = N
 
     app = FastAPI(title="ИИкузница", version="1.0.0", lifespan=lifespan)
     app.state.backend = backend
-    get_actor = backend.settings.actor_dependency()
+    get_actor = backend.assembly.dependency() if backend.assembly else backend.settings.actor_dependency()
 
     def require_ops(actor=Depends(get_actor)):
         if "ops" not in actor.roles:
@@ -170,4 +189,6 @@ def create_app(settings: Settings | None = None, *, services: Backend | None = N
     probes = {name: (lambda n=name, m=mode: backend.health(n, m)) for name, mode in modes.items()}
     probes["documents"] = lambda: backend.health(backend.document_health_name, modes["documents"])
     app.include_router(operations_router(backend.dsn, require_ops, probes, document_source_keys=backend.document_source_keys()))
+    if backend.assembly:
+        backend.assembly.mount(app, backend)
     return app

@@ -12,7 +12,6 @@ from backend.contracts.engine import (
     AnswerEngine,
     AnswerRequest,
     AnswerResult,
-    EngineUnavailable,
     HistoryMessage,
     ModelAttemptFailure,
     ModelAttemptResult,
@@ -223,6 +222,14 @@ class DialogueService:
         elif body.clarification_id is None:
             self._require_case_ready(conn, actor, conversation_id, case_id)
 
+        if body.case_id is not None or body.clarification_id is not None:
+            closed = conn.execute("""
+                UPDATE offers SET status = 'superseded', updated_at = now()
+                WHERE case_id = %s AND status = 'open' RETURNING *
+                """, (case_id,)).fetchall()
+            for offer in closed:
+                append_event(conn, conversation_id, case_id, offer["turn_id"], "offer.superseded",
+                             {"offer": _public_action(offer)})
         turn = conn.execute(
             """
             INSERT INTO turns (conversation_id, case_id, request_id, question, request, created_at, updated_at)
@@ -424,7 +431,7 @@ class DialogueService:
                     conn, self.mail_config, offer_id=offer_id,
                     conversation_id=turn["conversation_id"], case_id=turn["case_id"], turn_id=turn["id"],
                     actor_id=actor.id, actor_email=actor.email, channel=turn["request"].get("channel", actor.channel),
-                    question=turn["question"], conditions=offer["payload"]["conditions"],
+                    question=offer["payload"].get("question", turn["question"]), conditions=offer["payload"]["conditions"],
                 )
             except MailError as exc:
                 raise DialogueError(exc.status, exc.code) from exc
@@ -453,22 +460,8 @@ class DialogueService:
         context = self._answer_context(job, actor)
         if context is None:
             return
-        request, has_faq = context
-        if has_faq:
-            if not self._finish_answer(job, request, None):
-                raise EvidenceChanged("FAQ changed during the turn")
-            return
-
-        engine = self.engine
-        try:
-            result = engine.answer(request)
-        except EngineUnavailable:
-            # A newly published official answer can complete the turn while the model is down.
-            if not self._finish_answer(job, request, None):
-                raise
-        else:
-            if not self._finish_answer(job, request, result):
-                raise InvalidAnswer("The engine returned no result")
+        result = self.engine.answer(context)
+        self._finish_answer(job, context, result)
 
     def _answer_context(self, job, actor):
         from backend.documents import list_fragments
@@ -481,39 +474,46 @@ class DialogueService:
             if not self._job_is_current(turn, job):
                 return None
             if turn["status"] == "queued":
-                conn.execute(
-                    "UPDATE turns SET status = 'processing', updated_at = now() WHERE id = %s",
-                    (turn["id"],),
-                )
+                conn.execute("UPDATE turns SET status = 'processing', updated_at = now() WHERE id = %s", (turn["id"],))
                 _event(conn, turn, "turn.processing", {"status": "processing", "attempt": turn["attempt"]})
             conditions, _ = self._conditions(conn, actor, turn["case_id"])
-            has_faq = self._applicable_faq(conn, actor, turn["question"], conditions) is not None
             history = []
-            if not has_faq:
-                for row in conn.execute(
-                    """
-                    SELECT m.role, m.text, t.result, m.source_refs,
-                        a.id AS dispatch_attempt_id, d.envelope->'condition_sources' AS condition_sources
-                    FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
-                    LEFT JOIN delivery_attempts a ON a.id = m.id AND a.channel = 'dion' AND a.state = 'sent'
-                    LEFT JOIN dion_dispatches d ON d.attempt_id = a.id
-                    WHERE m.case_id = %s AND m.turn_id IS DISTINCT FROM %s
-                    ORDER BY m.created_at, m.id
-                    """,
-                    (turn["case_id"], turn["id"]),
-                ):
-                    if not self._message_visible(conn, actor, row, row["result"]):
-                        continue
-                    history.append(HistoryMessage(role=row["role"], text=row["text"]))
-            fragments = () if has_faq else list_fragments(conn, actor.id, kind="document", hackathon=self.hackathon)
+            for row in conn.execute("""
+                SELECT m.role, m.text, t.result, t.question, m.source_refs,
+                    a.id AS dispatch_attempt_id, d.envelope->'condition_sources' AS condition_sources
+                FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
+                LEFT JOIN delivery_attempts a ON a.id = m.id AND a.channel = 'dion' AND a.state = 'sent'
+                LEFT JOIN dion_dispatches d ON d.attempt_id = a.id
+                WHERE m.case_id = %s AND m.turn_id IS DISTINCT FROM %s
+                ORDER BY m.created_at, m.id
+                """, (turn["case_id"], turn["id"])):
+                if not self._message_visible(conn, actor, row, row["result"]):
+                    continue
+                result = (row["result"] or {}) if row["role"] == "assistant" and row["source_refs"] is None else {}
+                history.append(HistoryMessage(row["role"], row["text"], row["question"],
+                                              result.get("resolved_question"), result.get("action")))
+            clarification = None
+            clarification_id = turn["request"]["message"].get("clarification_id")
+            if clarification_id:
+                resolved = conn.execute("""
+                    SELECT c.*, m.text FROM clarifications c
+                    JOIN messages m ON m.turn_id = %s AND m.role = 'user'
+                    WHERE c.id = %s AND c.case_id = %s AND c.status = 'resolved'
+                    """, (turn["id"], clarification_id, turn["case_id"])).fetchone()
+                if resolved:
+                    clarification = dict(value=resolved["text"], prompt=resolved["prompt"],
+                                         choices=tuple(o["text"] for o in resolved["options"] if o["id"] != "unknown"))
+            count = conn.execute("SELECT count(*) AS n FROM clarifications WHERE case_id = %s AND status = 'resolved'",
+                                 (turn["case_id"],)).fetchone()["n"]
+            fragments = list_fragments(conn, actor.id, hackathon=self.hackathon)
             return AnswerRequest(
                 question=turn["question"], turn_id=turn["id"], case_id=turn["case_id"],
                 conditions=conditions, history=tuple(history), deadline=job.deadline_at,
-                sources=SourceSnapshot(fragments=fragments),
-                attempts=_AttemptRecorder(self.dsn, job, turn["id"], turn["case_id"]),
-            ), has_faq
+                sources=SourceSnapshot(fragments=fragments), clarification=clarification,
+                clarification_count=count, attempts=_AttemptRecorder(self.dsn, job, turn["id"], turn["case_id"]),
+            )
 
-    def _finish_answer(self, job, request, result: AnswerResult | None) -> bool:
+    def _finish_answer(self, job, request, result: AnswerResult) -> None:
         from backend.runtime import finish, require_lease
 
         actor = self._actor_for_job(job)
@@ -522,22 +522,31 @@ class DialogueService:
             lock_source_catalog(conn)
             _, turn = _turn(conn, actor, request.turn_id, write=True)
             if not self._job_is_current(turn, job):
-                return True
+                return
             conditions, condition_sources = self._conditions(conn, actor, turn["case_id"])
             if conditions != dict(request.conditions):
                 raise EvidenceChanged("Case conditions changed during the turn")
-            faq = self._applicable_faq(conn, actor, turn["question"], conditions)
-            if faq is not None:
-                public = self._faq_result(faq)
-            elif result is not None:
-                public = self._verify_engine_answer(conn, actor, request, result)
-            else:
-                return False
+            if actor.channel == "guest":
+                from backend.documents import list_fragments
+                current = list_fragments(conn, actor.id, kind="document", hackathon=self.hackathon)
+                expected = {_fragment_key(fragment) for fragment in request.sources.fragments
+                            if fragment.kind == "document"}
+                if expected != {_fragment_key(fragment) for fragment in current}:
+                    raise EvidenceChanged("Regulation snapshot changed during the turn")
+            public = self._verify_engine_answer(conn, actor, request, result)
+            if result.allow_faq and result.action == "escalate" and not result.citations and actor.channel != "guest":
+                faq = self._applicable_faq(conn, actor, turn["question"], conditions)
+                if faq and not faq.partial:
+                    if faq.conflict_revision_id:
+                        public = self._regulation_first(conn, actor, turn, faq, conditions) or public
+                    else:
+                        public = self._faq_result(faq)
             if condition_sources:
                 public["condition_sources"] = condition_sources
-            self._store_result(conn, actor, turn, conditions, public, result if faq is None else None)
+            if result.resolved_question:
+                public["resolved_question"] = result.resolved_question
+            self._store_result(conn, actor, turn, conditions, public, result)
             finish(conn, job)
-            return True
 
     @staticmethod
     def _job_is_current(turn: dict, job) -> bool:
@@ -562,6 +571,23 @@ class DialogueService:
             return faq
         return None
 
+    def _regulation_first(self, conn, actor, turn, faq, conditions):
+        from backend.documents import get_fragment
+        from backend.mailfaq.faq import _conditions_key, _key, regulation_section
+
+        section = regulation_section(conn, faq.conflict_revision_id, _key(turn["question"]), _conditions_key(conditions))
+        if section is None:
+            return None
+        row, text = section
+        source = get_fragment(conn, faq.conflict_revision_id, row["id"], actor.id,
+                              current=True, hackathon=self.hackathon)
+        if source is None:
+            return None
+        return {"action": "answer", "text": f"Регламент\n{text} [1]\n\nFAQ Отдела качества\n{faq.text} [2]",
+                "sources": [_source_ref(source, text), faq.source_ref()],
+                "notice": "Руководствуйтесь действующим регламентом. Разъяснение расходится с ним.",
+                "offer_question": turn["question"]}
+
     @staticmethod
     def _faq_result(faq) -> dict:
         result = {"action": "answer", "text": faq.text, "sources": [faq.source_ref()]}
@@ -585,15 +611,21 @@ class DialogueService:
         if not result.text.strip() or (result.action == "answer" and not result.citations):
             raise InvalidAnswer("Missing answer text or evidence")
         snapshot = {_fragment_key(fragment): fragment for fragment in request.sources.fragments}
-        refs = []
-        for citation in result.citations:
-            fragment = snapshot.get((citation.document_id, citation.revision_id, citation.fragment_id))
-            if fragment is None or not citation.quote.strip() or citation.quote not in fragment.text:
-                raise InvalidAnswer("Evidence does not match the allowed source snapshot")
-            refs.append(_source_ref(fragment, citation.quote, citation.claim))
-        if not self._refs_visible(conn, actor, refs, current=True):
-            raise EvidenceChanged("Evidence changed during the turn")
-        return {"action": result.action, "text": result.text, "sources": refs}
+        def verify(citations):
+            refs = []
+            for citation in citations:
+                fragment = snapshot.get((citation.document_id, citation.revision_id, citation.fragment_id))
+                if fragment is None or not citation.quote.strip() or citation.quote not in fragment.text:
+                    raise InvalidAnswer("Evidence does not match the allowed source snapshot")
+                refs.append(_source_ref(fragment, citation.quote, citation.claim))
+            if not self._refs_visible(conn, actor, refs, current=True):
+                raise EvidenceChanged("Evidence changed during the turn")
+            return refs
+
+        refs = verify(result.citations)
+        parts = [{"action": part.action, "text": part.text, "sources": verify(part.citations)}
+                 for part in result.parts]
+        return {"action": result.action, "text": result.text, "sources": refs, "parts": parts}
 
     def _store_result(self, conn, actor, turn, conditions, public, result):
         clarification = offer = None
@@ -614,11 +646,24 @@ class DialogueService:
                 """,
                 (turn["id"], turn["case_id"], public["text"], Jsonb(options), result.clarification_key),
             ).fetchone()
-        elif public["action"] == "escalate":
+        target = public.get("offer_question") or result.escalation_question
+        if public["action"] == "escalate" or (public["action"] == "answer" and target and
+                                             any(ref["kind"] == "document" for ref in public["sources"])):
+            target = target or turn["question"]
             offer = conn.execute(
                 "INSERT INTO offers (turn_id, case_id, text, payload) VALUES (%s, %s, %s, %s) RETURNING *",
-                (turn["id"], turn["case_id"], public["text"], Jsonb({"conditions": conditions})),
+                (turn["id"], turn["case_id"], public["text"], Jsonb({"conditions": conditions, "question": target})),
             ).fetchone()
+        if actor.channel == "guest":
+            if offer is not None:
+                conn.execute("INSERT INTO assembly_gaps VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+                             (turn["id"], target, Jsonb(conditions)))
+            for ref in public["sources"]:
+                if ref["kind"] == "faq":
+                    conn.execute("""
+                        INSERT INTO assembly_faq_uses
+                        SELECT %s, id FROM faq_entries WHERE current_fragment_id = %s ON CONFLICT DO NOTHING
+                        """, (turn["id"], ref["fragment_id"]))
         conn.execute(
             "UPDATE turns SET status = 'completed', result = %s, updated_at = now() WHERE id = %s",
             (Jsonb(public), turn["id"]),
@@ -690,7 +735,11 @@ class DialogueService:
 
     @staticmethod
     def _result_refs(result: dict | None) -> list[dict]:
-        return result.get("sources", []) + result.get("condition_sources", []) if result is not None else []
+        if result is None:
+            return []
+        return result.get("sources", []) + result.get("condition_sources", []) + [
+            ref for part in result.get("parts", []) for ref in part["sources"]
+        ]
 
     def _result_visible(self, conn, actor, result: dict | None, *, current: bool = False) -> bool:
         action = result.get("action") if result is not None else None
@@ -710,7 +759,7 @@ class DialogueService:
 
     @staticmethod
     def _public_result(result: dict) -> dict:
-        return {key: result[key] for key in ("action", "text", "sources", "notice") if key in result}
+        return {key: result[key] for key in ("action", "text", "sources", "notice", "parts") if key in result}
 
     def _actions(self, conn, actor, conversation_id, *, only_open: bool = False):
         statement = """
@@ -848,12 +897,6 @@ class DialogueService:
             ).fetchone()
             if turn is None:
                 return None
-            conditions, current_condition_sources = self._conditions(conn, actor, turn["case_id"])
-            faq = self._applicable_faq(conn, actor, turn["question"], conditions)
-            if faq is not None:
-                self._supersede_pending_action(conn, turn)
-                result = self._faq_result(faq)
-                return self._delivery_body(result), result["sources"], False, current_condition_sources
             if not self._result_visible(conn, actor, turn["result"], current=True):
                 return None
             condition_sources = (turn["result"] or {}).get("condition_sources", [])

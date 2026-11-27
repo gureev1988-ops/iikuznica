@@ -34,7 +34,7 @@ def list_fragments(
     rows = conn.execute(
         f"""
         SELECT s.id AS document_id, r.id AS revision_id, f.id AS fragment_id,
-               f.text, r.title, f.anchor, s.source_system AS kind
+               f.text, r.title, f.anchor, s.source_system AS kind, r.version
         FROM sources AS s
         JOIN source_revisions AS r ON r.id = s.current_revision_id
         JOIN source_fragments AS f ON f.revision_id = r.id
@@ -58,7 +58,7 @@ def get_fragment(
     row = conn.execute(
         f"""
         SELECT s.id AS document_id, r.id AS revision_id, f.id AS fragment_id,
-               f.text, r.title, f.anchor, s.source_system AS kind
+               f.text, r.title, f.anchor, s.source_system AS kind, r.version
         FROM source_fragments AS f
         JOIN source_revisions AS r ON r.id = f.revision_id
         JOIN sources AS s ON s.id = r.source_id

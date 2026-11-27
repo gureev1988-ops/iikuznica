@@ -29,6 +29,7 @@ class MailConfig:
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_ssl: bool = False
+    private_plain: bool = False
     imap_host: str = ""
     imap_port: int = 993
     imap_user: str = ""
@@ -168,7 +169,8 @@ class SmtpTransport:
                     )
                 else:
                     client = smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=config.timeout)
-                    client.starttls(context=ssl.create_default_context())
+                    if not config.private_plain:
+                        client.starttls(context=ssl.create_default_context())
                 client.ehlo_or_helo_if_needed()
                 if config.smtp_user:
                     client.login(config.smtp_user, config.smtp_password)
@@ -206,11 +208,7 @@ class ImapInbox:
 
     def fetch(self, uidvalidity: str | None, last_uid: int, limit: int) -> InboxPage:
         config = self.config
-        with imaplib.IMAP4_SSL(
-            config.imap_host, config.imap_port, ssl_context=ssl.create_default_context(),
-            timeout=config.timeout,
-        ) as client:
-            client.login(config.imap_user, config.imap_password)
+        with self.open() as client:
             status, _ = client.select(config.mailbox, readonly=True)
             if status != "OK":
                 raise OSError("IMAP mailbox selection failed")
@@ -226,6 +224,31 @@ class ImapInbox:
             uids = sorted({int(value) for value in data[0].split() if int(value) > last_uid})
             receipts = [self._read(client, uid) for uid in uids[:limit]]
             return InboxPage(current, tuple(receipts))
+
+    def open(self):
+        config = self.config
+        if config.private_plain:
+            client = imaplib.IMAP4(config.imap_host, config.imap_port, timeout=config.timeout)
+        else:
+            client = imaplib.IMAP4_SSL(config.imap_host, config.imap_port, timeout=config.timeout,
+                                      ssl_context=ssl.create_default_context())
+        try:
+            client.login(config.imap_user, config.imap_password)
+        except BaseException:
+            client.shutdown()
+            raise
+        return client
+
+    def latest(self, limit):
+        with self.open() as client:
+            status, _ = client.select(self.config.mailbox, readonly=True)
+            if status != "OK":
+                raise OSError("IMAP mailbox selection failed")
+            status, data = client.uid("SEARCH", None, "ALL")
+            if status != "OK" or not data or data[0] is None:
+                raise OSError("IMAP UID search failed")
+            uids = sorted((int(value) for value in data[0].split()), reverse=True)
+            return tuple(self._read(client, uid) for uid in uids[:limit])
 
     def _read(self, client, uid: int) -> Receipt:
         status, data = client.uid("FETCH", str(uid), "(UID RFC822.SIZE)")

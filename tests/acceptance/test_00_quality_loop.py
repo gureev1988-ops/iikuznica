@@ -142,7 +142,9 @@ def test_consent_reply_restart_immediate_faq_and_wiki_conflict(deployment, dsn, 
         conflicting = submit(client, second_chat, "second", "q3")
         worker("interactive")
         latest = read_turn(client, conflicting, "second")["result"]
-        assert ANSWER in latest["text"] and latest["sources"][0]["kind"] == "faq"
+        assert "7 дней" in latest["text"].split("FAQ Отдела качества")[0]
+        assert ANSWER in latest["text"].split("FAQ Отдела качества")[1]
+        assert [source["kind"] for source in latest["sources"]] == ["document", "faq"]
         assert "расходится" in latest["notice"].casefold()
         assert read_turn(client, following, "second")["result"]["sources"][0]["revision_id"] == source["revision_id"]
         values = json.loads(config_path.read_text())

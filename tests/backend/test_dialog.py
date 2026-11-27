@@ -410,7 +410,7 @@ def publish_official_reply(dsn, scenario, text):
         return publish_faq(conn, request, text)
 
 
-def test_delayed_turn_prefers_faq_published_after_answer(dsn):
+def test_delayed_turn_preserves_verified_regulation(dsn):
     with connect(dsn) as conn:
         seed_fixture_sources(conn, active_version=2)
     service = DialogueService(dsn=dsn, engine=build_engine("fixture-alpha"))
@@ -420,23 +420,19 @@ def test_delayed_turn_prefers_faq_published_after_answer(dsn):
     process(service)
     before = snapshot(client, answered["turn_id"])["result"]
     assert "7" in before["text"]
-    faq = publish_official_reply(dsn, 0, "Заявку рассматривают в течение 2 дней.")
+    publish_official_reply(dsn, 0, "Заявку рассматривают в течение 2 дней.")
     with connect(dsn) as conn:
         text, refs, keep_actions = service.delivery_payload(
             conn, EMPLOYEE, conversation_id, before["text"], before["sources"],
             turn_id=answered["turn_id"], reevaluate_faq=True,
         )
-    assert "2" in text and refs == [faq.source_ref()] and not keep_actions
+    assert text == before["text"] and refs == before["sources"] and keep_actions
     assert snapshot(client, answered["turn_id"])["result"] == before
 
 
-@pytest.mark.parametrize(("scenario", "actions", "superseded"), [
-    (1, "clarifications", "clarification.superseded"),
-    (2, "offers", "offer.superseded"),
-])
-def test_delayed_action_sends_official_replacement_and_preserves_confirmed_history(dsn, scenario, actions, superseded):
+@pytest.mark.parametrize(("scenario", "actions"), [(1, "clarifications"), (2, "offers")])
+def test_delayed_actions_require_reprocessing_before_applying_new_faq(dsn, scenario, actions):
     service = DialogueService(dsn=dsn, engine=build_engine("fixture-alpha"), queue_reply=queue_reply)
-    client = client_for(service)
     actor = Actor(EMPLOYEE.id, EMPLOYEE.roles, EMPLOYEE.email, channel="dion")
     conversation_id = uuid4()
     with connect(dsn) as conn:
@@ -449,57 +445,11 @@ def test_delayed_action_sends_official_replacement_and_preserves_confirmed_histo
             client_message_id="dion-action", text=FIXTURE.scenarios[scenario].questions[0],
         ))
     process(service)
-    before = snapshot(client, admitted.turn_id)
-    assert before[actions][0]["status"] == "open"
-    faq = publish_official_reply(dsn, scenario, "Теперь доступно официальное разъяснение.")
-    attempt_id = uuid4()
+    publish_official_reply(dsn, scenario, "Теперь доступно официальное разъяснение.")
     with connect(dsn) as conn:
         outbox = conn.execute("SELECT * FROM dion_outbox WHERE turn_id = %s", (admitted.turn_id,)).fetchone()
-        conn.execute(
-            """
-            INSERT INTO delivery_attempts (id, channel, effect_key, state, expires_at)
-            VALUES (%s, 'dion', %s, 'sending', now() + interval '1 minute')
-            """,
-            (attempt_id, outbox["effect_key"]),
-        )
-        text, refs, keep_actions = service.delivery_payload(
+        assert service.delivery_payload(
             conn, actor, conversation_id, outbox["text"], outbox["source_refs"],
             turn_id=admitted.turn_id, reevaluate_faq=True,
-        )
-        assert text == faq.text and refs == [faq.source_ref()] and not keep_actions
-        assert service.open_actions(conn, actor, conversation_id)[actions] == []
-        assert not service.delivery_payload(
-            conn, actor, conversation_id, outbox["text"], outbox["source_refs"],
-            turn_id=admitted.turn_id, reevaluate_faq=True,
-        )[2]
-        actual_text = f"{text}\n\n{refs[0]['url']}"
-        audit = dict(attempt_id=attempt_id, conversation_id=conversation_id, case_id=admitted.case_id,
-                     turn_id=admitted.turn_id, text=actual_text, source_refs=refs, condition_sources=[])
-        conn.execute(
-            "INSERT INTO dion_dispatches (attempt_id, effect_key, envelope) VALUES (%s, %s, %s)",
-            (
-                attempt_id, outbox["effect_key"], Jsonb({
-                    "text": actual_text, "source_refs": refs, "condition_sources": [],
-                    "substitute": True, "offer_id": None, "clarification_id": None,
-                    "mail_request_id": None, "reply_message_id": None,
-                }),
-            ),
-        )
-        service.record_delivery_replacement(conn, **audit)
-    history_path = f"/v1/conversations/{conversation_id}/messages"
-    assert all(item["id"] != str(attempt_id) for item in client.get(history_path).json()["messages"])
-    with connect(dsn) as conn:
-        conn.execute("UPDATE delivery_attempts SET state = 'sent' WHERE id = %s", (attempt_id,))
-        service.record_delivery_replacement(conn, **audit)
-        service.record_delivery_replacement(conn, **audit)
-        events = service.events(conn, actor, conversation_id, before["cursor"])
-        assert [event["kind"] for event in events] == [superseded, "dion.reply_substituted"]
-        assert events[-1]["payload"]["source_refs"] == refs
-        assert events[-1]["payload"]["text"] == actual_text
-        conn.execute("UPDATE conversations SET events_floor = event_cursor WHERE id = %s", (conversation_id,))
-        conn.execute("DELETE FROM events WHERE conversation_id = %s", (conversation_id,))
-    reconnected = client.get(history_path).json()
-    (replacement,) = [item for item in reconnected["messages"] if item["id"] == str(attempt_id)]
-    assert replacement["text"] == actual_text and replacement["source_refs"][0]["revision_id"] == str(faq.revision_id)
-    after = snapshot(client, admitted.turn_id)
-    assert after["result"] == before["result"] and after[actions][0]["status"] == "superseded"
+        ) == (outbox["text"], outbox["source_refs"], True)
+        assert service.open_actions(conn, actor, conversation_id)[actions][0]["status"] == "open"

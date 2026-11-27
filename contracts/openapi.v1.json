@@ -27,6 +27,37 @@
         "title": "AcceptedMessage",
         "type": "object"
       },
+      "AnswerPartView": {
+        "properties": {
+          "action": {
+            "enum": [
+              "answer",
+              "clarify",
+              "escalate",
+              "out_of_scope"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceReference"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "text"
+        ],
+        "title": "AnswerPartView",
+        "type": "object"
+      },
       "AuthenticationError": {
         "properties": {
           "detail": {
@@ -670,8 +701,8 @@
             "type": "string"
           },
           "priority": {
-            "const": "highest",
-            "default": "highest",
+            "const": "regulation",
+            "default": "regulation",
             "title": "Priority",
             "type": "string"
           },
@@ -1969,6 +2000,13 @@
             ],
             "title": "Notice"
           },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/AnswerPartView"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
           "sources": {
             "items": {
               "$ref": "#/components/schemas/SourceReference"
@@ -2080,6 +2118,17 @@
           "title": {
             "title": "Title",
             "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
           }
         },
         "required": [

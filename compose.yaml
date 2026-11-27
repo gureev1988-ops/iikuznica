@@ -1,0 +1,116 @@
+name: iikuznica
+x-app: &app
+  image: iikuznica-assembly:local
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  environment: &app-env
+    II_PROFILE: assembly
+    DATABASE_URL: postgresql://iik:${II_DB_PASSWORD:?Run deploy/init-env.sh}@db/iikuznica
+    II_JUDGE_LOGIN: ${II_JUDGE_LOGIN:?Run deploy/init-env.sh}
+    II_JUDGE_PASSWORD: ${II_JUDGE_PASSWORD:?Run deploy/init-env.sh}
+    II_BOT_PASSWORD: ${II_BOT_PASSWORD:?Run deploy/init-env.sh}
+    II_QUALITY_PASSWORD: ${II_QUALITY_PASSWORD:?Run deploy/init-env.sh}
+    II_PUBLIC_URL: ${II_PUBLIC_URL:-https://localhost:4443}
+    II_MAX_PENDING: ${II_MAX_PENDING:-32}
+    II_INTERACTIVE_CONCURRENCY: ${II_INTERACTIVE_CONCURRENCY:-10}
+    II_TURN_DEADLINE: ${II_TURN_DEADLINE:-90}
+    II_MODEL_DIR: /models
+    II_ORIGINALS: /originals
+  volumes:
+    - models:/models
+    - originals:/originals
+  networks: [app, mail]
+services:
+  db:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: iik
+      POSTGRES_PASSWORD: ${II_DB_PASSWORD:?Run deploy/init-env.sh}
+      POSTGRES_DB: iikuznica
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U iik -d iikuznica']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes: [db:/var/lib/postgresql/data]
+    networks: [app]
+  imap:
+    build: deploy/mail
+    environment:
+      II_BOT_PASSWORD: ${II_BOT_PASSWORD:?Run deploy/init-env.sh}
+      II_QUALITY_PASSWORD: ${II_QUALITY_PASSWORD:?Run deploy/init-env.sh}
+      II_IMAP_OPERATOR_PASSWORD: ${II_IMAP_OPERATOR_PASSWORD:?Run deploy/init-env.sh}
+    volumes: [maildir:/mail]
+    networks: [mail]
+  smtp:
+    <<: *app
+    entrypoint: [python, -m, backend.assembly.test_smtp]
+    command: []
+    environment:
+      II_BOT_PASSWORD: ${II_BOT_PASSWORD:?Run deploy/init-env.sh}
+      II_QUALITY_PASSWORD: ${II_QUALITY_PASSWORD:?Run deploy/init-env.sh}
+    volumes: [maildir:/mail]
+    networks: [mail]
+  init:
+    <<: *app
+    command: [assembly-init]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [app]
+  api:
+    <<: *app
+    command: [api, --host, 0.0.0.0]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, python, -c, "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/healthz', timeout=2).read()"]
+      interval: 5s
+      retries: 8
+  interactive:
+    <<: *app
+    command: [interactive]
+    environment:
+      <<: *app-env
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+  background:
+    <<: *app
+    command: [background]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      imap:
+        condition: service_started
+      smtp:
+        condition: service_started
+  https:
+    image: caddy:2.10-alpine
+    ports:
+      - ${II_LISTEN_IP:-127.0.0.1}:${II_HTTPS_PORT:-4443}:443
+    environment:
+      NO_PROXY: api,localhost,127.0.0.1
+      no_proxy: api,localhost,127.0.0.1
+      II_CADDY_ADDRESS: ${II_CADDY_ADDRESS:-https://localhost}
+      II_CADDY_TLS: ${II_CADDY_TLS:-tls internal}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy:/data
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [app]
+networks:
+  app:
+  mail:
+    internal: true
+volumes:
+  db:
+  models:
+  originals:
+  maildir:
+  caddy:

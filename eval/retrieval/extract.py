@@ -27,8 +27,8 @@ def paragraphs(body):
             yield "".join(t.text or "" for t in block.iter(W + "t")).strip()
 
 
-def clauses(doc, title):
-    with ZipFile(CORPUS / (title + ".docx")) as archive:
+def clauses(doc, title, original=None):
+    with ZipFile(original or CORPUS / (title + ".docx")) as archive:
         body = ET.fromstring(archive.read("word/document.xml")).find(W + "body")
     section = ""
     current = None

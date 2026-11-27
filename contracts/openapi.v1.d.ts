@@ -532,6 +532,18 @@ export interface components {
              */
             turn_id: string;
         };
+        /** AnswerPartView */
+        AnswerPartView: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "answer" | "clarify" | "escalate" | "out_of_scope";
+            /** Sources */
+            sources?: components["schemas"]["SourceReference"][];
+            /** Text */
+            text: string;
+        };
         /** AuthenticationError */
         AuthenticationError: {
             /** Detail */
@@ -807,10 +819,10 @@ export interface components {
             id: string;
             /**
              * Priority
-             * @default highest
+             * @default regulation
              * @constant
              */
-            priority: "highest";
+            priority: "regulation";
             /** Status */
             status: string;
             /** Version */
@@ -1307,6 +1319,8 @@ export interface components {
             action: "answer" | "clarify" | "escalate" | "out_of_scope";
             /** Notice */
             notice?: string | null;
+            /** Parts */
+            parts?: components["schemas"]["AnswerPartView"][];
             /** Sources */
             sources?: components["schemas"]["SourceReference"][];
             /** Text */
@@ -1369,6 +1383,8 @@ export interface components {
             text: string;
             /** Title */
             title: string;
+            /** Version */
+            version?: number | null;
         };
         /** SyncAccepted */
         SyncAccepted: {

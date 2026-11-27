@@ -130,7 +130,7 @@ def _metadata(conn, faq_id: UUID, version: int, *, hackathon: bool = False) -> d
     return row
 
 
-def _covering_fragment(conn, revision_id: UUID, question: str, answer: str, conditions_key: str):
+def regulation_section(conn, revision_id: UUID, question: str, conditions_key: str):
     if conditions_key != "{}":
         return None
     title = conn.execute(
@@ -159,7 +159,12 @@ def _covering_fragment(conn, revision_id: UUID, question: str, answer: str, cond
     if entry["heading_path"] and lines and _key(lines[0]) == _key(entry["heading_path"][-1]):
         lines = lines[1:]
     text = "\n".join(lines)
-    return (entry, text) if _key(text) == _key(answer) else None
+    return (entry, text) if text else None
+
+
+def _covering_fragment(conn, revision_id: UUID, question: str, answer: str, conditions_key: str):
+    section = regulation_section(conn, revision_id, question, conditions_key)
+    return section if section and _key(section[1]) == _key(answer) else None
 
 
 def _public_document(conn, revision_id: UUID | None, *, hackathon: bool = False) -> dict | None:

@@ -150,7 +150,7 @@ def restore(question, past, model, call):
 
 
 def answer(question, search, *, past=(), model=GEMMA, planner=complete, generate_answer=evidence.generate,
-           judge=evidence.judge, faq=None, faq_scope=None, respond=None):
+           judge=evidence.judge, faq=None, faq_scope=None, respond=None, corpus=None):
     """past holds the caller's completed turns, scoped to the same authorized dialogue."""
     options = dict(generate_answer=generate_answer, judge=judge, faq=faq, faq_scope=faq_scope)
     query = question.strip()
@@ -165,7 +165,7 @@ def answer(question, search, *, past=(), model=GEMMA, planner=complete, generate
         parts = []
         for i, q in enumerate(pair):
             response = answer(q, search, past=past if i == 0 else (), model=model, planner=planner,
-                              respond=respond, **options)
+                              respond=respond, corpus=corpus, **options)
             parts.append({"text": q, "query": response["resolved_question"], "result": response})
         return dict(conversation.assemble(parts), resolved_question=query)
     if personal(query):
@@ -186,7 +186,7 @@ def answer(question, search, *, past=(), model=GEMMA, planner=complete, generate
             query = resolved
     if past and faq and (hit := faq.lookup(query, faq_scope)):
         return dict(hit, resolved_question=query)
-    verified = handoff.verified_parts(query, search, ask.full_corpus(), faq, faq_scope)
+    verified = handoff.verified_parts(query, search, ask.full_corpus() if corpus is None else corpus, faq, faq_scope)
     if verified:
         for part in verified:
             if part["result"] is None:

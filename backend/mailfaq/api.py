@@ -75,7 +75,7 @@ class FaqSummary(BaseModel):
 
 
 class FaqConflict(FaqSummary):
-    priority: Literal["highest"] = "highest"
+    priority: Literal["regulation"] = "regulation"
 
 
 class Replacement(BaseModel):

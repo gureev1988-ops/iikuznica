@@ -14,10 +14,14 @@ import procedures
 from run import complete
 from variants import GEMMA, make_request
 
-import a1
-import permission
-import procedure
-from faq_policy import RegulationFirstFAQ
+if __package__:
+    from . import a1, permission, procedure
+    from .faq_policy import RegulationFirstFAQ
+else:
+    import a1
+    import permission
+    import procedure
+    from faq_policy import RegulationFirstFAQ
 
 QWEN = "qwen/qwen3.5-122b-a10b"
 
@@ -61,8 +65,8 @@ def combine_search(search, query, focused):
 
 
 def answer(question, search, *, past=(), publications=(), scope=None, call=model_request,
-           decide=ask.decide, review=None):
-    corpus = ask.full_corpus()
+           decide=ask.decide, review=None, corpus=None, norms=None):
+    corpus = ask.full_corpus() if corpus is None else corpus
     cache = {}
     if review is None:
         def review(state, instruction):
@@ -77,7 +81,7 @@ def answer(question, search, *, past=(), publications=(), scope=None, call=model
         return call(case, body, stage)
 
     def respond(query, lookup, **options):
-        gate = a1.A1()
+        gate = a1.A1(norms)
         full = procedures.full_procedure(question) and procedures.full_procedure(query)
 
         def generate(text, sources, prompt):
@@ -86,9 +90,10 @@ def answer(question, search, *, past=(), publications=(), scope=None, call=model
                     body = model_settings(body, QWEN, "alibaba")
                 return call(case, body, stage)
 
-            return evidence.generate(text, sources, prompt, call=invoke, observe=gate.selection)
+            return evidence.generate(text, sources, prompt, call=invoke, observe=gate.selection, norms=norms,
+                                     order=gate.order if full else None)
 
-        options.update(generate_answer=generate, experiment=gate)
+        options.update(generate_answer=generate, experiment=gate, corpus=corpus, norms=norms)
         if full:
             def expand(sources, pool, corpus):
                 candidates = evidence.alternatives(sources, pool, corpus)
@@ -113,5 +118,5 @@ def answer(question, search, *, past=(), publications=(), scope=None, call=model
         return permission.check_reply(query, initial, corpus, review, retry)
 
     result = dialogue_state.answer(question, lookup, past=past, model=QWEN, planner=plan,
-                                   judge=lambda body: evidence.judge(body, call=decide), respond=respond)
+                                   judge=lambda body: evidence.judge(body, call=decide), respond=respond, corpus=corpus)
     return RegulationFirstFAQ(publications, scope=scope, corpus=corpus).merge(question, result)

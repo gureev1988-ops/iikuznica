@@ -78,11 +78,18 @@ class OfferView(BaseModel):
     text: str
 
 
+class AnswerPartView(BaseModel):
+    action: Action
+    text: str
+    sources: list[SourceReference] = Field(default_factory=list)
+
+
 class ResultView(BaseModel):
     action: Action
     text: str
     sources: list[SourceReference] = Field(default_factory=list)
     notice: str | None = None
+    parts: list[AnswerPartView] = Field(default_factory=list)
 
 
 class MailFollowupView(BaseModel):
@@ -124,6 +131,7 @@ class SourceView(BaseModel):
     title: str
     anchor: str
     kind: SourceKind
+    version: int | None = None
 
 
 class EventView(BaseModel):

@@ -71,6 +71,7 @@ class SourceFragment:
     title: str = ""
     anchor: str = ""
     kind: SourceKind = "document"
+    version: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +88,9 @@ class SourceSnapshot:
 class HistoryMessage:
     role: Literal["user", "assistant", "system"]
     text: str
+    question: str | None = None
+    resolved: str | None = None
+    action: Action | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +103,8 @@ class AnswerRequest:
     deadline: datetime
     sources: SourceSnapshot
     attempts: ModelAttemptRecorder | None = None
+    clarification: Mapping | None = None
+    clarification_count: int = 0
 
     def __post_init__(self):
         if self.deadline.utcoffset() is None:
@@ -127,12 +133,23 @@ class Citation:
 
 
 @dataclass(frozen=True, slots=True)
+class AnswerPart:
+    action: Action
+    text: str
+    citations: tuple[Citation, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class AnswerResult:
     action: Action
     text: str
     options: tuple[ClarificationOption, ...] = ()
     citations: tuple[Citation, ...] = ()
     clarification_key: str | None = None
+    parts: tuple[AnswerPart, ...] = ()
+    escalation_question: str | None = None
+    resolved_question: str | None = None
+    allow_faq: bool = True
 
     def __post_init__(self):
         object.__setattr__(self, "options", tuple(self.options))

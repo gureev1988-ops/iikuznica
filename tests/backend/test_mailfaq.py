@@ -248,7 +248,7 @@ def test_coverage_conflict_withdrawal_and_replacement_keep_history(dsn):
     api = client(dsn, mail)
     headers = {"X-Role": "quality"}
     conflicts = api.get("/v1/quality/conflicts", headers=headers).json()
-    assert conflicts[0]["priority"] == "highest"
+    assert conflicts[0]["priority"] == "regulation"
     path = f"/v1/quality/faq/{active.faq_id}"
     invalid_cover = api.post(
         f"{path}/coverage", json={"version": active.version, "revision_id": str(revision_b)}, headers=headers,

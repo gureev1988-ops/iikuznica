@@ -93,6 +93,8 @@ def main():
     for name in ("interactive", "background"):
         commands.add_parser(name).add_argument("--once", action="store_true")
     commands.add_parser("migrate")
+    assembly = commands.add_parser("assembly-init")
+    assembly.add_argument("--version", type=int, default=1)
     commands.add_parser("seed-fixtures").add_argument("--version", default=1, type=int, choices=(1, 2))
     commands.add_parser("mail-list")
     reply = commands.add_parser("mail-reply")
@@ -104,6 +106,18 @@ def main():
     if args.mode == "migrate":
         for name in migrate(settings.dsn):
             print(name)
+        return
+    if args.mode == "assembly-init":
+        from backend.assembly.artifacts import install
+        from backend.assembly.corpus import seed
+        from backend.assembly.search import load_model
+        from pathlib import Path
+
+        migrate(settings.dsn)
+        model_dir = Path(os.getenv("II_MODEL_DIR", ".ii-local/models"))
+        install(model_dir)
+        load_model(model_dir)  # Fail init if the pinned export cannot load on this CPU.
+        seed(settings.dsn, os.getenv("II_ORIGINALS", ".ii-local/originals"), args.version)
         return
     if args.mode == "seed-fixtures":
         from backend.contracts.fixtures import seed_fixture_sources
@@ -117,6 +131,10 @@ def main():
             import uvicorn
             uvicorn.run(create_app(services=services), host=args.host, port=args.port)
         elif args.mode in {"interactive", "background"}:
+            if args.mode == "interactive" and settings.profile == "assembly":
+                if not os.getenv("OPENROUTER_API_KEY"):
+                    raise SystemExit("OPENROUTER_API_KEY is required for the assembly worker")
+                _ = services.engine.search.model
             worker(services, args.mode, args.once)
         else:
             simulator_command(services, args)

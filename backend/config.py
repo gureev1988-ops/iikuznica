@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 HACKATHON_QUALITY_EMAIL = "quality@softline.test"
+ASSEMBLY_QUALITY_EMAIL = "quality@assembly.test"
 INTEGRATED_QUALITY_EMAIL = "quality@softline.ru"
 HACKATHON_DOCUMENT_SOURCES = ("synthetic-v1", "batch")
 
@@ -38,7 +39,7 @@ class Identity(ConfigModel):
 
 class Settings(ConfigModel):
     database_url: SecretStr
-    profile: Literal["hackathon", "integrated"] = "hackathon"
+    profile: Literal["hackathon", "integrated", "assembly"] = "hackathon"
     public_base_url: str = "http://localhost:8000"
     identities: list[Identity] = Field(default_factory=list)
     engine: str = "fixture-alpha"
@@ -46,6 +47,7 @@ class Settings(ConfigModel):
     max_pending: int = Field(default=32, ge=10)
     interactive_concurrency: int = Field(default=8, ge=1)
     background_concurrency: int = Field(default=4, ge=1)
+    deadline_seconds: float = Field(default=60, gt=0)
     poll_interval: float = Field(default=0.25, gt=0)
     integration_poll_interval: float = Field(default=10, gt=0)
 
@@ -68,7 +70,8 @@ class Settings(ConfigModel):
         return self.profile == "hackathon"
 
     def _quality_email_matches(self, email: str | None) -> bool:
-        expected = HACKATHON_QUALITY_EMAIL if self.hackathon else INTEGRATED_QUALITY_EMAIL
+        expected = {"hackathon": HACKATHON_QUALITY_EMAIL, "assembly": ASSEMBLY_QUALITY_EMAIL,
+                    "integrated": INTEGRATED_QUALITY_EMAIL}[self.profile]
         return bool(email and email.casefold() == expected)
 
     @property
@@ -118,4 +121,12 @@ class Settings(ConfigModel):
         data = json.loads(Path(path).read_text()) if path else {}
         if value := os.environ.get("DATABASE_URL"):
             data["database_url"] = value
+        if profile := os.environ.get("II_PROFILE"):
+            data["profile"] = profile
+        if data.get("profile") == "assembly":
+            data.update(engine="a1", max_pending=int(os.getenv("II_MAX_PENDING", "32")),
+                        interactive_concurrency=int(os.getenv("II_INTERACTIVE_CONCURRENCY", "10")),
+                        deadline_seconds=float(os.getenv("II_TURN_DEADLINE", "90")),
+                        public_base_url=os.getenv("II_PUBLIC_URL", "https://localhost:4443"),
+                        integration_poll_interval=1)
         return cls.model_validate(data)

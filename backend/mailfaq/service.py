@@ -40,10 +40,10 @@ def _subject(request: dict) -> str:
     return f"Разъяснение [case:{request['token']}]"
 
 
-def _queue_send(conn, outbound_id: UUID, *, job_key: str | None = None) -> None:
+def _queue_send(conn, outbound_id: UUID, *, job_key: str | None = None, max_attempts: int = 3) -> None:
     enqueue(
         conn, queue="background", kind=SEND_KIND, key=job_key or str(outbound_id),
-        payload={"outbound_id": str(outbound_id)},
+        payload={"outbound_id": str(outbound_id)}, max_attempts=max_attempts,
     )
 
 
@@ -61,7 +61,7 @@ def _outbound(
         """,
         (outbound_id, request["id"], key, message_id, body, in_reply_to, Jsonb(list(references))),
     )
-    _queue_send(conn, outbound_id)
+    _queue_send(conn, outbound_id, max_attempts=7 if request["channel"] == "guest" else 3)
     return outbound_id
 
 
@@ -537,8 +537,10 @@ class MailService:
                 ("cancelled" if cancelled else state, result.attempt_id, outbound_id),
             )
             if request["state"] == "waiting_send" and not cancelled:
-                if state in {"sent", "delivery_unknown"}:
+                if state == "sent":
                     state = "waiting_reply"
+                elif state == "delivery_unknown":
+                    state = "delivery_failed" if self.config.private_plain else "waiting_reply"
                 elif job.attempt >= job.max_attempts:
                     state = "delivery_failed"
                 else:

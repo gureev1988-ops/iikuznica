@@ -23,12 +23,12 @@ def index():
 
 def linked(sources, corpus, norms):
     seed = [reference(p) for p in sources]
-    groups = [list(dict.fromkeys((doc, ref) for row in norms[(doc, clause)] for ref in row["related_refs"]))
+    groups = [list(dict.fromkeys((doc, ref) for row in norms.get((doc, clause), ()) for ref in row["related_refs"]))
               for doc, clause in seed]
     keys = dict.fromkeys(seed)
     for level in zip_longest(*groups):
         for key in level:
-            if key is not None:
+            if key is not None and key in corpus:
                 keys[key] = None
     return [corpus[k] for k in list(keys)[:len(seed) + EXTRA]]
 

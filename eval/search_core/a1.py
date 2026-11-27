@@ -31,14 +31,14 @@ def violations(ids, required, before):
     return {"missing": missing, "misplaced": misplaced}
 
 
-def order_review(question, sources, ids, rules=A1_RULES):
+def order_review(question, sources, ids, rules=A1_RULES, *, norms=None):
     if not procedures.full_procedure(question):
         return None
     text = procedures.normalized(question)
     for directorate, branch, required, before in rules:
         if not (re.search(directorate, text) and re.search(branch, text)):
             continue
-        _, allowed = evidence.options(sources)
+        _, allowed = evidence.options(sources, norms)
         finding = violations(ids, required, before)
         refs = {key for pair in before for key in pair}.union(required)
         # Link the annotation to the registry's verbatim quote and the current original.
@@ -48,8 +48,31 @@ def order_review(question, sources, ids, rules=A1_RULES):
     return None
 
 class A1:
-    def __init__(self):
+    def __init__(self, norms=None):
         self.ids = None
+        self.norms = norms
+
+    def order(self, question, selection):
+        """Apply the verified dependency order before sending the draft to Decider."""
+        if selection.get("action") != "answer" or not isinstance(selection.get("ids"), list):
+            return selection
+        text = procedures.normalized(question)
+        dependencies = {}
+        for directorate, branch, _, pairs in A1_RULES:
+            if re.search(directorate, text) and re.search(branch, text):
+                for earlier, later in pairs:
+                    dependencies.setdefault(later, set()).add(earlier)
+        if not dependencies or any(not isinstance(key, str) for key in selection["ids"]):
+            return selection
+        remaining = selection["ids"].copy()
+        ordered = []
+        while remaining:
+            ready = next((key for key in remaining if not dependencies.get(key, set()).intersection(remaining)), None)
+            if ready is None:
+                return selection
+            remaining.remove(ready)
+            ordered.append(ready)
+        return dict(selection, ids=ordered)
 
     def selection(self, selection):
         self.ids = selection["ids"] if selection["action"] == "answer" else None
@@ -58,7 +81,7 @@ class A1:
         ids, self.ids = self.ids, None
         if not final or final["action"] != "answer" or ids is None:
             return route, final, None, None
-        detail = order_review(q, sources, ids)
+        detail = order_review(q, sources, ids, norms=self.norms)
         if not detail or not any(detail[k] for k in ("missing", "misplaced", "unavailable")):
             return route, final, None, None
         finding = ("Проверь наличие обязательного условия и порядок зависимых шагов: "

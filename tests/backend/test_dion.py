@@ -501,7 +501,7 @@ def test_dion_delivery_ops_reconcile_exact_attempt_and_replay_retry(dsn, dion):
     ("Как подать заявку?", "clarify"),
     ("Сколько дней рассматривают заявку?", "answer"),
 ])
-def test_delayed_dion_dispatch_audits_official_substitution(dsn, dion, question, original_action):
+def test_delayed_dion_dispatch_audits_original_evidence(dsn, dion, question, original_action):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from psycopg.types.json import Jsonb
@@ -584,168 +584,30 @@ def test_delayed_dion_dispatch_audits_official_substitution(dsn, dion, question,
         provider.outcomes.append("timeout")
     _run(dsn, "background", adapter.handlers)
     sent = provider.sends[-1]
-    assert official_text in unescape(sent["text"])
-    assert "/confirm" not in sent["text"] and "/answer" not in sent["text"]
-    assert "7 дней" not in sent["text"]
+    assert official_text not in unescape(sent["text"])
+    if original_action == "answer":
+        assert "7 дней" in sent["text"]
+    elif original_action == "clarify":
+        assert "/answer" in sent["text"]
+    else:
+        assert "/confirm" in sent["text"]
 
     with connect(dsn) as conn:
         dispatch = conn.execute(
             "SELECT attempt_id, envelope FROM dion_dispatches WHERE effect_key = %s",
             (original["effect_key"],),
         ).fetchone()
-        prepared = dispatch["envelope"]
-        attempt_id = dispatch["attempt_id"]
-        event = conn.execute(
-            "SELECT payload FROM events WHERE kind = 'dion.dispatch_prepared' AND turn_id = %s",
-            (original["turn_id"],),
-        ).fetchone()
-        assert event["payload"] == {**prepared, "attempt_id": str(attempt_id)}
-        assert prepared["text"] == unescape(sent["text"])
-        assert prepared["reply_message_id"] == str(inbound_message)
-        assert prepared["substitute"] and prepared["offer_id"] is None and prepared["clarification_id"] is None
-        assert [ref["kind"] for ref in prepared["source_refs"]] == ["faq"]
-        assert prepared["source_refs"][0]["url"] in prepared["text"]
-        assert prepared["condition_sources"] == ([private_ref] if condition else [])
-        assert private_ref["revision_id"] not in prepared["text"]
-        assert conn.execute("SELECT 1 FROM messages WHERE id = %s", (attempt_id,)).fetchone() is None
-        outcome = conn.execute(
-            "SELECT state, provider_id FROM delivery_attempts WHERE id = %s", (attempt_id,)
-        ).fetchone()
-        assert outcome["state"] == "delivery_unknown"
-        if original_action == "escalate":
-            assert conn.execute(
-                "SELECT status FROM offers WHERE id = %s", (original["offer_id"],)
-            ).fetchone()["status"] == "superseded"
-        if original_action == "clarify":
-            assert conn.execute(
-                "SELECT status FROM clarifications WHERE id = %s", (original["clarification_id"],)
-            ).fetchone()["status"] == "superseded"
-
-        if condition:
-            conn.execute(
-                "UPDATE sources SET acl_actor_ids = %s WHERE id = %s",
-                (["bob"], private_ref["document_id"]),
-            )
-            restricted_events = dialogue.events(conn, actor, original["conversation_id"], 0)
-            restricted_preparation = next(
-                event for event in restricted_events if event["kind"] == "dion.dispatch_prepared"
-            )
-            assert restricted_preparation["payload"] == {"redacted": True}
-            conn.execute(
-                "UPDATE sources SET acl_actor_ids = %s WHERE id = %s",
-                ([actor.id], private_ref["document_id"]),
-            )
-        # SSE retention can run while the physical delivery is still ambiguous.
-        conn.execute("DELETE FROM events WHERE conversation_id = %s", (original["conversation_id"],))
-        conn.execute(
-            "UPDATE conversations SET events_floor = event_cursor WHERE id = %s",
-            (original["conversation_id"],),
-        )
-
-    app = FastAPI()
-    app.include_router(dion_operations_router(dsn, lambda: None))
-    api = TestClient(app)
-    decision_path = f"/v1/ops/dion/delivery-attempts/{attempt_id}/reconcile"
-    if original_action == "answer":
-        assert outcome["provider_id"] is None
-        final_message_id = uuid4()
-        result = api.post(decision_path, json={
-            "state": "sent", "message_id": str(final_message_id),
-            "evidence": "Сообщение подтверждено в журнале Дион",
-        })
-        assert result.status_code == 200
-    else:
-        final_message_id = provider.settle(sent)
-        adapter.poll_once(timeout=0)
-
-    with connect(dsn) as conn:
-        history = dialogue.history(conn, actor, original["conversation_id"])
-        replacement = next(message for message in history["messages"] if message["id"] == attempt_id)
-        assert replacement["text"] == prepared["text"]
-        assert replacement["source_refs"] == prepared["source_refs"]
-        statuses = [
-            row["kind"] for row in conn.execute(
-                """
-                SELECT kind FROM events WHERE conversation_id = %s AND payload->>'attempt_id' = %s
-                ORDER BY cursor
-                """,
-                (original["conversation_id"], str(attempt_id)),
-            )
-        ]
-        assert statuses == ["dion.delivery_sent", "dion.reply_substituted"]
-        states = conn.execute(
-            "SELECT state FROM dion_attempt_outcomes WHERE attempt_id = %s ORDER BY state",
-            (attempt_id,),
-        ).fetchall()
-        assert [row["state"] for row in states] == ["delivery_unknown", "sent"]
-        assert history["turns"][0]["result"] == saved
-        assert "condition_sources" not in replacement
-        start = conn.execute(
-            "SELECT events_floor FROM conversations WHERE id = %s", (original["conversation_id"],),
-        ).fetchone()["events_floor"]
-        public_events = dialogue.events(conn, actor, original["conversation_id"], start)
-        public_replacement = next(event for event in public_events if event["kind"] == "dion.reply_substituted")
-        assert "condition_sources" not in public_replacement["payload"]
-        assert public_replacement["payload"]["text"] == prepared["text"]
-
-    if condition:
-        with connect(dsn) as conn:
-            conn.execute(
-                "UPDATE sources SET acl_actor_ids = %s WHERE id = %s",
-                (["bob"], private_ref["document_id"]),
-            )
-        with connect(dsn) as conn:
-            history = dialogue.history(conn, actor, original["conversation_id"])
-            assert all(message["id"] != attempt_id for message in history["messages"])
-            events = dialogue.events(conn, actor, original["conversation_id"], start)
-            restricted = next(event for event in events if event["kind"] == "dion.reply_substituted")
-            assert restricted["payload"] == {"redacted": True}
-        with connect(dsn) as conn:
-            conn.execute(
-                "UPDATE sources SET acl_actor_ids = %s WHERE id = %s",
-                ([actor.id], private_ref["document_id"]),
-            )
-
-    with connect(dsn) as conn:
-        # An operator replay after the successful notification's retention window
-        # must not resurrect an old event or create a duplicate assistant message.
-        conn.execute("DELETE FROM events WHERE conversation_id = %s", (original["conversation_id"],))
-        conn.execute(
-            "UPDATE conversations SET events_floor = event_cursor WHERE id = %s",
-            (original["conversation_id"],),
-        )
-    replay = api.post(decision_path, json={
-        "state": "sent", "message_id": str(final_message_id),
-        "evidence": "Повторная сверка журнала Дион",
-    })
-    assert replay.status_code == 200
-    with connect(dsn) as conn:
-        assert conn.execute(
-            "SELECT 1 FROM events WHERE conversation_id = %s",
-            (original["conversation_id"],),
-        ).fetchone() is None
-        assert conn.execute(
-            "SELECT text FROM messages WHERE id = %s", (attempt_id,),
-        ).fetchone()["text"] == prepared["text"]
-
-    if original_action != "answer":
-        # The original outbox is kept for audit with its old controls. Routing
-        # a native reply to the actual dispatch must use its control-free envelope.
-        employee_id = provider.text("1", reply=final_message_id)
-        adapter.poll_once(timeout=0)
-        with connect(dsn) as conn:
-            update = conn.execute(
-                "SELECT * FROM dion_updates WHERE message_id = %s AND kind = 'input'",
-                (employee_id,),
-            ).fetchone()
-            target = adapter._reply_target(conn, original["conversation_id"], update)
-            assert target["case_id"] == original["case_id"]
-            assert target["offer_id"] is None and target["clarification_id"] is None
-        assert adapter.route_once() == 1
-        with connect(dsn) as conn:
-            assert conn.execute(
-                "SELECT count(*) AS n FROM turns WHERE case_id = %s", (original["case_id"],),
-            ).fetchone()["n"] == 2
+        envelope = dispatch["envelope"]
+        assert envelope["text"] == unescape(sent["text"])
+        assert envelope["reply_message_id"] == str(inbound_message)
+        assert envelope["source_refs"] == original["source_refs"]
+        assert envelope["substitute"] is False
+        assert envelope["condition_sources"] == []
+        for field in ("offer_id", "clarification_id"):
+            assert envelope[field] == (str(original[field]) if original[field] else None)
+        outcome = conn.execute("SELECT state FROM delivery_attempts WHERE id = %s",
+                               (dispatch["attempt_id"],)).fetchone()["state"]
+        assert outcome == "delivery_unknown"
 
 
 def test_local_dion_preflight_error_retries_without_ambiguous_acceptance(dsn, dion, monkeypatch):

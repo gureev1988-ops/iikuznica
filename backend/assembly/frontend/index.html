@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ИИкузница · Демо DION</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" type="module"></script>
+</head>
+<body>
+  <header class="topbar">
+    <span class="wordmark">ИИкузница</span>
+    <nav aria-label="Разделы">
+      <button id="nav-chat" aria-current="page">Демо DION</button>
+      <button id="nav-quality">Отдел качества</button>
+    </nav>
+  </header>
+  <main id="dion-desk">
+    <aside class="chat-list">
+      <h2>Чаты</h2>
+      <div class="chat-row"><span class="avatar" aria-hidden="true">РБ</span><div><strong>Регламент бот</strong><small>Личный чат</small></div></div>
+      <div id="topics" aria-label="Темы чата"></div>
+    </aside>
+    <section class="dion-chat" aria-labelledby="title">
+      <header class="dion-head">
+        <span class="avatar" aria-hidden="true">РБ</span>
+        <div><h1 id="title">Регламент бот</h1><small>Пресейл и проектная деятельность</small></div>
+        <button id="new-topic">Новая тема</button>
+      </header>
+      <div class="dion-scroll" id="dion-scroll">
+        <div id="dion-messages" role="log" aria-live="polite"></div>
+      </div>
+      <div class="compose-area">
+        <p id="chat-status" role="status"></p>
+        <form id="compose">
+          <label class="sr" for="message">Сообщение</label>
+          <textarea id="message" rows="1" placeholder="Напишите сообщение" maxlength="16000" required></textarea>
+          <button class="primary" type="submit">Отправить</button>
+        </form>
+      </div>
+    </section>
+  </main>
+  <main id="quality" hidden>
+    <h1>Отдел качества</h1>
+    <nav aria-label="Отдел качества">
+      <button id="tab-inbox" aria-current="page">Входящие письма</button>
+      <button id="tab-faq">FAQ</button>
+      <button id="tab-sources">Источники</button>
+    </nav>
+    <div id="quality-content"></div>
+    <p id="quality-status" role="status"></p>
+  </main>
+  <dialog id="source" aria-labelledby="source-title">
+    <header><h2 id="source-title">Источник</h2><form method="dialog"><button>Закрыть</button></form></header>
+    <p id="source-meta"></p>
+    <blockquote id="source-text"></blockquote>
+  </dialog>
+</body>
+</html>
