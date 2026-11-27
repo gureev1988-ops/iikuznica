@@ -1,6 +1,9 @@
 """Resolve a turn against recent topics; only retrieved documents can supply an answer."""
+from concurrent.futures import ThreadPoolExecutor, wait
+from contextvars import copy_context
 import json
 import re
+from threading import BoundedSemaphore
 
 import ask
 import conversation
@@ -45,6 +48,59 @@ REPLY_REFERENCE = re.compile(
 )
 ROLE_FOLLOWUP = re.compile(r"^а\s+(?:кто|кого|кому|что|како\w*)\s+именно\b", re.I)
 DIRECTORATE_NAMES = {"IB": "Дирекция ИБ", "DB": "ДБРЦТ", "TECH": "Техническая дирекция"}
+DIRECTORATE_FOLLOWUP = re.compile(rf"а\s+в\s+{conversation.DIRECTORATE_LABEL}\s*\?", re.I)
+PRIOR_DIRECTORATE_PREFIX = re.compile(
+    rf"^(?:у нас\s+|в\s+)?{conversation.DIRECTORATE_LABEL}(?:[.:,]\s*|\s+)", re.I
+)
+PRIOR_DIRECTORATE_SUFFIX = re.compile(rf"\s+в\s+{conversation.DIRECTORATE_LABEL}$", re.I)
+# Closed patterns keep the employee's request and leave all normative facts to retrieval.
+PRIOR_TOPIC = re.compile(
+    r"кто (?:назначает|выделяет) (?:рп|руководителя проекта)(?: и (?:в какой срок|когда))?|"
+    r"(?:когда|в какой срок) назначают (?:рп|руководителя проекта)|"
+    r"кому (?:направить|отправить|передать) заявку на расчет|"
+    r"кого (?:пригласить|позвать) на установочную встречу|"
+    r"кто отвечает за поставку|кто (?:подписывает|согласует) договор"
+)
+
+# At most four extra branches per process. A busy executor leaves the turn on its own worker.
+_PAIR_WORKERS = 4
+_PAIR_EXECUTOR = ThreadPoolExecutor(max_workers=_PAIR_WORKERS, thread_name_prefix="assembly-part")
+_PAIR_SLOTS = BoundedSemaphore(_PAIR_WORKERS)
+
+
+def _directorate_followup(question, past):
+    if len(past) != 1 or not DIRECTORATE_FOLLOWUP.fullmatch(question):
+        return None
+    prior = past[-1]
+    user = prior["user"].strip()
+    if (prior["action"] != "answer" or not user.endswith("?")
+            or procedures.normalized(user) != procedures.normalized(prior["resolved"])):
+        return None
+    topic = PRIOR_DIRECTORATE_PREFIX.sub("", user[:-1].strip())
+    topic = PRIOR_DIRECTORATE_SUFFIX.sub("", topic).strip()
+    if not PRIOR_TOPIC.fullmatch(procedures.normalized(topic)):
+        return None
+    directorate, = procedures.directories(question) - {"PRE"}
+    return f"{DIRECTORATE_NAMES[directorate]}. {topic[0].upper()}{topic[1:]}?"
+
+
+def _answer_pair(pair, run, parallel):
+    slots = _PAIR_SLOTS
+    if not parallel or not slots.acquire(blocking=False):
+        return [run(i, part) for i, part in enumerate(pair)]
+    try:
+        sibling = _PAIR_EXECUTOR.submit(copy_context().run, run, 1, pair[1])
+    except BaseException:
+        slots.release()
+        raise
+    sibling.add_done_callback(lambda _: slots.release())
+    try:
+        first = run(0, pair[0])
+    except BaseException:
+        if not sibling.cancel():
+            wait((sibling,))
+        raise
+    return [first, sibling.result()]
 
 
 def _subject_from(subject, text):
@@ -96,6 +152,8 @@ def _retry_topic(decision, question, visible, procedure_context, past):
 
 
 def restore(question, past, model, call):
+    if (resolved := _directorate_followup(question, past)) is not None:
+        return "follow", resolved
     history = [(role, t[key]) for t in past for role, key in (("user", "user"), ("assistant", "assistant"))]
     visible = conversation.visible_history(history, question)
     procedure_context = set()
@@ -150,7 +208,8 @@ def restore(question, past, model, call):
 
 
 def answer(question, search, *, past=(), model=GEMMA, planner=complete, generate_answer=evidence.generate,
-           judge=evidence.judge, faq=None, faq_scope=None, respond=None, corpus=None, norms=None):
+           judge=evidence.judge, faq=None, faq_scope=None, respond=None, corpus=None, norms=None,
+           parallel_parts=False):
     """past holds the caller's completed turns, scoped to the same authorized dialogue."""
     options = dict(generate_answer=generate_answer, judge=judge, faq=faq, faq_scope=faq_scope)
     query = question.strip()
@@ -162,11 +221,12 @@ def answer(question, search, *, past=(), model=GEMMA, planner=complete, generate
         return dict(hit, resolved_question=query)
     if pair:
         # The first part could be a follow-up; the second explicitly establishes its own scope.
-        parts = []
-        for i, q in enumerate(pair):
+        def run(i, q):
             response = answer(q, search, past=past if i == 0 else (), model=model, planner=planner,
                               respond=respond, corpus=corpus, norms=norms, **options)
-            parts.append({"text": q, "query": response["resolved_question"], "result": response})
+            return {"text": q, "query": response["resolved_question"], "result": response}
+
+        parts = _answer_pair(pair, run, parallel_parts)
         return dict(conversation.assemble(parts), resolved_question=query)
     if personal(query):
         return dict(ask.reply("out_of_scope", "pay"), resolved_question=query)

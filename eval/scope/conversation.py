@@ -38,6 +38,14 @@ LEADING_CONNECTOR = re.compile(r"^(?:(?:а|и)\s+(?:ещё|еще)\b[, ]*|зао
 WORKFLOW = re.compile(r"по шагам|пошагов|порядок действий|как (?:довести|оформить|подписать|подготовить|"
                       r"зарегистрировать|пройти)|какие согласования|опиши путь|расскажи маршрут|проведи меня|"
                       r"от .{1,48} до |в каком порядке", re.I)
+DIRECTORATE_LABEL = (r"(?:дирекци[яию]\s+(?:иб|информационной\s+безопасности)|"
+                     r"техническ(?:ая|ой|ую)\s+дирекци[яию]|"
+                     r"департамент\w*\s+бизнес[- ]решений\s+и\s+цифровой\s+трансформации|иб|диб|дбрцт)")
+BACK_REFERENCE = re.compile(
+    r"\b(?:он[аи]?|ему|его|её|ее|им|их|него|нему|ним|неё|нее|ней|них|ними|там|туда|оттуда|тогда|"
+    r"эт(?:от|а|у|ой|ого|им|ом|о|и|их)|так(?:ом|ой|ая|ое|их)|предыдущ\w*|указанн\w*|"
+    r"так\s+же|тоже|тот\s+же|та\s+же|то\s+же|те\s+же)\b", re.I
+)
 
 
 def fragments(question):
@@ -163,9 +171,11 @@ def explicit_pair(question):
         return []
     first, second = chunks.groups()
     second = LEADING_CONNECTOR.sub("", second).strip()
-    refers_back = re.search(r"\b(?:ему|его|её|ее|им|их|него|неё|ней|них|там|тогда|этот|этой|этого|"
-                            r"этим|этом|таком|такой|предыдущ\w*|указанн\w*)\b", second, re.I)
-    if not ask.pay_shortcut(second) and (not procedures.directories(second) or refers_back):
+    if ask.pay_shortcut(second):
+        return [first, second]
+    topic = re.sub(rf"\b(?:(?:в|для|по)\s+)?{DIRECTORATE_LABEL}\b", "", second, flags=re.I)
+    if (not procedures.directories(second) or BACK_REFERENCE.search(second)
+            or len(re.findall(r"\w+", topic)) < 3):
         return []
     return [first, second]
 

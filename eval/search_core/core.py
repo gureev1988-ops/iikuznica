@@ -1,6 +1,8 @@
 """Selected A1 core with a pre-publication coverage check for permission questions."""
+from concurrent.futures import Future
 import json
 import sys
+from threading import Lock
 from time import sleep
 from pathlib import Path
 
@@ -65,17 +67,28 @@ def combine_search(search, query, focused):
 
 
 def answer(question, search, *, past=(), publications=(), scope=None, call=model_request,
-           decide=ask.decide, review=None, corpus=None, norms=None):
+           decide=ask.decide, review=None, corpus=None, norms=None, parallel_parts=True):
     corpus = ask.full_corpus() if corpus is None else corpus
     cache = {}
+    cache_lock = Lock()
     if review is None:
         def review(state, instruction):
             return review_permission(state, instruction, call=call)
 
     def lookup(query):
-        if query not in cache:
-            cache[query] = search(query)
-        return cache[query]
+        with cache_lock:
+            cached = cache.get(query)
+            if cached is None:
+                pending = cache[query] = Future()
+        if cached is not None:
+            return cached.result()
+        try:
+            found = search(query)
+        except BaseException as error:
+            pending.set_exception(error)
+            raise
+        pending.set_result(found)
+        return found
 
     def plan(case, body, stage):
         return call(case, body, stage)
@@ -118,5 +131,6 @@ def answer(question, search, *, past=(), publications=(), scope=None, call=model
         return permission.check_reply(query, initial, corpus, review, retry)
 
     result = dialogue_state.answer(question, lookup, past=past, model=QWEN, planner=plan,
-                                   judge=lambda body: evidence.judge(body, call=decide), respond=respond, corpus=corpus, norms=norms)
+                                   judge=lambda body: evidence.judge(body, call=decide), respond=respond,
+                                   corpus=corpus, norms=norms, parallel_parts=parallel_parts)
     return RegulationFirstFAQ(publications, scope=scope, corpus=corpus).merge(question, result)
