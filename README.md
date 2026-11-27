@@ -8,7 +8,9 @@
 
 [Открыть публичный стенд](https://corpdoc.single-tech.ru/) · [Автодеплой из main на VPS](docs/backend/vps-deploy.md)
 
-Нужны Docker Compose v2, OpenSSL и переменная окружения `OPENROUTER_API_KEY` с доступом к Gemma, Qwen и OpenRouter Decisions. Из корня чистого checkout:
+Для пилота с внутренними Gemma, Qwen и Decider используйте [локальный профиль Compose и проверку трёх подключений](docs/backend/local-models.md).
+
+Для запуска демо нужны Docker Compose v2, OpenSSL и переменная окружения `OPENROUTER_API_KEY` с доступом к Gemma, Qwen и OpenRouter Decisions. Из корня чистого checkout:
 
 ```sh
 ./deploy/init-env.sh
@@ -26,7 +28,7 @@ curl --cacert local-ca.pem https://localhost:4443/healthz
 
 Для внешнего HTTPS укажите `II_PUBLIC_URL=https://ваш-домен`, `II_CADDY_ADDRESS=ваш-домен`, `II_CADDY_TLS=tls ваше-почтовое-имя`, `II_LISTEN_IP=0.0.0.0`, `II_HTTPS_PORT=443`. DNS должен вести на узел стенда, а порт 443 — быть доступен для HTTPS и ACME. SMTP и IMAP находятся в отдельной внутренней сети Compose.
 
-Интеграционный профиль `assembly` использует A1, OpenRouter и Dovecot. Сведения о `hackathon`, учебных сообщениях и прежнем приоритете FAQ в веточных документах относятся к историческим проверкам. Для текущего выпуска действуют спецификация сборки и правило приоритета утверждённого регламента.
+Демостенд использует профиль приложения `assembly` с A1, OpenRouter и Dovecot. Сведения о `hackathon`, учебных сообщениях и прежнем приоритете FAQ в веточных документах относятся к историческим проверкам. Для текущего выпуска действуют спецификация сборки и правило приоритета утверждённого регламента.
 
 - [Спецификация сборки](docs/architecture/assembly-v1.md)
 - [Бриф и спецификация поиска](docs/IIkuznitsa_Sprint_Brief.md)
