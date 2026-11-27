@@ -83,6 +83,29 @@ class StateTests(unittest.TestCase):
         self.assertEqual(state.restore("Как оформить УПД?", past, "model", planner),
                          ("new", "Как оформить УПД?"))
 
+    def test_procedure_followup_keeps_the_latest_request(self):
+        cases = (
+            ("Техническая дирекция. В документации был проект договора. Опиши путь до финального "
+             "согласования договора и кто подключается по шагам.",
+             "Кто меняет наблюдателя и кого ставит вместо себя?", "проект договора", "Техническая дирекция"),
+            ("ДБРЦТ. Клиент просит начать работы заранее. Ни договора, ни гарантийного письма нет. "
+             "Опиши по шагам согласования и что делать, если срок сорвётся.",
+             "АМ подтвердил дату, она прошла, подписи нет. Кому я пишу и когда?", "начать работы заранее", "ДБРЦТ"),
+            ("Дирекция ИБ. Как зарегистрировать площадку проекта, раздать доступы и сохранить контакты заказчика?",
+             "А сотрудника субподрядчика можно туда пригласить?", "площадку проекта", "Дирекция ИБ"),
+        )
+        for first, question, subject, directorate in cases:
+            with self.subTest(question=question):
+                past = [dict(user=first, resolved=first, assistant="Передать вопрос в отдел качества?",
+                             action="escalate")]
+                decision = dict(relation="follow", turn=1, query=first, subject=subject)
+                planner = Mock(return_value=dict(ok=True, text=json.dumps(decision)))
+                self.assertEqual(state.restore(question, past, "model", planner),
+                                 ("follow", f"{directorate}. Контекст — {subject}. {question}"))
+                decision.pop("subject")
+                planner.return_value["text"] = json.dumps(decision)
+                self.assertEqual(state.restore(question, past, "model", planner)[0], "ambiguous")
+
     def test_explicit_reference_to_procedure_reply_keeps_the_reply(self):
         first = "В Технической дирекции опиши по шагам, как оформить заявку для нового подрядчика."
         previous_answer = "1. Подать заявку. 2. Дождаться проверки."
