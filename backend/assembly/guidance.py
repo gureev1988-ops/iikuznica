@@ -40,8 +40,8 @@ class Step(BaseModel):
     input_tokens: int | None
     output_tokens: int | None
     cost_usd: Decimal | None
-    started_at: datetime
-    elapsed_ms: float | None
+    started_at: datetime | None = None
+    elapsed_ms: float | None = None
 
 
 class MailEvent(BaseModel):
