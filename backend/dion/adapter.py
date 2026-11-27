@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
 
+from backend.dialog.clarifications import QUESTION, match_options
 from backend.contracts.api import MessageRequest
 from backend.db import connect, lock_source_catalog
 from backend.dialog import Actor, DialogueError, DialogueService
@@ -289,7 +290,7 @@ class DionAdapter:
                     if exc.status in (429, 503)
                     else "Действие недоступно. Проверьте, к какому сообщению вы отвечаете."
                 )
-                self._notice(conn, actor, conversation_id, row, text)
+                self._notice(conn, actor, conversation_id, row, exc.details.get("message", text))
                 return None, None
             raise
 
@@ -353,8 +354,22 @@ class DionAdapter:
             return self._offer_decision(conn, actor, conversation_id, row, command, argument, target)
 
         fields = {"text": text}
-        if command == "/answer" or replying_to_clarification:
-            clarification_id = target["clarification_id"] if target else None
+        implicit = None
+        if target is None and not command.startswith("/") and not (QUESTION.search(text) and text.endswith("?")):
+            actions = self.dialogue.open_actions(conn, actor, conversation_id)
+            sent = {r["clarification_id"] for r in conn.execute("""
+                SELECT clarification_id FROM dion_outbox WHERE conversation_id=%s
+                AND clarification_id IS NOT NULL AND confirmed_message_id IS NOT NULL
+                """, (conversation_id,))}
+            opened = [item for item in actions["clarifications"] if item["id"] in sent]
+            relevant = [item for item in opened if text.isdecimal() or match_options(text, item["options"])]
+            if relevant and len(opened) > 1:
+                self._notice(conn, actor, conversation_id, row, "Ответьте на нужное сообщение с уточнением.")
+                return None, None
+            if len(opened) == 1 and (relevant or not text.endswith("?")):
+                implicit = opened[0]["id"]
+        if command == "/answer" or replying_to_clarification or implicit:
+            clarification_id = target["clarification_id"] if target else implicit
             if command == "/answer":
                 identifier, _, text = argument.strip().partition(" ")
                 clarification_id = as_uuid(identifier)
@@ -365,17 +380,8 @@ class DionAdapter:
             if clarification is None or not text.strip():
                 self._notice(conn, actor, conversation_id, row, "Ответьте на сообщение с открытым уточнением.")
                 return None, None
-            options = clarification["options"]
-            digits = text.strip()
-            option_index = int(digits) - 1 if digits.isascii() and digits.isdecimal() and len(digits) < 5 else -1
-            fields = {
-                "clarification_id": clarification["id"],
-                "clarification_version": clarification["version"],
-            }
-            if 0 <= option_index < len(options):
-                fields["option_id"] = options[option_index]["id"]
-            else:
-                fields["text"] = text.strip()
+            fields = {"text": text.strip(), "clarification_id": clarification["id"],
+                      "clarification_version": clarification["version"]}
         elif target and target["case_id"] is not None:
             fields["case_id"] = target["case_id"]
 
@@ -581,11 +587,6 @@ class DionAdapter:
                 )
                 if clarification is None:
                     raise KnownDeliveryFailure("dion_clarification_no_longer_open")
-                choices = (
-                    f"{index}. {_clip(option['text'], 160)}"
-                    for index, option in enumerate(clarification["options"][:10], 1)
-                )
-                footer.extend(choices)
                 footer.append(
                     f"Ответьте на это сообщение номером или текстом. Можно отправить /answer {clarification_id} и ответ."
                 )

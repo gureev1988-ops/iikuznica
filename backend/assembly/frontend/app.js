@@ -1,3 +1,7 @@
+import {documentReader} from "./documents.js";
+import {chatTools} from "./chat-tools.js";
+import {initQuality} from "./quality.js";
+
 const $ = (id) => document.getElementById(id);
 const el = (tag, text = "") => {
   const node = document.createElement(tag);
@@ -15,17 +19,19 @@ let conversation;
 let activeCase;
 let history;
 let mailStates = [];
-let mail = false;
-let tab = "inbox";
+let quality;
+let view = "dion";
+let ratings = new Map();
+let ratingRequest = 0;
 let stream;
 let refreshTimer;
 let deeperSearchTimer;
 let refreshing = false;
 let needRefresh = false;
 let correspondenceRefresh;
-let viewVersion = 0;
+
 const status = (message) => { $("chat-status").textContent = message; };
-const mailStatus = (message) => { $("quality-status").textContent = message; };
+
 const SEARCHING = "Ищу и проверяю основания…";
 const DEEPER_SEARCH = "Осуществляю более глубокий поиск…";
 
@@ -44,15 +50,17 @@ function updateSearchStatus() {
   if (delay > 0) deeperSearchTimer = setTimeout(() => status(DEEPER_SEARCH), delay);
 }
 
-async function api(path, body) {
+async function api(path, body, method = "POST") {
   const options = body === undefined ? {} : {
-    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+    method, headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
   };
   const response = await fetch(path, {...options, cache: "no-store"});
+  if (response.status === 204) return null;
   const data = await response.json();
   if (!response.ok) {
     const error = Error(typeof data.detail === "string" ? data.detail : (data.detail?.code || "Ошибка запроса"));
     error.status = response.status;
+    error.detail = data.detail;
     throw error;
   }
   return data;
@@ -61,46 +69,42 @@ async function api(path, body) {
 function chatNotice(message) {
   if (!message) status("");
   else if (message === "interactive_queue_full") status("Сейчас много вопросов. Попробуйте отправить чуть позже.");
+  else if (typeof message === "object" && message.detail?.message) status(message.detail.message);
   else status("Пока не получается выполнить действие. Попробуйте ещё раз.");
 }
 
 function perform(node, operation, report = chatNotice) {
   node.disabled = true;
   report("");
-  return Promise.resolve().then(operation).catch((error) => report(error.message))
+  return Promise.resolve().then(operation).catch((error) => report(error.detail?.message ? error : error.message))
     .finally(() => { node.disabled = false; });
 }
 
-async function showSource(ref) {
-  const title = $("source-title");
-  const text = $("source-text");
-  title.textContent = "Источник";
-  $("source-meta").textContent = "";
-  text.textContent = "Загрузка…";
-  if (!$("source").open) $("source").showModal();
+const reader = documentReader({api, onCitation: async (fragmentId) => {
   try {
-    const source = await api(ref.url);
-    title.textContent = source.title;
-    $("source-meta").textContent = source.kind === "document"
-      ? `Пункт ${source.anchor} · редакция ${source.version ?? source.revision_id}`
-      : `Разъяснение Отдела качества · редакция ${source.version ?? source.revision_id}`;
-    const start = source.text.indexOf(ref.quote);
-    if (ref.quote && start >= 0) {
-      text.replaceChildren(source.text.slice(0, start), el("mark", ref.quote), source.text.slice(start + ref.quote.length));
-    } else {
-      text.textContent = source.text;
-    }
-  } catch (error) {
-    text.textContent = error.message;
+    await api("/v1/browser/hint/open", {fragment_id: fragmentId});
+    guide.loadHint();
+  } catch {
+    // The source remains readable if the guide is temporarily unavailable.
   }
-}
+}});
+const guide = chatTools({
+  api, openCitation: (ref) => reader.openSource(ref, {fromChat: true}),
+  openInbox: (threadId) => activate("quality", {threadId}),
+  applyDraft: (example) => {
+    $("message").value = example;
+    saveDraft();
+    $("message").focus();
+  },
+});
 
 function sourceLink(ref, label) {
-  const link = el("a", label);
-  link.href = ref.url;
+  const link = el("a", ref.claim === "Открыть регламент" ? "Открыть регламент" : label);
+  link.href = ref.claim === "Открыть регламент" ? reader.documentHash(ref) : ref.url;
   link.addEventListener("click", (event) => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    showSource(ref);
+    reader.openSource(ref, {fromChat: true});
   });
   return link;
 }
@@ -129,10 +133,20 @@ const labels = {
   withdrawn: "Обращение отозвано",
 };
 
+function draftKey() { return "draft:" + conversation + ":" + (activeCase || "new"); }
+function saveDraft() {
+  if (!conversation) return;
+  if ($("message").value) sessionStorage.setItem(draftKey(), $("message").value);
+  else sessionStorage.removeItem(draftKey());
+}
+$("message").oninput = saveDraft;
+
 function selectCase(value) {
+  saveDraft();
   activeCase = value;
   if (value) localStorage.setItem(`case:${conversation}`, value);
   else localStorage.removeItem(`case:${conversation}`);
+  $("message").value = sessionStorage.getItem(draftKey()) || "";
   render();
   $("message").focus();
 }
@@ -153,47 +167,44 @@ function render() {
   const topicNodes = [...topics].map(([id, title]) => {
     const ctl = button(title, () => selectCase(id));
     ctl.title = title;
+    ctl.className = "topic-link";
     if (activeCase === id) ctl.setAttribute("aria-current", "true");
     return ctl;
   });
   $("topics").replaceChildren(...topicNodes);
   const items = [];
-  if (!history.messages.length) {
-    const message = el("article", "Здравствуйте. Напишите вопрос по регламенту.");
-    message.className = "message";
-    items.push(message);
-  }
+  $("dion-last").textContent = history.messages.at(-1)?.text || "Бот";
   for (const msg of history.messages) {
     const item = el("article");
-    item.className = msg.role === "user" ? "message own" : "message";
+    item.className = msg.role === "user" ? "dion-message dion-own" : "dion-message";
     item.dataset.messageId = msg.id;
     item.dataset.caseId = msg.case_id;
     const turn = turns.get(msg.turn_id);
-    if (msg.role !== "user") item.append(el("strong", msg.source_refs ? "Отдел качества" : "Регламент бот"));
-    const text = el("p");
-    renderText(text, msg.text, msg.source_refs ?? (msg.role === "assistant" ? turn?.result?.sources : []) ?? []);
-    item.append(text);
-    if (msg.role === "assistant" && !msg.source_refs && turn) {
-      const actions = el("div");
-      actions.className = "actions";
-      for (const clarification of turn.clarifications.filter((a) => a.status === "open")) {
-        for (const option of clarification.options) {
-          actions.append(button(option.text, (event) => perform(event.currentTarget, () =>
-            send({case_id: clarification.case_id, clarification_id: clarification.id,
-              clarification_version: clarification.version, option_id: option.id}))));
-        }
-      }
-      for (const offer of turn.offers.filter((a) => a.status === "open")) {
-        for (const [action, label] of [["confirm", "Отправить письмо"], ["decline", "Не отправлять"]]) {
-          actions.append(button(label, (event) => perform(event.currentTarget, async () => {
-            await api(`/v1/offers/${offer.id}/${action}`, {version: offer.version});
-            await refresh();
-          })));
-        }
-      }
-      if (actions.childElementCount) item.append(actions);
+    if (msg.role !== "user") {
+      const name = el("strong", msg.source_refs ? "Отдел качества" : "Регламент бот");
+      name.className = "dion-name";
+      item.append(name);
     }
+    const text = el("p");
+    let visibleText = msg.text;
+    if (msg.role === "assistant" && !msg.source_refs) {
+      // Earlier turns stored the prompt and displayed its persisted options as buttons.
+      const oldList = turn?.clarifications.find((c) => c.prompt === visibleText && c.options.length);
+      if (oldList) {
+        const choices = oldList.options.map((option, index) => (index + 1) + ". " + option.text);
+        visibleText += "\n\n" + choices.join("\n") + "\n\nМожете ответить просто цифрой.";
+      }
+    }
+    renderText(text, visibleText, msg.source_refs ?? (msg.role === "assistant" ? turn?.result?.sources : []) ?? []);
+    item.append(text);
+    if (msg.role === "assistant" && !msg.source_refs && turn?.result?.notice) {
+      const notice = el("p", turn.result.notice);
+      notice.className = "result-notice";
+      item.append(notice);
+    }
+    if (ratings.has(msg.id)) item.append(ratingButtons(msg.id));
     const time = el("time", new Intl.DateTimeFormat("ru", {hour:"2-digit", minute:"2-digit"}).format(new Date(msg.created_at)));
+    time.className = "dion-time";
     time.dateTime = msg.created_at;
     item.append(time);
     items.push(item);
@@ -201,7 +212,7 @@ function render() {
   for (const turn of history.turns) {
     if (turn.status === "technical_failure" && latestTurns.get(turn.case_id) === turn.turn_id) {
       const item = el("article", "Ответ пока не готов. Вопрос сохранён.");
-      item.className = "message";
+      item.className = "dion-message";
       item.append(" ", button("Продолжить поиск", (event) => perform(event.currentTarget, async () => {
         await api(`/v1/turns/${turn.turn_id}/retry?attempt=${turn.attempt}`, {});
         await refresh();
@@ -211,9 +222,10 @@ function render() {
   }
   for (const req of mailStates) {
     const item = el("article", labels[req.state] ?? req.state);
-    item.className = "message mail-state";
+    item.className = "dion-message mail-state";
     item.dataset.requestId = req.id;
     if (req.delivery === "delivery_unknown") item.textContent = "Проверяем результат доставки письма";
+    if (req.number ?? req.case_number) item.prepend("Обращение ОК" + (req.number ?? req.case_number) + " · ");
     items.push(item);
   }
   $("dion-messages").replaceChildren(...items);
@@ -222,12 +234,63 @@ function render() {
   $("message").placeholder = openClarification() ? "Ответьте на уточнение" : "Напишите сообщение";
 }
 
+async function loadRatings() {
+  const current = ++ratingRequest;
+  try {
+    const rows = await api("/v1/browser/conversations/" + conversation + "/ratings");
+    if (current !== ratingRequest) return;
+    const next = new Map(rows.map((item) => [item.message_id, item.rating]));
+    if (next.size === ratings.size && [...next].every(([key, val]) => ratings.get(key) === val && ratings.has(key))) return;
+    ratings = next;
+    render();
+  } catch {
+    // A rating is offered only after the server confirms eligibility.
+  }
+}
+
+const voting = new Set();
+function ratingButtons(messageId) {
+  const wrap = el("div");
+  wrap.className = "answer-votes";
+  for (const [rating, icon, label] of [["up", "👍", "Помогло"], ["down", "👎", "Не помогло"]]) {
+    const vote = button(icon, async () => {
+      if (voting.has(messageId)) return;
+      voting.add(messageId);
+      for (const node of wrap.children) node.disabled = true;
+      try {
+        const result = await api("/v1/browser/messages/" + messageId + "/rating", {rating}, "PUT");
+        ++ratingRequest;
+        ratings.set(messageId, result.rating);
+      } catch {
+        status("Не удалось сохранить оценку. Попробуйте ещё раз.");
+      } finally {
+        voting.delete(messageId);
+        const group = document.querySelector('[data-message-id="' + messageId + '"] .answer-votes');
+        if (group) {
+          group.replaceWith(ratingButtons(messageId));
+          const active = document.querySelector('[data-message-id="' + messageId + '"] [data-vote="' + rating + '"]');
+          active?.focus({preventScroll: true});
+        }
+      }
+    });
+    vote.dataset.vote = rating;
+    vote.disabled = voting.has(messageId);
+    vote.setAttribute("aria-label", label);
+    vote.title = label;
+    vote.setAttribute("aria-pressed", String(ratings.get(messageId) === rating));
+    wrap.append(vote);
+  }
+  return wrap;
+}
+
 function refreshCorrespondence() {
   if (correspondenceRefresh) return;
   correspondenceRefresh = api("/v1/browser/correspondence").then((next) => {
     if (JSON.stringify(mailStates) !== JSON.stringify(next)) {
       mailStates = next;
       render();
+      guide.loadHint();
+      guide.loadLog();
     }
   }).catch(() => {
     // Keep the latest correspondence snapshot until the next refresh.
@@ -244,8 +307,12 @@ async function refresh() {
   try {
     const nextHistory = await api(`/v1/conversations/${conversation}/messages`);
     if (!history || history.cursor !== nextHistory.cursor) {
+      const newTurn = history?.turns.at(-1)?.turn_id !== nextHistory.turns.at(-1)?.turn_id;
       history = nextHistory;
       render();
+      loadRatings();
+      guide.loadHint();
+      guide.loadLog(newTurn);
     }
   } finally {
     refreshing = false;
@@ -294,7 +361,25 @@ async function send(fields) {
     throw error;
   }
   sessionStorage.removeItem(key);
-  selectCase(result.case_id);
+  if (activeCase === (fields.case_id || null) && activeCase !== result.case_id) {
+    activeCase = result.case_id;
+    localStorage.setItem("case:" + conversation, activeCase);
+  }
+  await refresh();
+}
+
+async function sendMailFollowup(waiting, text) {
+  const key = "followup:" + waiting.request_id;
+  const previous = JSON.parse(sessionStorage.getItem(key) || "null");
+  const command = previous?.text === text ? previous : {client_id: crypto.randomUUID(), text};
+  sessionStorage.setItem(key, JSON.stringify(command));
+  try {
+    await api("/v1/mail/requests/" + waiting.request_id + "/followup", command);
+    sessionStorage.removeItem(key);
+  } catch (error) {
+    if (error.status && error.status < 500) sessionStorage.removeItem(key);
+    throw error;
+  }
   await refresh();
 }
 
@@ -302,195 +387,98 @@ $("compose").onsubmit = (event) => {
   event.preventDefault();
   const text = $("message").value.trim();
   if (!text) return;
+  if (!history || $("dion-send").disabled) return;
+  const submittedKey = draftKey();
   const clarification = openClarification();
   const waiting = history?.mail_followups.find((req) => req.case_id === activeCase);
   perform($("compose").querySelector("button"), async () => {
     if (waiting) {
-      await api(`/v1/mail/requests/${waiting.request_id}/followup`, {client_id: crypto.randomUUID(), text});
-      await refresh();
+      await sendMailFollowup(waiting, text);
     } else {
       await send({
         text, case_id: activeCase || null,
         ...(clarification ? {clarification_id: clarification.id, clarification_version: clarification.version} : {}),
       });
     }
-    $("message").value = "";
+    if ($("message").value.trim() === text) {
+      $("message").value = "";
+      sessionStorage.removeItem(submittedKey);
+      saveDraft();
+    }
   });
 };
 $("message").onkeydown = (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !$("compose").querySelector("button").disabled) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229 && !$("compose").querySelector("button").disabled) {
     event.preventDefault();
     $("compose").requestSubmit();
   }
 };
 $("new-topic").onclick = () => selectCase(null);
 
-function loginForm() {
-  const form = el("form");
-  const loginLabel = el("label", "Логин");
-  const login = el("input");
-  login.name = "username";
-  login.autocomplete = "username";
-  login.required = true;
-  loginLabel.append(login);
-  const passLabel = el("label", "Пароль");
-  const pass = el("input");
-  pass.name = "password";
-  pass.type = "password";
-  pass.autocomplete = "current-password";
-  pass.required = true;
-  passLabel.append(pass);
-  const submit = el("button", "Войти в общий ящик");
-  submit.className = "primary";
-  form.append(loginLabel, passLabel, submit);
-  form.onsubmit = (e) => {
-    e.preventDefault();
-    perform(submit, async () => {
-      await api("/v1/browser/mail/login", {login: login.value, password: pass.value});
-      mail = true;
-      await quality();
-    }, mailStatus);
-  };
-  return form;
-}
-
-function inboxMessage(message) {
-  const panel = el("details");
-  panel.className = "panel";
-  panel.dataset.messageId = message.message_id;
-  const body = el("p", message.text);
-  body.className = "mail-body";
-  const form = el("form");
-  const label = el("label", "Текст ответа");
-  const textarea = el("textarea");
-  textarea.required = true;
-  textarea.maxLength = 8000;
-  label.append(textarea);
-  const submit = el("button", "Reply");
-  submit.className = "primary";
-  const state = el("p");
-  state.setAttribute("role", "status");
-  form.append(label, submit, state);
-  let pending;
-  form.onsubmit = (event) => {
-    event.preventDefault();
-    const text = textarea.value.trim();
-    if (!text) return;
-    pending = pending?.text === text ? pending : {command_id: crypto.randomUUID(), message_id: message.message_id, text};
-    perform(submit, async () => {
-      const accepted = await api("/v1/browser/mail/reply", pending);
-      state.textContent = "Ответ поставлен в очередь";
-      for (let i = 0; i < 45; i++) {
-        const result = await api(`/v1/browser/mail/reply/${accepted.command_id}`);
-        if (result.state === "sent") {
-          state.textContent = "Ответ отправлен";
-          textarea.value = "";
-          pending = null;
-          return;
-        }
-        if (result.state === "failed" || result.state === "uncertain") {
-          state.textContent = "Доставка ответа не подтверждена";
-          return;
-        }
-        await new Promise((done) => setTimeout(done, 1000));
-      }
-    }, (error) => { state.textContent = error; });
-  };
-  panel.append(el("summary", message.subject), el("small", `От: ${message.sender} · Копия: ${message.cc}`), body,
-    el("p", "Содержательный ответ из общего ящика может стать общим разъяснением."), form);
-  return panel;
-}
-
-async function quality() {
-  const version = ++viewVersion;
-  const area = $("quality-content");
-  mailStatus("");
-  for (const key of ["inbox", "faq", "sources"]) {
-    const ctl = $(`tab-${key}`);
-    if (tab === key) ctl.setAttribute("aria-current", "page");
-    else ctl.removeAttribute("aria-current");
+function activate(nextView, options) {
+  view = nextView;
+  const deskId = {dion: "dion-desk", quality: "quality-desk", admin: "admin-desk"};
+  for (const nav of document.querySelectorAll("#product-nav [data-view]")) {
+    const selected = nav.dataset.view === nextView;
+    $(deskId[nav.dataset.view]).hidden = !selected;
+    if (selected) {
+      nav.setAttribute("aria-current", "page");
+      $("view-label").textContent = nav.textContent;
+      document.title = "ИИкузница · " + nav.textContent;
+    } else nav.removeAttribute("aria-current");
   }
-  if (tab === "inbox" && !mail) {
-    area.replaceChildren(loginForm());
-    return;
-  }
-  area.replaceChildren(el("p", "Загрузка…"));
-  try {
-    if (tab === "inbox") {
-      const messages = await api("/v1/browser/mail/inbox");
-      if (version !== viewVersion) return;
-      const logout = button("Выйти из почты", (event) => perform(event.currentTarget, async () => {
-        await api("/v1/browser/mail/logout", {});
-        mail = false;
-        await quality();
-      }, mailStatus));
-      const refreshBox = button("Обновить входящие", () => quality());
-      area.replaceChildren(logout, " ", refreshBox, ...(messages.length ? messages.map(inboxMessage) : [el("p", "Входящих писем пока нет.")]));
-    } else {
-      const data = await api("/v1/browser/catalog");
-      if (version !== viewVersion) return;
-      if (tab === "faq") {
-        area.replaceChildren(...(data.faq.length ? data.faq.map((ref) => {
-          const card = el("article");
-          card.className = "panel";
-          card.append(el("p", ref.quote), sourceLink(ref, "Открыть разъяснение"));
-          return card;
-        }) : [el("p", "Опубликованных разъяснений пока нет.")]));
-      } else {
-        area.replaceChildren(...data.documents.map((revisions) => {
-          const group = el("details");
-          group.className = "panel";
-          group.append(el("summary", revisions[0].title));
-          revisions.forEach((ref) => {
-            const link = sourceLink(ref, `Пункт ${ref.anchor}`);
-            link.className = "catalog-link";
-            group.append(link);
-          });
-          return group;
-        }));
-      }
-    }
-  } catch (error) {
-    if (version !== viewVersion) return;
-    if (error.status === 401 && tab === "inbox") {
-      mail = false;
-      area.replaceChildren(loginForm());
-    } else {
-      area.replaceChildren(button("Повторить", () => quality()));
-    }
-    mailStatus(error.message);
+  $("product-header").dataset.theme = nextView;
+  if (nextView !== "dion") guide.setLogs(false);
+  if (nextView === "quality") quality?.open(options);
+  if (nextView === "dion" && conversation) {
+    scheduleRefresh();
+    guide.loadHint();
+    loadRatings();
   }
 }
 
-$("nav-quality").onclick = () => {
-  $("dion-desk").hidden = true;
-  $("quality").hidden = false;
-  $("nav-chat").removeAttribute("aria-current");
-  $("nav-quality").setAttribute("aria-current", "page");
-  quality();
-};
-$("nav-chat").onclick = () => {
-  $("quality").hidden = true;
-  $("dion-desk").hidden = false;
-  $("nav-quality").removeAttribute("aria-current");
-  $("nav-chat").setAttribute("aria-current", "page");
-  scheduleRefresh();
-};
-for (const key of ["inbox", "faq", "sources"]) {
-  $(`tab-${key}`).onclick = () => { tab = key; quality(); };
+for (const nav of document.querySelectorAll("#product-nav [data-view]")) {
+  nav.onclick = () => activate(nav.dataset.view);
 }
+function techAnchor() {
+  if (!/^#tech-[a-z]+$/.test(location.hash)) return;
+  const block = document.getElementById(location.hash.slice(1));
+  if (block && $("admin-desk").contains(block)) {
+    activate("admin");
+    block.scrollIntoView({block: "start"});
+  }
+}
+window.addEventListener("hashchange", techAnchor);
+techAnchor();
 
 try {
   const session = await api("/v1/browser/session", {});
   conversation = session.conversation_id;
-  mail = session.mail;
-  activeCase = localStorage.getItem(`case:${conversation}`);
+  if (session.standard_demo_login) {
+    $("expert-access-note").textContent = "Учебный доступ · логин admin, пароль admin.";
+  }
+  quality = initQuality({
+    api, openSource: reader.openSource, openRegulation: reader.openRegulation, expert: session.mail,
+    onRoleChange: () => { if (view === "dion") scheduleRefresh(); },
+  });
+  if (view === "quality") quality.open();
+  activeCase = localStorage.getItem("case:" + conversation);
+  $("message").value = sessionStorage.getItem(draftKey()) || "";
   await refresh();
   watch();
-  // Polling also restores a snapshot when the server no longer retains the SSE cursor.
+  reader.readDocument();
+  // Polling recovers an expired SSE cursor and asynchronous mail delivery.
   setInterval(scheduleRefresh, 3000);
-  const pending = JSON.parse(sessionStorage.getItem(`pending:${conversation}`) || "null");
-  if (pending) await send(pending.fields);
+  const pending = JSON.parse(sessionStorage.getItem("pending:" + conversation) || "null");
+  if (pending) {
+    await send(pending.fields);
+    if ($("message").value.trim() === pending.fields.text) {
+      $("message").value = "";
+      saveDraft();
+    }
+  }
+  $("dion-send").disabled = false;
 } catch (error) {
   chatNotice(error.message);
+  if (history) $("dion-send").disabled = false;
 }

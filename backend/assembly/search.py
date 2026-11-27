@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from time import perf_counter
 
+from backend.assembly.local_steps import local_step
 from backend.db import connect
 from eval.rerank.rerank import include_condition, load_model, score_pairs
 from psycopg.types.json import Jsonb
@@ -137,12 +138,13 @@ class Search:
                 docs.append("PRE")
             expanded = " ".join(glossary[w] for w in WORDS.findall(question) if w in glossary)
             started = perf_counter()
-            with connect(self.dsn) as conn:
+            with local_step("Поиск A1 · PostgreSQL"), connect(self.dsn) as conn:
                 rows = conn.execute(BM25, (list(eligible), encode(question, glossary),
                                           encode(expanded, glossary), docs, docs)).fetchall()
             pool = [corpus[eligible[r["fragment_id"]]] for r in rows]
             bm25_done = perf_counter()
-            scores = score_pairs(*self.model, question, pool)
+            with local_step("Ранжирование · MiniLM"):
+                scores = score_pairs(*self.model, question, pool)
             LATENCY_LOG.info("turn=%s stage=search bm25_s=%.3f rerank_s=%.3f candidates=%s",
                              SEARCH_TURN.get(), bm25_done - started, perf_counter() - bm25_done, len(pool))
             neural = sorted(range(2, len(scores)), key=lambda i: -scores[i])

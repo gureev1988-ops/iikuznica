@@ -6,6 +6,8 @@ x-app: &app
     dockerfile: backend/Dockerfile
   environment: &app-env
     II_PROFILE: assembly
+    II_DEMO_EXPERT_LOGIN: ${II_DEMO_EXPERT_LOGIN-admin}
+    II_DEMO_EXPERT_PASSWORD: ${II_DEMO_EXPERT_PASSWORD-admin}
     DATABASE_URL: postgresql://iik:${II_DB_PASSWORD:?Run deploy/init-env.sh}@db/iikuznica
     II_JUDGE_LOGIN: ${II_JUDGE_LOGIN:?Run deploy/init-env.sh}
     II_JUDGE_PASSWORD: ${II_JUDGE_PASSWORD:?Run deploy/init-env.sh}
@@ -63,6 +65,9 @@ services:
   api:
     <<: *app
     command: [api, --host, 0.0.0.0]
+    environment:
+      <<: *app-env
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     depends_on:
       init:
         condition: service_completed_successfully
@@ -84,6 +89,9 @@ services:
   background:
     <<: *app
     command: [background]
+    environment:
+      <<: *app-env
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     depends_on:
       init:
         condition: service_completed_successfully

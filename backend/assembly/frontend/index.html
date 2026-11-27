@@ -3,57 +3,254 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ИИкузница · Демо DION</title>
+  <title>ИИкузница · Демо чат DION</title>
   <link rel="stylesheet" href="/assets/style.css">
+  <link rel="stylesheet" href="/assets/quality.css">
   <script src="/assets/app.js" type="module"></script>
 </head>
-<body>
-  <header class="topbar">
-    <span class="wordmark">ИИкузница</span>
-    <nav aria-label="Разделы">
-      <button id="nav-chat" aria-current="page">Демо DION</button>
-      <button id="nav-quality">Отдел качества</button>
-    </nav>
-  </header>
-  <main id="dion-desk">
-    <aside class="chat-list">
-      <h2>Чаты</h2>
-      <div class="chat-row"><span class="avatar" aria-hidden="true">РБ</span><div><strong>Регламент бот</strong><small>Личный чат</small></div></div>
+<body data-design="spread">
+<svg class="icon-definitions" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs><symbol id="i-brand" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M2 3h4v11.4L14.3 3H19L6.7 21H2zM11.2 18.6 19.7 6.3V21h-4V16l-2.2 3.2z"/></symbol><symbol id="i-layouts" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16"/></symbol><symbol id="i-layout-console" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="M8 4v16m8-16v16"/></symbol><symbol id="i-layout-spread" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="M6.5 4v16M13 4v16"/></symbol><symbol id="i-layout-dialogue" viewBox="0 0 24 24"><path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h15A1.5 1.5 0 0 1 21 5.5v11a1.5 1.5 0 0 1-1.5 1.5H8l-5 3z"/><path d="M7 9h10m-10 4h6"/></symbol><symbol id="i-logs" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="m6 9 3 3-3 3m6 0h4"/></symbol><symbol id="i-history" viewBox="0 0 24 24"><path d="M3 11a9 9 0 1 1 2 7M3 5v6h6m3-4v5l3 2"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4 10-10"/></symbol><symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol><symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol><symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol><symbol id="i-external" viewBox="0 0 24 24"><path d="M6 18 18 6M7 6h11v11"/></symbol><symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V4.5A1.5 1.5 0 0 0 13.5 3h-9A1.5 1.5 0 0 0 3 4.5v10A1.5 1.5 0 0 0 4.5 16H8"/></symbol><symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol><symbol id="i-document" viewBox="0 0 24 24"><path d="M13.5 3H5v18h14V8.5L13.5 3Z"/><path d="M13 3v6h6M8 13h8m-8 4h6"/></symbol><symbol id="i-chat" viewBox="0 0 24 24"><path d="M3.5 4.5h17v12h-11l-5 4v-4h-1z"/></symbol><symbol id="i-thumb-up" viewBox="0 0 24 24"><path d="M4 10h4v10H4zm4 0 4-6c.5-.9 2.2-.4 2.1 1l-.5 4H19c1.3 0 1.9 1 1.6 2.2l-1.4 6.7c-.2 1.1-.9 1.7-2.1 1.7H11l-3-1"/></symbol><symbol id="i-thumb-down" viewBox="0 0 24 24"><g transform="rotate(180 12 12)"><path d="M4 10h4v10H4zm4 0 4-6c.5-.9 2.2-.4 2.1 1l-.5 4H19c1.3 0 1.9 1 1.6 2.2l-1.4 6.7c-.2 1.1-.9 1.7-2.1 1.7H11l-3-1"/></g></symbol></defs></svg>
+<header class="app-header" id="product-header" data-theme="dion">
+  <span class="product-wordmark"><img src="/assets/wordmark.png" width="953" height="352" alt="ИИкузница"></span>
+  <h1 class="view-title" id="view-label">Демо чат DION</h1>
+  <nav class="product-nav" id="product-nav" aria-label="Рабочие места">
+    <button type="button" id="nav-chat" data-view="dion" aria-current="page" aria-controls="dion-desk">Демо чат DION</button>
+    <button type="button" id="nav-quality" data-view="quality" aria-controls="quality-desk">Отдел качества</button>
+    <button type="button" data-view="admin" aria-controls="admin-desk">Тех.раздел</button>
+  </nav>
+
+</header>
+
+<main id="quality-desk" class="dion-layout quality-layout" aria-label="Отдел качества" hidden>
+  <nav class="dion-list chat-list quality-menu" id="quality-tabs" aria-label="Разделы отдела качества">
+    <button class="chat-row" type="button" data-quality-tab="faq" aria-current="true"><strong>Разъяснения отдела</strong></button>
+    <button class="chat-row" type="button" data-quality-tab="inbox" aria-current="false"><strong>Входящие письма</strong></button>
+    <button class="chat-row" type="button" data-quality-tab="sources" aria-current="false"><strong>Источники</strong></button>
+    <button class="chat-row" type="button" data-quality-tab="analytics" aria-current="false"><strong>Статистика</strong></button>
+  </nav>
+  <section class="dion-chat quality-panel" aria-labelledby="quality-title">
+    <header class="dion-head quality-head">
+      <h2 id="quality-title" tabindex="-1">Разъяснения</h2>
+      <div class="quality-head-search" id="quality-head-search" hidden>
+        <input id="mail-search" type="search" placeholder="Поиск по письмам" aria-label="Поиск по письмам">
+      </div>
+      <div class="quality-account">
+        <span id="quality-role" class="note">Гость · просмотр</span>
+        <button class="button" id="quality-login" type="button" aria-label="Войти как эксперт">Войти</button>
+      </div>
+    </header>
+    <section id="quality-content" class="quality-content" data-tab="faq" aria-label="Разъяснения отдела"></section>
+    <p class="quality-status" id="quality-status" role="status" aria-live="polite"></p>
+  </section>
+</main>
+<main id="admin-desk" class="dion-layout tech-layout" aria-label="Тех.раздел" hidden>
+  <nav class="dion-list chat-list tech-menu" aria-label="Блоки Тех.раздела">
+    <a class="chat-row" href="#tech-routing">Чат и маршрутизация</a>
+    <a class="chat-row" href="#tech-faq">Разъяснения</a>
+    <a class="chat-row" href="#tech-integrations">Интеграции</a>
+    <a class="chat-row" href="#tech-models">Модели и ресурсы</a>
+    <a class="chat-row" href="#tech-scale">Масштабирование</a>
+    <a class="chat-row" href="#tech-architecture">Архитектура</a>
+  </nav>
+  <section class="dion-chat tech-panel" aria-labelledby="admin-title">
+    <header class="dion-head tech-head"><h2 id="admin-title" tabindex="-1">Тех.раздел</h2></header>
+    <div class="tech-content" tabindex="0">
+      <section class="tech-block" id="tech-routing" aria-labelledby="tech-routing-title">
+        <h3 id="tech-routing-title">Как работает чат</h3>
+        <ol class="tech-flow" aria-label="Обработка вопроса">
+          <li><strong>Вопрос</strong><span>Условия и история личного чата</span></li>
+          <li><strong>Поиск по регламентам</strong><span>PostgreSQL и MiniLM</span></li>
+          <li><strong>Решение по запросу</strong><span>Decider проверяет основания</span></li>
+        </ol>
+        <ul class="tech-branches" aria-label="Исходы обработки">
+          <li><strong>Есть основание</strong><span>Ответ со ссылкой на пункт. Gemma — обычные вопросы, Qwen — сложные.</span></li>
+          <li><strong>Не хватает условия</strong><span>Бот задаёт уточняющий вопрос.</span></li>
+          <li><strong>Есть пробел или конфликт</strong><span>Бот предлагает запросить разъяснение. Письмо уходит с согласия сотрудника.</span></li>
+        </ul>
+      </section>
+      <section class="tech-block" id="tech-faq" aria-labelledby="tech-faq-title">
+        <h3 id="tech-faq-title">Как работают разъяснения</h3>
+        <div class="tech-lanes">
+          <div><h4>Регламент</h4>
+            <ol class="tech-flow" aria-label="Обновление регламента">
+              <li><strong>Confluence</strong><span>Получаем новую редакцию</span></li>
+              <li><strong>Индексация</strong><span>Сохраняем документ и пункты</span></li>
+              <li><strong>Действующая редакция</strong><span>Поиск использует обновлённые пункты</span></li>
+            </ol>
+          </div>
+          <div><h4>Почта</h4>
+            <ol class="tech-flow" aria-label="Обработка ответа по почте">
+              <li><strong>Итоговый ответ эксперта</strong><span>Из доверенного ящика</span></li>
+              <li><strong>Исходный чат</strong><span>Находим цепочку и возвращаем ответ</span></li>
+              <li><strong>Разъяснение</strong><span>Создаём карточку для похожих вопросов</span></li>
+            </ol>
+          </div>
+        </div>
+        <div class="tech-conflict">
+          <h4>Проверка конфликта</h4>
+          <p>В локальном профиле Decider сравнивает разъяснение с применимым пунктом. При расхождении карточка требует пересмотра, а бот опирается на действующий регламент.</p>
+          <p class="tech-conflict-example"><strong>Пример</strong> · разъяснение — 6 рабочих дней, регламент ДБРЦТ, п. 1.6 — 7.</p>
+        </div>
+      </section>
+      <section class="tech-block" id="tech-integrations" aria-labelledby="tech-integrations-title">
+        <h3 id="tech-integrations-title">Интеграции</h3>
+        <div class="tech-cards">
+          <article class="tech-card"><h4>DION Bot API</h4><p>Адаптер реализован. На демостенде чат открывается в браузере.</p></article>
+          <article class="tech-card"><h4>Почта · SMTP и IMAP</h4><p>Веб-клиент и тестовый сервер. Ответ возвращается в чат и создаёт разъяснение.</p></article>
+          <article class="tech-card"><h4>Atlassian Confluence</h4><p>Коннектор получает страницы и их редакции. На демо используется подготовленный снимок.</p></article>
+        </div>
+      </section>
+      <section class="tech-block" id="tech-models" aria-labelledby="tech-models-title">
+        <h3 id="tech-models-title">Модели и ресурсы</h3>
+        <p>На демостенде модели работают через OpenRouter. Локальные модели размещаются на GPU-сервере.</p>
+        <dl class="tech-models">
+          <div><dt>MiniLM</dt><dd>Ранжирование пунктов · CPU той же VPS</dd></div>
+          <div><dt>Gemma 4 26B A4B</dt><dd>Обычные ответы и проверка допуска</dd></div>
+          <div><dt>Qwen3.5 122B A10B</dt><dd>Полные процедуры и сложные продолжения</dd></div>
+          <div><dt>Perplexity Decider Flash v1.3</dt><dd>Маршрутизация и проверка оснований</dd></div>
+        </dl>
+        <div class="tech-cards">
+          <article class="tech-card"><h4>Приложение</h4><strong>4 vCPU · 8 ГБ RAM · 80 ГБ SSD</strong><p>Ориентир для VPS с поиском, БД и воркерами.</p></article>
+          <article class="tech-card"><h4>Полный профиль</h4><strong>128 ГБ VRAM</strong><p>Расчётная конфигурация на 200 запросов в день.</p></article>
+          <article class="tech-card"><h4>Лёгкий профиль</h4><strong>≈48 ГБ VRAM</strong><p>Gemma и Decider.</p></article>
+        </div>
+        <div class="tech-evidence">
+          <p>В тестах Qwen дала точечный выигрыш. Режим reasoning увеличил задержку без роста качества.</p>
+          <p>По предварительным замерам на тестовой выборке сложные вопросы составляли 10–12% запросов. При такой доле отключение Qwen может снизить качество на <strong>1,1 п.п.</strong> Оценку нужно проверить на реальных данных.</p>
+        </div>
+      </section>
+      <section class="tech-block" id="tech-scale" aria-labelledby="tech-scale-title">
+        <h3 id="tech-scale-title">Масштабирование</h3>
+        <ol class="tech-scale">
+          <li>Очередь проверена на всплесках до 200 тестовых запросов.</li>
+          <li>Воркеры и модельный сервер масштабируются независимо.</li>
+        </ol>
+      </section>
+      <section class="tech-block" id="tech-architecture" aria-labelledby="tech-architecture-title">
+        <h3 id="tech-architecture-title">Архитектура приложения</h3>
+        <div class="tech-architecture" role="group" aria-label="Архитектура локального развёртывания">
+          <div class="tech-arch-row">
+            <div class="tech-node"><strong>Браузер</strong><span>Демо DION и Отдел качества</span></div>
+            <div class="tech-node tech-node-dashed"><strong>DION Bot API</strong><span>Адаптер для корпоративного DION</span></div>
+          </div>
+          <div class="tech-connector tech-connector-input" aria-hidden="true"><span>↓</span><span>⇣</span></div>
+          <div class="tech-node tech-node-centered"><strong>Caddy по HTTPS → FastAPI</strong><span>HTTP API и события чата</span></div>
+          <div class="tech-connector" aria-hidden="true">↕</div>
+          <div class="tech-node tech-node-centered"><strong>PostgreSQL</strong><span>Сессии, диалоги, разъяснения, поисковый индекс, очередь</span></div>
+          <div class="tech-connector tech-connector-input" aria-hidden="true"><span>↕</span><span>↕</span></div>
+          <div class="tech-arch-row">
+            <div class="tech-node"><strong>Воркер чата</strong><span>Поиск и MiniLM на CPU той же VPS</span></div>
+            <div class="tech-node"><strong>Фоновые воркеры</strong><span>Почта, импорт, индексация и проверка конфликтов</span>
+              <ul class="tech-arch-io" aria-label="Подключения фоновых воркеров">
+                <li>↔ SMTP и IMAP</li><li>← Atlassian Confluence</li><li>→ постоянный диск · оригиналы</li>
+              </ul>
+            </div>
+          </div>
+          <div class="tech-connector tech-connector-input" aria-hidden="true"><span>↓</span><span>↓</span></div>
+          <div class="tech-node tech-node-centered tech-node-gpu"><strong>Локальный GPU-сервер</strong><span>Gemma, Qwen и Decider</span></div>
+        </div>
+      </section>
+    </div>
+  </section>
+</main>
+
+<main id="dion-desk" aria-label="Демонстрация личного чата DION">
+  <div class="dion-layout">
+    <aside class="dion-list chat-list" aria-labelledby="dion-list-title">
+      <h2 id="dion-list-title">Чаты</h2>
+      <div class="chat-row" aria-current="true"><span class="chat-avatar" aria-hidden="true">РБ</span>
+        <div class="chat-row-text"><strong>Регламент бот</strong><small id="dion-last">Бот</small></div>
+      </div>
       <div id="topics" aria-label="Темы чата"></div>
     </aside>
-    <section class="dion-chat" aria-labelledby="title">
-      <header class="dion-head">
-        <span class="avatar" aria-hidden="true">РБ</span>
-        <div><h1 id="title">Регламент бот</h1><small>Пресейл и проектная деятельность</small></div>
-        <button id="new-topic">Новая тема</button>
-      </header>
+    <section class="dion-chat" aria-labelledby="dion-chat-title">
+      <header class="dion-head"><span class="chat-avatar" aria-hidden="true">РБ</span><div>
+        <h2 id="dion-chat-title" tabindex="-1">Регламент бот</h2><small>Бот</small>
+      </div><button id="new-topic" type="button" class="dion-close">Новая тема</button></header>
       <div class="dion-scroll" id="dion-scroll">
-        <div id="dion-messages" role="log" aria-live="polite"></div>
+        <div class="dion-messages" id="dion-messages" role="log" aria-live="polite"></div>
       </div>
-      <div class="compose-area">
-        <p id="chat-status" role="status"></p>
-        <form id="compose">
-          <label class="sr" for="message">Сообщение</label>
-          <textarea id="message" rows="1" placeholder="Напишите сообщение" maxlength="16000" required></textarea>
-          <button class="primary" type="submit">Отправить</button>
+      <div class="dion-composer">
+        <p class="dion-waiting" id="chat-status" role="status"></p>
+        <button class="dion-close dion-logs-toggle" id="show-logs" type="button" aria-expanded="false" aria-controls="trace">
+          <svg class="icon" aria-hidden="true"><use href="#i-logs"></use></svg>Логи
+        </button>
+        <section class="dion-hint" id="dion-hint" hidden aria-label="Подсказка">
+          <div aria-live="polite">
+            <p><strong>Подсказка:</strong> <span id="dion-hint-text"></span></p>
+            <p class="dion-hint-example" id="dion-hint-example"></p>
+          </div>
+          <button class="dion-close" id="dion-hint-apply" type="button">Применить</button>
+          <button class="dion-close" id="dion-hint-inbox" type="button" hidden>Открыть входящие</button>
+        </section>
+        <form id="compose" class="dion-compose" aria-label="Новое сообщение в DION">
+          <textarea id="message" rows="1" aria-label="Сообщение" placeholder="Напиши сообщение" maxlength="16000" required></textarea>
+          <button type="submit" class="dion-send" id="dion-send" disabled>Отправить</button>
         </form>
       </div>
     </section>
-  </main>
-  <main id="quality" hidden>
-    <h1>Отдел качества</h1>
-    <nav aria-label="Отдел качества">
-      <button id="tab-inbox" aria-current="page">Входящие письма</button>
-      <button id="tab-faq">FAQ</button>
-      <button id="tab-sources">Источники</button>
-    </nav>
-    <div id="quality-content"></div>
-    <p id="quality-status" role="status"></p>
-  </main>
-  <dialog id="source" aria-labelledby="source-title">
-    <header><h2 id="source-title">Источник</h2><form method="dialog"><button>Закрыть</button></form></header>
+  </div>
+
+  <aside class="trace dion-trace" id="trace" aria-labelledby="trace-title" hidden>
+    <div class="trace-head">
+      <div><h2 id="trace-title">Логи последнего запроса</h2><p class="trace-label" id="trace-status" role="status"></p></div>
+      <button class="tool" type="button" id="close-logs" aria-label="Закрыть логи"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button>
+    </div>
+    <div class="trace-body">
+      <div class="trace-meta"><span class="trace-id" id="trace-id"></span><span class="note" id="trace-rate" hidden>85 ₽ за $1</span></div>
+      <div class="trace-stats" id="trace-stats" hidden>
+        <div class="metric"><strong id="tokens"></strong><span>Токенов за реплику</span></div>
+        <div class="metric"><strong id="trace-cost"></strong><span>Стоимость вызовов</span></div>
+      </div>
+      <ol class="events" id="events" aria-label="Модели, поиск и отправка письма"></ol>
+    </div>
+  </aside>
+</main>
+
+  <dialog id="dion-source" class="dion-source" aria-labelledby="dion-source-title">
+    <header><h2 id="dion-source-title">Источник</h2><button type="button" class="dion-close" id="dion-close-source">Закрыть</button></header>
     <p id="source-meta"></p>
     <blockquote id="source-text"></blockquote>
+    <div id="source-actions"></div>
   </dialog>
+
+<dialog class="regulation-viewer" id="regulation-dialog" aria-labelledby="regulation-title">
+  <header>
+    <div><h2 id="regulation-title">Регламент</h2><p class="regulation-meta" id="regulation-meta"></p></div>
+    <button class="button" type="button" id="regulation-close">Закрыть</button>
+  </header>
+  <div class="regulation-reader" id="regulation-body" tabindex="0" aria-label="Полный текст регламента"></div>
+  <a class="regulation-original" id="regulation-original" target="_blank" rel="noopener noreferrer">Открыть оригинал</a>
+</dialog>
+
+<dialog class="quality-dialog" id="expert-dialog" aria-labelledby="expert-title" aria-describedby="expert-impact">
+  <header><h2 id="expert-title">Вход в Отдел качества</h2><button class="tool" type="button" data-close-dialog="expert-dialog" aria-label="Закрыть">×</button></header>
+  <p class="note" id="expert-access-note">Учебный доступ предоставляет организатор стенда.</p>
+  <p class="desk-alert" id="expert-impact">Внимание, изменения в разъяснениях и ответы по почте отразятся на всех будущих ответах бота.</p>
+  <label>Логин <input id="expert-user" type="text" autocomplete="username"></label>
+  <label>Пароль <input id="expert-password" type="password" autocomplete="current-password"></label>
+  <p class="quality-error" id="expert-error" role="alert" hidden></p>
+  <footer><button class="button primary" id="expert-enter" type="button">Войти</button></footer>
+</dialog>
+
+<dialog class="quality-dialog" id="faq-edit-dialog" aria-labelledby="faq-edit-title">
+  <header><h2 id="faq-edit-title">Редактировать карточку</h2><button class="tool" type="button" data-close-dialog="faq-edit-dialog" aria-label="Закрыть">×</button></header>
+  <label>Вопрос <textarea id="faq-edit-question" rows="2" maxlength="2000"></textarea></label>
+  <label>Ответ <textarea id="faq-edit-answer" rows="5" maxlength="6000"></textarea></label>
+  <p class="note">Изменение повлияет на ответы всем участникам стенда.</p>
+  <div class="desk-alert" id="faq-edit-warning" role="alert" hidden></div>
+  <footer>
+    <button class="button" type="button" data-close-dialog="faq-edit-dialog">Назад</button>
+    <button class="button primary" id="faq-edit-save" type="button">Проверить и сохранить</button>
+    <button class="button primary" id="faq-edit-confirm" type="button" hidden>Сохранить с пометкой</button>
+  </footer>
+</dialog>
+<dialog class="quality-dialog faq-thread-dialog" id="faq-thread-dialog" aria-labelledby="faq-thread-title">
+  <header><h2 id="faq-thread-title">Сохранённая переписка</h2><button class="tool" type="button" data-close-dialog="faq-thread-dialog" aria-label="Закрыть">×</button></header>
+  <p class="faq-thread-subject" id="faq-thread-subject"></p>
+  <ol class="mail-thread" id="faq-thread-messages" aria-label="Сообщения письма"></ol>
+</dialog>
+
+
 </body>
 </html>

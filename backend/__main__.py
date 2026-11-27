@@ -28,6 +28,9 @@ def worker(backend, queue, once):
     workers = (backend.settings.interactive_concurrency if queue == "interactive"
                else backend.settings.background_concurrency)
     tasks = [(queue, lambda: backend.run_job(queue), backend.settings.poll_interval)] * workers
+    if queue == "interactive" and backend.settings.profile == "assembly":
+        from backend.assembly.pricing import refresh
+        tasks.append(("model-pricing", refresh, 900))
     if queue == "background":
         tasks.extend((name, operation, backend.settings.integration_poll_interval)
                      for name, operation in backend.polling().items())
@@ -110,6 +113,7 @@ def main():
     if args.mode == "assembly-init":
         from backend.assembly.artifacts import install
         from backend.assembly.corpus import seed
+        from backend.assembly.quality_seed import seed_quality
         from backend.assembly.search import load_model
         from pathlib import Path
 
@@ -117,7 +121,9 @@ def main():
         model_dir = Path(os.getenv("II_MODEL_DIR", ".ii-local/models"))
         install(model_dir)
         load_model(model_dir)  # Fail init if the pinned export cannot load on this CPU.
-        seed(settings.dsn, os.getenv("II_ORIGINALS", ".ii-local/originals"), args.version)
+        directory = os.getenv("II_ORIGINALS", ".ii-local/originals")
+        seed(settings.dsn, directory, args.version)
+        seed_quality(settings.dsn, directory)
         return
     if args.mode == "seed-fixtures":
         from backend.contracts.fixtures import seed_fixture_sources

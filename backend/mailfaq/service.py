@@ -1,7 +1,7 @@
 """Transactional mail intake, correspondence and delivery."""
 
 from email.headerregistry import Address
-import json
+import os
 import re
 from uuid import UUID, uuid4
 from secrets import token_urlsafe
@@ -37,7 +37,9 @@ def _email(value: str | None) -> str:
 
 
 def _subject(request: dict) -> str:
-    return f"Разъяснение [case:{request['token']}]"
+    if request.get("channel", "guest") != "guest":
+        return f"Разъяснение [case:{request['token']}]"
+    return f"Обращение ОК{request['case_number']}"
 
 
 def _queue_send(conn, outbound_id: UUID, *, job_key: str | None = None, max_attempts: int = 3) -> None:
@@ -68,7 +70,7 @@ def _outbound(
 def create_request(
     conn, config: MailConfig, *, offer_id: UUID, conversation_id: UUID, case_id: UUID,
     turn_id: UUID, actor_id: str, actor_email: str | None, channel: str, question: str,
-    conditions: dict,
+    conditions: dict, dialogue: list | None = None, result: dict | None = None,
 ) -> UUID:
     """Persist consent and its exact outbound effect in the caller's transaction."""
     if config.mode == "disabled":
@@ -107,17 +109,50 @@ def create_request(
         return conn.execute(
             "SELECT id FROM mail_requests WHERE offer_id = %s", (offer_id,),
         ).fetchone()["id"]
-    body = (
-        f"Вопрос сотрудника: {question}\n"
-        f"Подтверждённые условия: {json.dumps(conditions, ensure_ascii=False, sort_keys=True)}\n\n"
-        "Ответьте на это письмо. Содержательная часть проверенного ответа публикуется в общем FAQ. "
-        "Не включайте персональные или закрытые данные. Для частичного ответа укажите отдельными "
-        "строками «Ответ:», «Уточнение:» или «Ожидается:». Для пересмотра укажите "
-        "«Исправление:» или «Отзыв:».\n\n"
-        f"[case:{token}]"
-    )
+    body = _initial_body(conn, row, dialogue or [], result or {})
+    if channel != "guest":
+        body += f"\n\n[case:{token}]"
     _outbound(conn, row, "initial", body)
     return request_id
+
+
+def _initial_body(conn, request, dialogue, result):
+    """Freeze evidence and the visible transcript in the initial outbox entry."""
+    dialogue = [m for m in dialogue if m["case_id"] == request["case_id"]]
+    initial = next((m["text"] for m in dialogue if m["role"] == "user"), request["question"])
+    findings = [p["text"] for p in result.get("parts", ()) if p["action"] == "answer"]
+    if result.get("text"):
+        findings.append(result["text"])
+    for ref in result.get("sources", ()):
+        source = conn.execute("""
+            SELECT r.title, r.version, f.anchor FROM source_fragments f
+            JOIN source_revisions r ON r.id=f.revision_id
+            WHERE f.id=%s AND r.id=%s AND r.source_id=%s
+            """, (ref["fragment_id"], ref["revision_id"], ref["document_id"])).fetchone()
+        if source:
+            findings.append(f"{source['title']}, редакция {source['version']}, {source['anchor']}: {ref['quote']}")
+            if request["channel"] == "guest" and ref["kind"] == "document":
+                base = os.environ.get("II_PUBLIC_URL", "").rstrip("/")
+                findings.append(f"{base}/#/regulations/{ref['document_id']}/{ref['revision_id']}?fragment={ref['fragment_id']}")
+    prompts = {row["clarification_key"]: row["prompt"] for row in conn.execute("""
+        SELECT clarification_key,prompt FROM clarifications WHERE case_id=%s AND status='resolved'
+        ORDER BY created_at,id""", (request["case_id"],))}
+    unknown = [prompts.get(key, key) for key, value in request["conditions"].items()
+               if value.casefold() == "не знаю"]
+    reason = ("Не удалось уточнить условия: " + ", ".join(unknown) if unknown
+              else "Требуется основание для решения по вопросу: " + request["question"])
+    labels = {"user": "Сотрудник", "assistant": "Бот", "system": "Система"}
+    transcript = "\n".join(f"{labels[m['role']]}: {m['text']}" for m in dialogue)
+    known = "; ".join(f"{prompts.get(k, k)} — {v}" for k, v in request["conditions"].items())
+    if known:
+        findings.append("Условия обращения: " + known)
+    return "\n".join([
+        "1. Вопрос от сотрудника", initial, "",
+        "2. Почему направлено обращение", "Что нашли:",
+        *dict.fromkeys(findings or ["Подтверждённый вывод в доступных источниках отсутствует."]),
+        "Чего не хватило: " + reason, "Что просим уточнить: " + request["question"], "",
+        "3. Диалог до отправки", transcript or "Сотрудник подтвердил отправку обращения.",
+    ])
 
 
 def _request_for_update(conn, request_id: UUID) -> dict:
@@ -146,7 +181,7 @@ def send_followup(
     if not clean:
         raise MailError(422, "empty_mail_followup")
     key = f"followup:{client_id}"
-    body = f"{clean}\n\n[case:{request['token']}]"
+    body = clean if request["channel"] == "guest" else f"{clean}\n\n[case:{request['token']}]"
     prior = conn.execute(
         "SELECT id, body FROM mail_outbound WHERE request_id = %s AND business_key = %s",
         (request_id, key),
@@ -270,13 +305,16 @@ def _reconcile_reply(conn, parsed: ParsedMail, request_id: UUID) -> None:
         )
 
 
-def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail, *, hackathon: bool = False) -> None:
+def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail, *, hackathon: bool = False, norm_review=None) -> None:
     conn.execute(
         "UPDATE mail_inbound SET state = 'processed', request_id = %s, reason = NULL WHERE id = %s",
         (request["id"], inbound_id),
     )
     _reconcile_reply(conn, parsed, request["id"])
     kind = parsed.kind
+    if kind == "status":
+        _note(conn, request, inbound_id, kind, "Отдел качества · ход работы\n" + parsed.public_text)
+        return
     if kind == "automatic":
         _note(conn, request, inbound_id, kind, "Получен автоматический ответ.", notify=False)
         return
@@ -372,9 +410,13 @@ def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail, *,
     ).fetchone()
 
     refs = []
-    if parsed.public_text:
+    if kind == "partial" and request["channel"] == "guest":
+        message = "Частичный ответ Отдела качества\n" + parsed.public_text
+        if pending:
+            message += "\n\nОстаётся открытым:\n" + "\n".join(pending)
+    elif parsed.public_text:
         text = parsed.public_text
-        if previous and request["pending"] and not parsed.correction and text != previous["text"]:
+        if previous and request["channel"] != "guest" and request["pending"] and not parsed.correction and text != previous["text"]:
             text = previous["text"] + "\n\n" + text
         match = publish_faq(conn, updated, text, replace=parsed.correction, hackathon=hackathon)
         if match:
@@ -382,7 +424,33 @@ def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail, *,
             if updated["channel"] == "guest":
                 message = f"Разъяснение Отдела качества\n{match.text}"
             refs = [match.source_ref()]
-            if match.conflict_revision_id:
+            if updated["channel"] == "guest":
+                from backend.assembly.quality import review_after_mail
+                review = review_after_mail(conn, match.faq_id, prepared=norm_review)
+                if review.get("outcome") == "conflict" and review.get("ref"):
+                    refs.insert(0, review["ref"])
+                    message = (f"Действующий регламент: {review['ref']['quote']} [1]\n\n"
+                               f"Разъяснение Отдела качества: {match.text} [2]\n\n"
+                               "Руководствуйтесь регламентом. Передать расхождение в Отдел качества?")
+                    # A verified conflict gets its own offer. Consent to the first letter is already spent.
+                    turn = conn.execute("""
+                        INSERT INTO turns(conversation_id,case_id,request_id,question,status,request,result)
+                        VALUES (%s,%s,%s,%s,'completed',%s,%s) RETURNING id
+                        """, (updated["conversation_id"], updated["case_id"], f"mail-conflict:{inbound_id}",
+                              updated["question"], Jsonb({"channel": "guest"}), Jsonb({
+                                  "action": "answer", "text": message, "sources": refs}))).fetchone()
+                    superseded = conn.execute("""UPDATE offers SET status='superseded',updated_at=now()
+                        WHERE case_id=%s AND status='open' RETURNING id,turn_id,case_id,version,status,text""",
+                                              (updated["case_id"],)).fetchall()
+                    from backend.dialog.service import _public_action
+                    for old in superseded:
+                        append_event(conn, updated["conversation_id"], old["case_id"], old["turn_id"],
+                                     "offer.superseded", {"offer": _public_action(old)})
+                    conn.execute("""INSERT INTO offers(turn_id,case_id,text,payload) VALUES (%s,%s,%s,%s)""",
+                                 (turn["id"], updated["case_id"], message, Jsonb({
+                                     "conditions": updated["conditions"], "question": updated["question"]})))
+                    updated = dict(updated, turn_id=turn["id"])
+            elif match.conflict_revision_id:
                 message += "\n\nОфициальное разъяснение расходится с текущей редакцией документа."
         if pending:
             message += "\n\nОжидается уточнение:\n" + "\n".join(pending)
@@ -408,6 +476,14 @@ def _store_receipt(conn, mailbox: str, uidvalidity: str, uid: int, raw: bytes,
         conn.execute("UPDATE mail_inbound SET state = 'rejected' WHERE id = %s", (inbound_id,))
         return True
     request_id, reason = _correlate(conn, parsed, config.scoped_recipient)
+    if request_id and parsed.kind in {"substantive", "correction", "partial", "counter_question", "unrecognized"}:
+        request = _request_for_update(conn, request_id)
+        if request["channel"] == "guest":
+            conn.execute("UPDATE mail_inbound SET request_id=%s,state='interpreting' WHERE id=%s",
+                         (request_id, inbound_id))
+            enqueue(conn, queue="background", kind="mail.interpret", key=str(inbound_id),
+                    payload={"request_id": str(request_id)}, max_attempts=5)
+            return True
     if request_id is None or parsed.kind == "unrecognized":
         conn.execute(
             "UPDATE mail_inbound SET request_id = %s, reason = %s WHERE id = %s",
@@ -453,7 +529,60 @@ class MailService:
 
     @property
     def handlers(self):
-        return {SEND_KIND: self.send_job, POLL_KIND: self.poll_job}
+        return {SEND_KIND: self.send_job, POLL_KIND: self.poll_job, "mail.interpret": self.interpret_job}
+
+    def interpret_job(self, job):
+        from backend.contracts.engine import EngineUnavailable
+        from .interpret import interpret
+
+        request_id = job.payload["request_id"]
+        # Process one reply per durable job in thread order, even with competing workers.
+        while True:
+            with connect(self.dsn) as conn:
+                request = conn.execute("SELECT * FROM mail_requests WHERE id=%s", (request_id,)).fetchone()
+                receipt = conn.execute("""SELECT * FROM mail_inbound WHERE request_id=%s AND state='interpreting'
+                                          ORDER BY created_at, uid, id LIMIT 1""", (request_id,)).fetchone()
+                if receipt is None:
+                    return
+                chain = [r["parsed"] for r in conn.execute("""
+                    SELECT parsed - 'tokens' - 'thread_ids' - 'sender' - 'message_id' AS parsed
+                    FROM mail_inbound WHERE request_id=%s AND state='processed' ORDER BY created_at,uid,id
+                    """, (request_id,))]
+                followups = conn.execute("""SELECT body FROM mail_outbound WHERE request_id=%s
+                    AND business_key <> 'initial' AND state='sent' AND created_at <= %s ORDER BY created_at,id""",
+                                         (request_id, receipt["created_at"])).fetchall()
+                chain.extend(dict(kind="employee_followup", text=row["body"]) for row in followups)
+            parsed = ParsedMail(**receipt["parsed"])
+            try:
+                result = interpret(self.dsn, job, request, bytes(receipt["raw"]), parsed, chain)
+            except EngineUnavailable:
+                if job.attempt < job.max_attempts:
+                    raise RuntimeError("mail_interpreter_unavailable") from None
+                from dataclasses import replace
+                result = replace(parsed, kind="unrecognized", reason="interpreter_unavailable")
+            norm_review = None
+            if result.kind in {"substantive", "correction"} and result.public_text:
+                from backend.assembly.quality import prepare_review
+                with connect(self.dsn) as conn:
+                    norm_review = prepare_review(conn, request["question"], result.public_text, request["conditions"])
+            with connect(self.dsn) as conn:
+                require_lease(conn, job)
+                lock_sources(conn)
+                current = _request_for_update(conn, request_id)
+                state = conn.execute("SELECT state FROM mail_inbound WHERE id=%s FOR UPDATE",
+                                     (receipt["id"],)).fetchone()["state"]
+                if state != "interpreting":
+                    continue
+                if current["updated_at"] != request["updated_at"]:
+                    continue
+                conn.execute("UPDATE mail_inbound SET parsed=%s WHERE id=%s",
+                             (Jsonb(result.record()), receipt["id"]))
+                if result.kind == "unrecognized":
+                    conn.execute("UPDATE mail_inbound SET state='review',reason=%s WHERE id=%s",
+                                 (result.reason, receipt["id"]))
+                else:
+                    _apply_inbound(conn, receipt["id"], current, result, norm_review=norm_review)
+                return
 
     def _can_send(self, outbound: dict) -> bool:
         if self.resolve_actor is None:
@@ -474,7 +603,7 @@ class MailService:
             row = conn.execute(
                 """
                 SELECT o.*, r.conversation_id, r.actor_email, r.actor_id, r.sender, r.recipient,
-                    r.reply_to, r.token, r.state AS request_state
+                    r.reply_to, r.token, r.channel, r.case_number, r.state AS request_state
                 FROM mail_outbound o JOIN mail_requests r ON r.id = o.request_id
                 WHERE o.id = %s
                 """,

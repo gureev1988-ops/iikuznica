@@ -20,7 +20,8 @@ def openapi_document() -> dict:
         cert_profile = backend.settings.model_copy(update={"public_base_url": "https://example.test"})
         placeholders = dict.fromkeys(("II_JUDGE_LOGIN", "II_JUDGE_PASSWORD", "II_BOT_PASSWORD",
                                       "II_QUALITY_PASSWORD"), "schema-fixture-only")
-        Assembly(cert_profile, credentials=placeholders).mount(app, backend)
+        backend.assembly = Assembly(cert_profile, credentials=placeholders)
+        backend.assembly.mount(app, backend)
         return app.openapi()
     finally:
         backend.close()

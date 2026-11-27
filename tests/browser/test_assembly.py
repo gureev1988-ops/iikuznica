@@ -91,12 +91,6 @@ def answer(page, question, *, new=False):
     return result(page, submit(page, question, new=new))
 
 
-def choose(page, label):
-    with page.expect_response(lambda r: "/conversations/" in r.url and r.request.method == "POST") as event:
-        page.get_by_role("button", name=label).last.click()
-    assert event.value.status == 202, event.value.text()
-    return result(page, event.value.json())
-
 
 def source(page, turn, *, point=None):
     assert turn["result"]["sources"]
@@ -108,41 +102,50 @@ def source(page, turn, *, point=None):
             playwright.expect(page.get_by_role("dialog")).to_be_visible()
             playwright.expect(page.locator("#source-meta")).to_contain_text(str(response.json()["version"]))
             assert ref["quote"] == page.locator("#source-text mark").text_content()
-            page.get_by_role("button", name="Закрыть").click()
+            if ref["kind"] == "document":
+                page.get_by_role("link", name="Открыть регламент целиком").click()
+                playwright.expect(page.locator(".regulation-highlight")).to_contain_text(response.json()["anchor"])
+                playwright.expect(page.locator("#regulation-original")).to_be_visible()
+                page.locator("#regulation-close").click()
+            page.locator("#dion-close-source").click()
             return
     pytest.fail(f"Required clause missing: {point}; outcome: {turn['result']}")
 
 
 def login(page):
     page.get_by_role("button", name="Отдел качества", exact=True).click()
-    if page.get_by_role("button", name="Выйти из почты").count():
-        return
-    env = dict(line.split("=", 1) for line in Path(".env").read_text().splitlines() if "=" in line)
-    page.get_by_role("textbox", name="Логин").fill(env["II_JUDGE_LOGIN"])
-    page.get_by_label("Пароль").fill(env["II_JUDGE_PASSWORD"])
-    page.get_by_role("button", name="Войти в общий ящик").click()
+    if page.locator("#quality-login").get_attribute("aria-label") != "Выйти из режима эксперта":
+        env = dict(line.split("=", 1) for line in Path(".env").read_text().splitlines() if "=" in line)
+        page.get_by_role("button", name="Войти как эксперт").click()
+        page.get_by_role("textbox", name="Логин").fill(env["II_JUDGE_LOGIN"])
+        page.get_by_label("Пароль").fill(env["II_JUDGE_PASSWORD"])
+        page.get_by_role("dialog").get_by_role("button", name="Войти", exact=True).click()
+        playwright.expect(page.get_by_role("button", name="Выйти из режима эксперта")).to_be_visible()
+    page.get_by_role("button", name="Входящие письма", exact=True).click()
     playwright.expect(page.get_by_role("button", name="Обновить входящие")).to_be_visible()
 
 
 def opened_mail(page, snippet):
+    search = page.get_by_role("searchbox", name="Поиск по письмам")
+    search.fill(snippet)
+    mailbox = page.locator(".mail-reader")
     deadline = monotonic() + 40
     while monotonic() < deadline:
-        match = page.locator("details").filter(has_text=snippet).first
-        if match.count():
-            match.locator("summary").click()
-            return match
+        if mailbox.get_by_text(snippet, exact=False).count() and mailbox.get_by_role("button", name="Ответить", exact=True).count():
+            mailbox.get_by_role("button", name="Ответить", exact=True).click()
+            return mailbox
         page.get_by_role("button", name="Обновить входящие").click()
         page.wait_for_timeout(350)
-    pytest.fail("Matching message absent from IMAP inbox")
+    pytest.fail("Matching open thread absent from the mailbox")
 
 
 def reply(page, snippet, text):
     item = opened_mail(page, snippet)
     item.get_by_role("textbox", name="Текст ответа").fill(text)
     with page.expect_response(lambda r: r.url.endswith("/v1/browser/mail/reply") and r.request.method == "POST") as event:
-        item.get_by_role("button", name="Reply").click()
+        item.get_by_role("button", name="Отправить ответ").click()
     assert event.value.status == 202, event.value.text()
-    playwright.expect(item.get_by_text("Ответ отправлен", exact=True)).to_be_visible(timeout=55_000)
+    playwright.expect(page.locator("#quality-status")).to_have_text("Ответ отправлен", timeout=55_000)
     return event.value.json()["command_id"]
 
 
@@ -150,22 +153,35 @@ def request_mail(page, question, *, decline=False):
     turn = answer(page, question, new=True)
     assert turn["result"] is not None and turn["offers"], turn
     if decline:
-        page.get_by_role("button", name="Не отправлять", exact=True).last.click()
-        playwright.expect(page.get_by_role("button", name="Отправить письмо", exact=True)).to_have_count(0)
+        answer(page, "Нет, не отправляй")
         assert not page.request.get(URL + "/v1/browser/correspondence").json()
         turn = answer(page, question, new=True)
         assert turn["offers"], turn
-    page.get_by_role("button", name="Отправить письмо", exact=True).last.click()
+    answer(page, "Да, передай")
     return turn
 
 
 def test_01_direct_citation(guest):
     page = guest()
+    independent = guest()
     turn = answer(page, DIRECT)
     assert turn["result"]["action"] == "answer", turn
     assert re.search(r"координатор", turn["result"]["text"], re.I)
     assert re.search(r"(?:один|1) рабоч", turn["result"]["text"], re.I)
+    playwright.expect(page.locator("#dion-hint-text")).to_contain_text("Откройте процитированный пункт")
     source(page, turn, point="2.7")
+    playwright.expect(page.locator("#dion-hint-text")).to_contain_text("составной вопрос")
+    assert independent.request.get(URL + "/v1/browser/hint").json()["stage"] == "simple"
+    assert independent.request.get(URL + "/v1/browser/last-log").json()["turn_id"] is None
+    assert independent.request.get(URL + "/v1/turns/" + turn["turn_id"]).status in (403, 404)
+    vote = page.get_by_role("button", name="Помогло", exact=True).last
+    vote.click()
+    playwright.expect(vote).to_have_attribute("aria-pressed", "true")
+    page.reload()
+    playwright.expect(vote).to_have_attribute("aria-pressed", "true")
+    page.get_by_role("button", name="Логи", exact=True).click()
+    playwright.expect(page.locator("#trace-id")).not_to_have_text("")
+    playwright.expect(page.locator("#events")).to_contain_text("локально")
 
 
 def test_02_clarification_free_change_and_unknown(guest):
@@ -181,7 +197,10 @@ def test_02_clarification_free_change_and_unknown(guest):
     source(page, ib, point="2.7")
     unclear = answer(page, AMBIGUOUS, new=True)
     assert unclear["result"]["action"] == "clarify"
-    unknown = choose(page, "Не знаю")
+    options = unclear["clarifications"][0]["options"]
+    number = next(i for i, option in enumerate(options, 1) if option["text"] == "Не знаю")
+    playwright.expect(page.locator("#dion-messages")).to_contain_text(f"{number}. Не знаю")
+    unknown = answer(page, str(number))
     assert unknown["result"]["action"] == "answer" and len(unknown["result"]["sources"]) >= 2, unknown
 
 
@@ -244,7 +263,7 @@ def test_06_seven_profiles_reverse_replies(guest):
             assert other not in page.locator("#dion-messages").text_content()
         if i < 2:
             assert result(page, data)["offers"]
-            page.get_by_role("button", name="Отправить письмо", exact=True).last.click()
+            answer(page, "Да, передай")
     for judge in pages[5:]:
         login(judge)
     reply(pages[6], tags[1], "Для второго тестового проекта порог составляет 21 процент.")
@@ -252,9 +271,10 @@ def test_06_seven_profiles_reverse_replies(guest):
     for i, text in enumerate(("19 процентов", "21 процент")):
         playwright.expect(pages[i].locator("#dion-messages").get_by_text(text, exact=False)).to_be_visible(timeout=45_000)
         assert ("21 процент" if i == 0 else "19 процентов") not in pages[i].locator("#dion-messages").text_content()
-    pages[5].get_by_role("button", name="Выйти из почты").click()
+    with pages[5].expect_response(lambda r: r.url.endswith("/v1/browser/mail/logout") and r.ok):
+        pages[5].get_by_role("button", name="Выйти из режима эксперта").click()
     assert pages[5].request.get(URL + "/v1/browser/mail/inbox").status == 401
-    pages[5].get_by_role("button", name="Демо DION", exact=True).click()
+    pages[5].get_by_role("button", name="Демо чат DION", exact=True).click()
     open_chat(pages[5])
     playwright.expect(pages[5].locator("#dion-messages")).to_contain_text(tags[5])
 
@@ -313,3 +333,61 @@ def test_09_smtp_failure_and_recovery(guest):
         subprocess.run([*compose, "start", "smtp"], check=True)
     reply(judge, tag, "В этом тестовом проекте порог составляет 22 процента.")
     playwright.expect(employee.locator("#dion-messages").get_by_text("22 процента", exact=False)).to_have_count(1, timeout=45_000)
+
+
+@pytest.mark.parametrize("width", [1440, 390])
+def test_quality_readonly_workspace(guest, width):
+    page = guest()
+    page.set_viewport_size({"width": width, "height": 880})
+    page.get_by_role("button", name="Отдел качества", exact=True).click()
+    playwright.expect(page.get_by_role("heading", name="Разъяснения", exact=True)).to_be_visible()
+    card = page.locator(".faq-row-button").first
+    playwright.expect(card).to_contain_text("Использовано")
+    card.click()
+    page.get_by_role("button", name="Редактировать").click()
+    playwright.expect(page.locator("#expert-dialog")).to_be_visible()
+    page.get_by_role("dialog").get_by_role("button", name="Закрыть").click()
+    page.get_by_role("button", name="Открыть всю переписку").click()
+    playwright.expect(page.locator("#faq-thread-messages li").first).to_be_visible()
+    page.get_by_role("dialog").get_by_role("button", name="Закрыть").click()
+    page.get_by_role("button", name="Входящие письма", exact=True).click()
+    playwright.expect(page.locator(".mail-row").first).to_be_visible()
+    page.locator(".mail-row").first.click()
+    playwright.expect(page.locator(".mail-reader h3")).to_be_visible()
+    if width < 600:
+        page.get_by_role("button", name="К письмам").click()
+    page.get_by_role("searchbox", name="Поиск по письмам").fill(uuid4().hex)
+    playwright.expect(page.get_by_text("Письма не найдены.", exact=True)).to_be_visible()
+    page.get_by_role("button", name="Источники", exact=True).click()
+    page.get_by_text("Регламенты", exact=True).click()
+    playwright.expect(page.locator(".source-regulations li").first).to_be_visible()
+    page.locator(".source-regulations .quality-link").first.click()
+    playwright.expect(page.get_by_role("dialog")).to_be_visible()
+    page.keyboard.press("Escape")
+    page.get_by_role("button", name="Статистика").click()
+    for title in ("Востребованные регламенты", "Проблемные пункты", "Повторяющиеся вопросы без ответа", "Оценки ответов"):
+        playwright.expect(page.get_by_role("heading", name=title)).to_be_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+
+def test_dion_draft_guide_and_ime(guest):
+    page = guest()
+    draft = page.get_by_role("textbox", name="Сообщение")
+    playwright.expect(page.locator("#dion-messages article")).to_have_count(0)
+    page.get_by_role("button", name="Логи", exact=True).click()
+    playwright.expect(page.locator("#trace-status")).to_contain_text("первого вопроса")
+    page.keyboard.press("Escape")
+    page.get_by_role("button", name="Применить", exact=True).click()
+    example = draft.input_value()
+    assert example
+    draft.press("End")
+    draft.press("Shift+Enter")
+    draft.dispatch_event("keydown", {"key": "Enter", "isComposing": True})
+    playwright.expect(draft).to_have_value(example + "\n")
+    page.get_by_role("button", name="Тех.раздел", exact=True).click()
+    playwright.expect(page.locator(".tech-block")).to_have_count(6)
+    page.get_by_role("link", name="Модели и ресурсы").click()
+    playwright.expect(page.locator("#tech-models")).to_be_in_viewport()
+    page.get_by_role("button", name="Демо чат DION", exact=True).click()
+    playwright.expect(draft).to_have_value(example + "\n")
+    playwright.expect(page.locator("#dion-messages article")).to_have_count(0)

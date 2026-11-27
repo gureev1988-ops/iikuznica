@@ -11,6 +11,7 @@ from backend.contracts.engine import EngineUnavailable, ModelAttemptFailure, Mod
 from backend.runtime.jobs import PermanentJobFailure
 from eval.decider.policy import GEMMA, MODEL as DECIDER
 from eval.search_core.core import QWEN, model_settings
+from .pricing import charge
 from .transport import UpstreamFailure, complete, decide
 
 PROVIDERS = {GEMMA: "deepinfra/fp8", QWEN: "alibaba"}
@@ -47,9 +48,9 @@ class ModelCalls:
                 snapshot = error.row or {}
                 self.observe(stage, model, provider, snapshot, "failed")
                 raise AssemblyModelFailure(str(error), retryable=error.retryable,
-                                           **self.usage(snapshot, "chat")) from None
+                                           **self.usage(snapshot, "chat", model, provider)) from None
             self.observe(stage, model, provider, row, "succeeded")
-            return ModelAttemptResult(row, **self.usage(row, "chat"))
+            return ModelAttemptResult(row, **self.usage(row, "chat", model, provider))
 
         return self.call(invoke, stage, model, "chat", (primary, reserve))
 
@@ -64,9 +65,9 @@ class ModelCalls:
             reply = result["response"]
             if not decisions_valid(reply.get("answers"), body["questions"]):
                 self.observe("judge", DECIDER, provider, {**reply, "latency_s": result["latency_s"]}, "failed")
-                raise AssemblyModelFailure("Decisions returned a malformed answer", **self.usage(reply, "decisions"))
+                raise AssemblyModelFailure("Decisions returned a malformed answer", **self.usage(reply, "decisions", DECIDER, provider))
             self.observe("judge", DECIDER, provider, {**reply, "latency_s": result["latency_s"]}, "succeeded")
-            return ModelAttemptResult(result, **self.usage(reply, "decisions"))
+            return ModelAttemptResult(result, **self.usage(reply, "decisions", DECIDER, provider))
 
         return self.call(invoke, "judge", DECIDER, "decisions", ("perplexity", "perplexity"))
 
@@ -81,10 +82,16 @@ class ModelCalls:
         )
 
     @staticmethod
-    def usage(row, endpoint):
+    def usage(row, endpoint, requested, tag):
         usage = row.get("usage") or {}
         cost = usage.get("cost")
         provider = row.get("provider")
+        served = row.get("served_model") or row.get("model") or requested
+        if cost is None:
+            if served == DECIDER and served.endswith(":free") and usage:
+                cost = Decimal(0)
+            elif served == requested:
+                cost = charge(served, tag, provider, usage)
         return dict(input_tokens=usage.get("prompt_tokens", usage.get("input_tokens")),
                     output_tokens=usage.get("completion_tokens", usage.get("output_tokens")),
                     cost=Decimal(str(cost)) if cost is not None else None,

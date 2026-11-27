@@ -19,6 +19,7 @@ from backend.contracts.engine import (
     SourceSnapshot,
 )
 from backend.db import append_event, connect, lock_source_catalog
+from .clarifications import QUESTION, UNKNOWN, match_options, numbered, offer_decision
 
 
 @dataclass(frozen=True)
@@ -208,6 +209,11 @@ class DialogueService:
         case_id = body.case_id
         text = body.text.strip() if body.text is not None else ""
         message_sources = None
+        decision = offer_decision(text) if case_id and not body.clarification_id else None
+        offer = conn.execute("SELECT * FROM offers WHERE case_id=%s AND status='open'",
+                             (case_id,)).fetchone() if decision else None
+        if body.clarification_id is None and text.isdecimal():
+            raise DialogueError(422, "question_words_required", message="Напишите вопрос словами.")
         if body.clarification_id is not None:
             case_id, question, text, message_sources = self._resolve_clarification(conn, actor, conversation_id, body, text)
         else:
@@ -223,7 +229,7 @@ class DialogueService:
         elif body.clarification_id is None:
             self._require_case_ready(conn, actor, conversation_id, case_id)
 
-        if body.case_id is not None or body.clarification_id is not None:
+        if not offer and (body.case_id is not None or body.clarification_id is not None):
             closed = conn.execute("""
                 UPDATE offers SET status = 'superseded', updated_at = now()
                 WHERE case_id = %s AND status = 'open' RETURNING *
@@ -251,6 +257,21 @@ class DialogueService:
                 Jsonb(message_sources) if message_sources is not None else None,
             ),
         )
+        if offer:
+            self._decide_offer(conn, actor, offer["id"], offer["version"], decision, consent_in_history=True)
+            mail = conn.execute("SELECT id, case_number FROM mail_requests WHERE offer_id=%s",
+                                (offer["id"],)).fetchone()
+            result = {"action": "answer", "sources": [], "mail_decision": decision, "text": "Письмо не отправлено."}
+            if mail:
+                result.update(mail_request_id=str(mail["id"]), case_number=mail["case_number"],
+                              text=f"Обращение ОК{mail['case_number']} принято для отправки в Отдел качества.")
+            conn.execute("UPDATE turns SET status='completed',result=%s,updated_at=now() WHERE id=%s",
+                         (Jsonb(result), turn["id"]))
+            conn.execute("""INSERT INTO messages(conversation_id,case_id,turn_id,role,text,created_at)
+                            VALUES (%s,%s,%s,'assistant',%s,clock_timestamp())""",
+                         (conversation_id, case_id, turn["id"], result["text"]))
+            _event(conn, turn, "turn.completed", {"status": "completed", "result": result})
+            return _accepted(turn)
         self._enqueue(conn, actor, turn)
         _event(conn, turn, "turn.accepted", {"status": turn["status"], "attempt": turn["attempt"]})
         return _accepted(turn)
@@ -308,25 +329,64 @@ class DialogueService:
         condition_sources = dict(row["condition_sources"])
         key = row["clarification_key"] or f"clarification:{row['id']}"
         message_sources = None
-        if body.option_id is not None:
-            option = next((option for option in row["options"] if option["id"] == body.option_id), None)
+        matches = match_options(text, row["options"]) if text else None
+        additions = {}
+        route = None
+        if (text and not text.isdecimal() and getattr(self.engine, "interpret_choice", None)
+                and not any(text.strip().casefold() == o["text"].casefold() for o in row["options"])
+                and (not matches or len(matches) > 1 or UNKNOWN.search(text) or len(text.split()) > 4)):
+            from backend.contracts.engine import EngineUnavailable
+            try:
+                route, option_id, additions = self.engine.interpret_choice(
+                    row, text, _AttemptRecorder(self.dsn, None, row["turn_id"], row["case_id"]))
+            except EngineUnavailable as exc:
+                raise DialogueError(503, "clarification_interpretation_unavailable",
+                                    message="Не удалось разобрать ответ. Повторите его или отправьте номер.") from exc
+            if route == "new_question":
+                return None, text, text, None
+            if route == "ambiguous":
+                raise DialogueError(422, "clarification_choice_ambiguous",
+                                    message=numbered("Уточните, какой вариант подходит.", row["options"]))
+            if route == "selected":
+                matches = [o for o in row["options"] if o["id"] == option_id]
+            elif route == "unknown":
+                matches = [o for o in row["options"] if o["id"] == "unknown"] or None
+            elif route == "free":
+                matches = None
+        if matches is not None and len(matches) != 1:
+            issue = "invalid" if not matches else "ambiguous"
+            hint = (f"Выберите номер от 1 до {len(row['options'])}." if not matches
+                    else "Подходят несколько вариантов. Уточните выбор.")
+            raise DialogueError(422, f"clarification_choice_{issue}", message=numbered(hint, row["options"]))
+        if matches is None and text and QUESTION.search(text) and text.endswith("?") and not getattr(self.engine, "interpret_choice", None):
+            # Preserve the open list in its original case when the employee changes the subject.
+            return None, text, text, None
+        if body.option_id is not None or matches:
+            selected_id = body.option_id or matches[0]["id"]
+            option = next((option for option in row["options"] if option["id"] == selected_id), None)
             if option is None:
                 raise DialogueError(422, "clarification_option_not_found")
-            text = option["text"]
-            selected = option.get("conditions") or {key: text}
+            text = text or option["text"]
+            selected = option.get("conditions") or {key: option["text"]}
             message_sources = self._result_refs(row["result"])
+            value = option["text"]
             conditions.update(selected)
             condition_sources.update(dict.fromkeys(selected, message_sources))
         else:
-            conditions[key] = text
+            value = "не знаю" if UNKNOWN.search(text) or route == "unknown" else text
+            conditions[key] = value
             condition_sources.pop(key, None)
+        for fact, literal in additions.items():
+            if fact != key:
+                conditions[fact] = literal
+                condition_sources.pop(fact, None)
         conn.execute(
             "UPDATE cases SET conditions = %s, condition_sources = %s, updated_at = now() WHERE id = %s",
             (Jsonb(conditions), Jsonb(condition_sources), row["case_id"]),
         )
         conn.execute(
-            "UPDATE clarifications SET status = 'resolved', updated_at = now() WHERE id = %s",
-            (row["id"],),
+            "UPDATE clarifications SET status = 'resolved', resolved_value=%s, updated_at = now() WHERE id = %s",
+            (value, row["id"]),
         )
         row["status"] = "resolved"
         append_event(
@@ -395,7 +455,7 @@ class DialogueService:
         with conn.transaction():
             return self._decide_offer(conn, actor, offer_id, version, "declined")
 
-    def _decide_offer(self, conn, actor, offer_id, version, decision):
+    def _decide_offer(self, conn, actor, offer_id, version, decision, *, consent_in_history=False):
         _employee(actor)
         lock_source_catalog(conn)
         found = conn.execute("SELECT turn_id FROM offers WHERE id = %s", (offer_id,)).fetchone()
@@ -427,12 +487,18 @@ class DialogueService:
         if decision == "confirmed":
             from backend.mailfaq import MailError, create_request
 
+            if not consent_in_history:
+                conn.execute("""INSERT INTO messages(conversation_id,case_id,turn_id,role,text,created_at)
+                                VALUES (%s,%s,%s,'user',%s,clock_timestamp())""",
+                             (turn["conversation_id"], turn["case_id"], turn["id"], "Подтверждаю отправку обращения."))
+            history = self.history(conn, actor, turn["conversation_id"])["messages"]
             try:
                 create_request(
                     conn, self.mail_config, offer_id=offer_id,
                     conversation_id=turn["conversation_id"], case_id=turn["case_id"], turn_id=turn["id"],
                     actor_id=actor.id, actor_email=actor.email, channel=turn["request"].get("channel", actor.channel),
                     question=offer["payload"].get("question", turn["question"]), conditions=offer["payload"]["conditions"],
+                    dialogue=history, result=turn["result"],
                 )
             except MailError as exc:
                 raise DialogueError(exc.status, exc.code) from exc
@@ -502,7 +568,10 @@ class DialogueService:
                     WHERE c.id = %s AND c.case_id = %s AND c.status = 'resolved'
                     """, (turn["id"], clarification_id, turn["case_id"])).fetchone()
                 if resolved:
-                    clarification = dict(value=resolved["text"], prompt=resolved["prompt"],
+                    selected = match_options(resolved["text"], resolved["options"])
+                    value = resolved["resolved_value"] or (
+                        selected[0]["text"] if selected and len(selected) == 1 else resolved["text"])
+                    clarification = dict(value=value, original=resolved["text"], prompt=resolved["prompt"],
                                          key=resolved["clarification_key"],
                                          choices=tuple(o["text"] for o in resolved["options"] if o["id"] != "unknown"))
             count = conn.execute("SELECT count(*) AS n FROM clarifications WHERE case_id = %s AND status = 'resolved'",
@@ -657,6 +726,7 @@ class DialogueService:
                 """,
                 (turn["id"], turn["case_id"], public["text"], Jsonb(options), result.clarification_key),
             ).fetchone()
+            public["text"] = numbered(public["text"], options)
         target = public.get("offer_question") or result.escalation_question
         if public["action"] == "escalate" or (public["action"] == "answer" and target and
                                              any(ref["kind"] == "document" for ref in public["sources"])):
@@ -666,15 +736,8 @@ class DialogueService:
                 (turn["id"], turn["case_id"], public["text"], Jsonb({"conditions": conditions, "question": target})),
             ).fetchone()
         if actor.channel == "guest":
-            if offer is not None:
-                conn.execute("INSERT INTO assembly_gaps VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-                             (turn["id"], target, Jsonb(conditions)))
-            for ref in public["sources"]:
-                if ref["kind"] == "faq":
-                    conn.execute("""
-                        INSERT INTO assembly_faq_uses
-                        SELECT %s, id FROM faq_entries WHERE current_fragment_id = %s ON CONFLICT DO NOTHING
-                        """, (turn["id"], ref["fragment_id"]))
+            from backend.assembly.statistics import record_facts
+            record_facts(conn, turn, public, conditions, target if offer is not None else None)
         conn.execute(
             "UPDATE turns SET status = 'completed', result = %s, updated_at = now() WHERE id = %s",
             (Jsonb(public), turn["id"]),
@@ -770,7 +833,7 @@ class DialogueService:
 
     @staticmethod
     def _public_result(result: dict) -> dict:
-        return {key: result[key] for key in ("action", "text", "sources", "notice", "parts") if key in result}
+        return {key: result[key] for key in ("action", "text", "sources", "notice", "parts", "mail_request_id", "case_number") if key in result}
 
     def _actions(self, conn, actor, conversation_id, *, only_open: bool = False):
         statement = """
@@ -849,6 +912,7 @@ class DialogueService:
             if not self._result_visible(conn, actor, result):
                 result = None
             turns.append(self._turn_view(turn, cursor, self._public_result(result) if result else None, actions, followups))
+        numbered_turns = {row["turn_id"]: row for row in actions["clarifications"] if row["options"]}
         visible_messages = []
         for row in conn.execute(
             """
@@ -864,6 +928,9 @@ class DialogueService:
             if self._message_visible(conn, actor, row, results.get(row["turn_id"])):
                 row.pop("dispatch_attempt_id")
                 row.pop("condition_sources")
+                clarification = numbered_turns.get(row["turn_id"])
+                if row["role"] == "assistant" and clarification and row["text"] == clarification["prompt"]:
+                    row["text"] = numbered(row["text"], clarification["options"])
                 visible_messages.append(row)
         return {
             "conversation_id": conversation_id, "cursor": cursor, "messages": visible_messages,
