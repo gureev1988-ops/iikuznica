@@ -166,12 +166,13 @@
     <section class="dion-chat" aria-labelledby="dion-chat-title">
       <header class="dion-head"><span class="chat-avatar" aria-hidden="true">РБ</span><div>
         <h2 id="dion-chat-title" tabindex="-1">Регламент бот</h2><small>Бот</small>
-      </div><button id="new-topic" type="button" class="dion-close">Новая тема</button></header>
+      </div><button id="new-topic" type="button" disabled class="dion-close">Новая тема</button></header>
       <div class="dion-scroll" id="dion-scroll">
         <div class="dion-messages" id="dion-messages" role="log" aria-live="polite"></div>
       </div>
       <div class="dion-composer">
-        <p class="dion-waiting" id="chat-status" role="status"></p>
+        <p class="dion-waiting" id="chat-status" role="status">Загружаем историю чата…</p>
+        <button type="button" id="retry-chat" class="dion-close" hidden>Повторить загрузку</button>
         <button class="dion-close dion-logs-toggle" id="show-logs" type="button" aria-expanded="false" aria-controls="trace">
           <svg class="icon" aria-hidden="true"><use href="#i-logs"></use></svg>Логи
         </button>
@@ -183,8 +184,8 @@
           <button class="dion-close" id="dion-hint-apply" type="button">Применить</button>
           <button class="dion-close" id="dion-hint-inbox" type="button" hidden>Открыть входящие</button>
         </section>
-        <form id="compose" class="dion-compose" aria-label="Новое сообщение в DION">
-          <textarea id="message" rows="1" aria-label="Сообщение" placeholder="Напиши сообщение" maxlength="16000" required></textarea>
+        <form id="compose" aria-busy="true" class="dion-compose" aria-label="Новое сообщение в DION">
+          <textarea id="message" disabled rows="1" aria-label="Сообщение" placeholder="Напиши сообщение" maxlength="16000" required></textarea>
           <button type="submit" class="dion-send" id="dion-send" disabled>Отправить</button>
         </form>
       </div>

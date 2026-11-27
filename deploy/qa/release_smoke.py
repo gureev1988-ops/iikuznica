@@ -188,7 +188,7 @@ def run_browser_tests(base, full):
     test_file = "tests/browser/test_assembly.py"
     checks = ["test_quality_readonly_workspace", "test_dion_draft_guide_and_ime"]
     if full:
-        checks.append("test_02_clarification_free_change_and_unknown")
+        checks.extend(["test_02_clarification_free_change_and_unknown", "test_first_send_waits_for_session_and_history"])
     env = os.environ.copy()
     env["II_BROWSER_URL"] = base
     env.pop("II_BROWSER_LOCAL_CA", None)
@@ -270,13 +270,23 @@ def main():
     shared_screens(guests)
     if args.roundtrip:
         private_roundtrip(guests[6])
+    failures = []
+    checks = []
     if args.browser:
-        run_browser_tests(base, args.answers)
+        checks.append(("browser", lambda: run_browser_tests(base, args.answers)))
     if args.answers:
-        live_answers(guests)
+        checks.append(("live answers", lambda: live_answers(guests)))
     if args.mail:
-        live_mail(*guests[3:6])
+        checks.append(("mail round trip", lambda: live_mail(*guests[3:6])))
+    for label, verify in checks:
+        try:
+            verify()
+        except (CheckFailure, HTTPError, URLError, subprocess.CalledProcessError) as error:
+            record(check=label, passed=False, error=str(error))
+            failures.append(label)
     exact_revision(guests[0], args.sha, 0)
+    if failures:
+        raise CheckFailure("Failed release checks: " + ", ".join(failures))
     record(check="finished", sha=args.sha, time_utc=datetime.now(timezone.utc).isoformat(),
            browser=args.browser, public_roundtrip=args.roundtrip, live_answers=args.answers, mail=args.mail)
 

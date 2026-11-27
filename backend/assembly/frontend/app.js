@@ -16,6 +16,7 @@ const button = (label, action) => {
 };
 
 let conversation;
+let chatReady = false;
 let activeCase;
 let history;
 let mailStates = [];
@@ -92,6 +93,7 @@ const guide = chatTools({
   api, openCitation: (ref) => reader.openSource(ref, {fromChat: true}),
   openInbox: (threadId) => activate("quality", {threadId}),
   applyDraft: (hint) => {
+    if (!chatReady) return;
     $("message").value = hint.example;
     saveDraft();
     const continuation = ["answer", "consent"].includes(hint.stage);
@@ -321,7 +323,7 @@ async function refresh() {
 }
 
 function scheduleRefresh() {
-  if (refreshTimer != null) return;
+  if (!chatReady || refreshTimer != null) return;
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
     refresh().catch(() => {});
@@ -385,7 +387,7 @@ $("compose").onsubmit = (event) => {
   event.preventDefault();
   const text = $("message").value.trim();
   if (!text) return;
-  if (!history || $("dion-send").disabled) return;
+  if (!chatReady || $("dion-send").disabled) return;
   const submittedKey = draftKey();
   const applied = JSON.parse(sessionStorage.getItem("hint:" + submittedKey) || "null");
   // Applying a hint only fills the composer. Select the target when the user sends it.
@@ -410,9 +412,9 @@ $("compose").onsubmit = (event) => {
   });
 };
 $("message").onkeydown = (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229 && !$("compose").querySelector("button").disabled) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
-    $("compose").requestSubmit();
+    if (chatReady && !$("dion-send").disabled) $("compose").requestSubmit();
   }
 };
 $("new-topic").onclick = () => selectCase(null);
@@ -432,7 +434,7 @@ function activate(nextView, options) {
   $("product-header").dataset.theme = nextView;
   if (nextView !== "dion") guide.setLogs(false);
   if (nextView === "quality") quality?.open(options);
-  if (nextView === "dion" && conversation) {
+  if (nextView === "dion" && chatReady) {
     scheduleRefresh();
     guide.loadHint();
     loadRatings();
@@ -453,34 +455,51 @@ function techAnchor() {
 window.addEventListener("hashchange", techAnchor);
 techAnchor();
 
-try {
-  const session = await api("/v1/browser/session", {});
-  conversation = session.conversation_id;
-  if (session.standard_demo_login) {
-    $("expert-access-note").textContent = "Учебный доступ · логин admin, пароль admin.";
-  }
-  quality = initQuality({
-    api, openSource: reader.openSource, openRegulation: reader.openRegulation, expert: session.mail,
-    onRoleChange: () => { if (view === "dion") scheduleRefresh(); },
-  });
-  if (view === "quality") quality.open();
-  activeCase = localStorage.getItem("case:" + conversation);
-  $("message").value = sessionStorage.getItem(draftKey()) || "";
-  await refresh();
-  watch();
-  reader.readDocument();
-  // Polling recovers an expired SSE cursor and asynchronous mail delivery.
-  setInterval(scheduleRefresh, 3000);
-  const pending = JSON.parse(sessionStorage.getItem("pending:" + conversation) || "null");
-  if (pending) {
-    await send(pending.fields);
-    if ($("message").value.trim() === pending.fields.text) {
-      $("message").value = "";
-      saveDraft();
+async function openChat() {
+  $("retry-chat").hidden = true;
+  status("Загружаем историю чата…");
+  try {
+    if (!conversation) {
+      const session = await api("/v1/browser/session", {});
+      conversation = session.conversation_id;
+      if (session.standard_demo_login) {
+        $("expert-access-note").textContent = "Учебный доступ · логин admin, пароль admin.";
+      }
+      quality = initQuality({
+        api, openSource: reader.openSource, openRegulation: reader.openRegulation, expert: session.mail,
+        onRoleChange: () => { if (view === "dion") scheduleRefresh(); },
+      });
+      if (view === "quality") quality.open();
+      activeCase = localStorage.getItem("case:" + conversation);
+      $("message").value = sessionStorage.getItem(draftKey()) || "";
     }
+    await refresh();
+    const pending = JSON.parse(sessionStorage.getItem("pending:" + conversation) || "null");
+    if (pending) {
+      const previousDraft = draftKey();
+      await send(pending.fields);
+      if ($("message").value.trim() === pending.fields.text) {
+        $("message").value = "";
+        sessionStorage.removeItem(previousDraft);
+        sessionStorage.removeItem("hint:" + previousDraft);
+        saveDraft();
+      }
+    }
+    chatReady = true;
+    $("message").disabled = false;
+    $("dion-send").disabled = false;
+    $("new-topic").disabled = false;
+    $("compose").setAttribute("aria-busy", "false");
+    status("");
+    updateSearchStatus();
+    watch();
+    reader.readDocument();
+    // Polling recovers an expired SSE cursor and asynchronous mail delivery.
+    setInterval(scheduleRefresh, 3000);
+  } catch {
+    status("Не удалось открыть чат. Повторите загрузку.");
+    $("retry-chat").hidden = false;
   }
-  $("dion-send").disabled = false;
-} catch (error) {
-  chatNotice(error.message);
-  if (history) $("dion-send").disabled = false;
 }
+$("retry-chat").onclick = openChat;
+openChat();

@@ -435,3 +435,55 @@ def test_dion_guided_examples_create_separate_cases(guest):
     assert continuation["result"]["action"] == "answer" and continuation["result"]["sources"]
     # The server skips mail examples that the shared FAQ can already answer.
     assert page.request.get(URL + "/v1/browser/hint").json()["stage"] in {"gap", "done"}
+
+
+def test_first_send_waits_for_session_and_history(guest):
+    page = guest()
+    message = page.get_by_role("textbox", name="Сообщение")
+    send = page.get_by_role("button", name="Отправить", exact=True)
+    text = "В какой срок в Дирекции ИБ назначают РП при инициации?"
+    playwright.expect(send).to_be_enabled()
+    message.fill(text)
+    held = {}
+    commands = []
+
+    def pause_history_or_send(route):
+        if route.request.method == "POST":
+            commands.append(route.request.post_data_json)
+            held["send"] = route
+        elif "history" not in held:
+            held["history"] = route
+        else:
+            route.continue_()
+
+    page.route("**/v1/browser/session", lambda route: held.update(session=route))
+    page.route("**/v1/conversations/*/messages", pause_history_or_send)
+    with page.expect_request(lambda req: req.url.endswith("/v1/browser/session")):
+        page.reload(wait_until="commit")
+    playwright.expect(message).to_be_disabled()
+    playwright.expect(send).to_be_disabled()
+    page.keyboard.press("Enter")
+    with page.expect_request(lambda req: req.url.endswith("/messages") and req.method == "GET"):
+        held["session"].continue_()
+    playwright.expect(message).to_be_disabled()
+    playwright.expect(send).to_be_disabled()
+    playwright.expect(message).to_have_value(text)
+    page.keyboard.press("Enter")
+    assert not commands
+    held["history"].continue_()
+    playwright.expect(message).to_be_editable()
+    playwright.expect(send).to_be_enabled()
+    playwright.expect(message).to_have_value(text)
+    with page.expect_request(lambda req: req.url.endswith("/messages") and req.method == "POST"):
+        message.press("Enter")
+    # Key repeat while admission is pending must neither add a newline nor enqueue a second command.
+    message.press("Enter")
+    playwright.expect(message).to_have_value(text)
+    assert len(commands) == 1
+    with page.expect_response(lambda res: res.url.endswith("/messages") and res.request.method == "POST") as sent:
+        held["send"].continue_()
+    assert sent.value.status == 202
+    playwright.expect(message).to_have_value("")
+    conversation = sent.value.json()["conversation_id"]
+    rows = page.request.get(URL + f"/v1/conversations/{conversation}/messages").json()["messages"]
+    assert [row["client_message_id"] for row in rows if row["role"] == "user"] == [commands[0]["client_message_id"]]
