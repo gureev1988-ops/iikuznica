@@ -181,9 +181,11 @@ class StateTests(unittest.TestCase):
         user = "Кто назначает РП в ДБРЦТ?"
         known = dict(user=user, resolved=user, assistant="РП назначает директор.", action="answer")
         question = "А в Дирекции ИБ?"
+        overlapping = "ДБРЦТ. Кто назначает РП в Технической дирекции?"
         cases = (
             (question, [known, dict(known, user="Кто подписывает договор?", resolved="Кто подписывает договор?")]),
             (question, [dict(known, user="А кто именно?")]),
+            (question, [dict(known, user=overlapping, resolved=overlapping)]),
             (question, [dict(known, action="clarify")]),
             (question, [dict(known, user="Кто назначает РП на инициации?", resolved="Кто назначает РП на инициации?")]),
             (question, [dict(known, user="Передай вопрос в Отдел качества", resolved="Передай вопрос в Отдел качества")]),

@@ -74,6 +74,7 @@ def _directorate_followup(question, past):
     prior = past[-1]
     user = prior["user"].strip()
     if (prior["action"] != "answer" or not user.endswith("?")
+            or len(procedures.directories(user) - {"PRE"}) > 1
             or procedures.normalized(user) != procedures.normalized(prior["resolved"])):
         return None
     topic = PRIOR_DIRECTORATE_PREFIX.sub("", user[:-1].strip())
