@@ -1,0 +1,246 @@
+{
+  "candidate_turns": 132,
+  "total_turns": 264,
+  "warm_or_reused": true,
+  "suites": {
+    "working42": {
+      "turns_per_arm": 42,
+      "changed_visible": 0,
+      "arms": {
+        "a1": {
+          "counts": {
+            "escalate": 5,
+            "answer": 31,
+            "clarify": 5,
+            "out_of_scope": 1
+          },
+          "calls": 100,
+          "known_cost_usd": 0.0511654,
+          "missing_costs": 0,
+          "wall_seconds": {
+            "p50": 2.608,
+            "p95": 10.703
+          },
+          "model_seconds": {
+            "p50": 0.667,
+            "p95": 4.999
+          },
+          "stages": {
+            "evidence-core": 40,
+            "judge": 40,
+            "dialogue-state": 20
+          },
+          "events": {},
+          "candidate_errors": 0
+        },
+        "a1-f1b-auto": {
+          "counts": {
+            "escalate": 5,
+            "answer": 31,
+            "clarify": 5,
+            "out_of_scope": 1
+          },
+          "calls": 100,
+          "known_cost_usd": 0.0511654,
+          "missing_costs": 0,
+          "wall_seconds": {
+            "p50": 0.049,
+            "p95": 0.088
+          },
+          "model_seconds": {
+            "p50": 0.667,
+            "p95": 4.999
+          },
+          "stages": {
+            "evidence-core": 40,
+            "judge": 40,
+            "dialogue-state": 20
+          },
+          "events": {},
+          "candidate_errors": 0
+        }
+      }
+    },
+    "working50": {
+      "turns_per_arm": 50,
+      "changed_visible": 0,
+      "arms": {
+        "a1": {
+          "counts": {
+            "clarify": 5,
+            "answer": 40,
+            "escalate": 3,
+            "out_of_scope": 2
+          },
+          "calls": 82,
+          "known_cost_usd": 0.010836714,
+          "missing_costs": 0,
+          "wall_seconds": {
+            "p50": 0.925,
+            "p95": 1.975
+          },
+          "model_seconds": {
+            "p50": 0.342,
+            "p95": 1.486
+          },
+          "stages": {
+            "evidence-core": 41,
+            "judge": 41
+          },
+          "events": {},
+          "candidate_errors": 0
+        },
+        "a1-f1b-auto": {
+          "counts": {
+            "clarify": 5,
+            "answer": 40,
+            "escalate": 3,
+            "out_of_scope": 2
+          },
+          "calls": 87,
+          "known_cost_usd": 0.011337424,
+          "missing_costs": 0,
+          "wall_seconds": {
+            "p50": 0.049,
+            "p95": 0.057
+          },
+          "model_seconds": {
+            "p50": 0.423,
+            "p95": 1.486
+          },
+          "stages": {
+            "evidence-core": 43,
+            "judge": 43,
+            "F1b-choice": 1
+          },
+          "events": {
+            "F1b-auto-proposals": 1,
+            "F1b-auto-executed": 1
+          },
+          "candidate_errors": 0
+        }
+      }
+    },
+    "blind20": {
+      "turns_per_arm": 20,
+      "changed_visible": 1,
+      "arms": {
+        "a1": {
+          "counts": {
+            "answer": 17,
+            "clarify": 1,
+            "escalate": 2
+          },
+          "calls": 60,
+          "known_cost_usd": 0.029942571,
+          "missing_costs": 0,
+          "wall_seconds": {
+            "p50": 7.853,
+            "p95": 11.548
+          },
+          "model_seconds": {
+            "p50": 0.863,
+            "p95": 5.597
+          },
+          "stages": {
+            "dialogue-state": 20,
+            "evidence-core": 20,
+            "judge": 20
+          },
+          "events": {},
+          "candidate_errors": 0
+        },
+        "a1-f1b-auto": {
+          "counts": {
+            "answer": 18,
+            "clarify": 1,
+            "escalate": 1
+          },
+          "calls": 69,
+          "known_cost_usd": 0.032639991,
+          "missing_costs": 0,
+          "wall_seconds": {
+            "p50": 0.049,
+            "p95": 0.493
+          },
+          "model_seconds": {
+            "p50": 0.863,
+            "p95": 5.597
+          },
+          "stages": {
+            "dialogue-state": 22,
+            "evidence-core": 22,
+            "judge": 22,
+            "F1b-choice": 3
+          },
+          "events": {
+            "F1b-auto-proposals": 3,
+            "F1b-no-split": 2,
+            "F1b-auto-executed": 1
+          },
+          "candidate_errors": 0
+        }
+      }
+    },
+    "final-control20": {
+      "turns_per_arm": 20,
+      "changed_visible": 1,
+      "arms": {
+        "a1": {
+          "counts": {
+            "answer": 17,
+            "escalate": 2,
+            "clarify": 1
+          },
+          "calls": 51,
+          "known_cost_usd": 0.012379317,
+          "missing_costs": 0,
+          "wall_seconds": {
+            "p50": 4.208,
+            "p95": 9.162
+          },
+          "model_seconds": {
+            "p50": 0.619,
+            "p95": 3.47
+          },
+          "stages": {
+            "evidence-core": 24,
+            "judge": 24,
+            "dialogue-state": 3
+          },
+          "events": {},
+          "candidate_errors": 0
+        },
+        "a1-f1b-auto": {
+          "counts": {
+            "answer": 18,
+            "clarify": 1,
+            "escalate": 1
+          },
+          "calls": 56,
+          "known_cost_usd": 0.013107709,
+          "missing_costs": 0,
+          "wall_seconds": {
+            "p50": 0.05,
+            "p95": 0.107
+          },
+          "model_seconds": {
+            "p50": 0.525,
+            "p95": 3.47
+          },
+          "stages": {
+            "evidence-core": 26,
+            "judge": 26,
+            "F1b-choice": 1,
+            "dialogue-state": 3
+          },
+          "events": {
+            "F1b-auto-proposals": 1,
+            "F1b-auto-executed": 1
+          },
+          "candidate_errors": 0
+        }
+      }
+    }
+  }
+}
