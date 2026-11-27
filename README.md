@@ -8,6 +8,8 @@
 
 [План пилота, сроки и ответственные](docs/pilot-softline.md) · [ТЗ первого экрана «Тех.раздела»](docs/design/softline-pilot-section.md)
 
+[Финальный круг доработок](docs/design/final-refinements.md)
+
 ## Запуск
 
 Для публичного стенда доступен [автодеплой из main на VPS](docs/backend/vps-deploy.md).
