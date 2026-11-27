@@ -15,7 +15,7 @@ from eval.search_core import core
 from registry import compile_records
 
 from . import faq_scope
-from .demo_project import asks_about_demo_project, display_text, renamed_faq
+from .demo_project import asks_about_demo_project, display_text, legacy_faq_tag
 from .fast_answers import DIRECTORATE_OPTIONS, VerifiedAnswer, VerifiedAnswers, faq_candidate, potential_faq
 from .models import GEMMA, LATENCY_LOG, QWEN, ModelCalls, json_reply
 from .local_steps import record, record_steps
@@ -501,7 +501,7 @@ class A1Engine:
             answer = fragments[row["current_fragment_id"]].text
             original = row["original_question"]
             employee = row["employee_question"]
-            if demo_project and renamed_faq(row["question_key"], answer, original, employee):
+            if demo_project and legacy_faq_tag(row["question_key"], answer, original, employee):
                 # Compare the renamed example in the same form the employee sees.
                 # Retain the original fragment for validating the eventual citation.
                 row["question_key"] = display_text(row["question_key"])

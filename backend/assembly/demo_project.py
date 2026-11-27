@@ -38,24 +38,47 @@ CANONICAL_ANSWER = re.compile(
 )
 
 
-def renamed_faq(question, answer, *originals):
+def legacy_faq_tag(question, answer, *originals):
     """Match a sample even when its visible name was used in a later reply or card edit."""
     questions = [text.strip(" .!?").casefold() for text in (*originals, question) if text]
     legacy = next((match for text in questions if (match := QUESTION.fullmatch(text))), None)
     if not legacy:
-        return False
+        return None
     # Each representation must identify this particular old example or its published
     # replacement. Two old case tags never become interchangeable by sharing a prefix.
     allowed = {legacy[0], display_text(legacy[0]).casefold(), CANONICAL_QUESTION.casefold()}
     if any(text not in allowed for text in questions):
-        return False
+        return None
     answer = answer.strip(" .!?")
     reply = ANSWER.fullmatch(answer)
-    if reply:
-        return legacy["tag"] == reply["tag"].casefold()
-    return CANONICAL_ANSWER.fullmatch(answer) is not None
+    if (reply and legacy["tag"] == reply["tag"].casefold()) or CANONICAL_ANSWER.fullmatch(answer):
+        return legacy["tag"]
+    return None
 
 
 def asks_about_demo_project(question, conditions):
     return any(re.search(r"(?<![\w-])iishka(?![\w-])", str(value), re.I)
                for value in (question, *conditions.values()))
+
+
+def display_case_text(text, tag):
+    """A confirmed example may also be mentioned in free-form expert or judge prose."""
+    if not text or not tag:
+        return text
+    token = rf"(?<![\w-]){re.escape(tag)}(?![\w-])"
+    text = re.sub(rf"\bучебного проекта {token}", f"проекта {PROJECT}", text, flags=re.I)
+    return re.sub(token, PROJECT, text, flags=re.I)
+
+
+def display_report_text(text):
+    """Old reports store one question, verdict and answer per block, followed by source quotes."""
+    blocks = []
+    for block in text.split("\n\n"):
+        lines = block.split("\n")
+        if len(lines) >= 3 and lines[2].startswith("Разъяснение: "):
+            answer = lines[2].removeprefix("Разъяснение: ")
+            tag = legacy_faq_tag(lines[0], answer)
+            if tag:
+                lines[:3] = [display_case_text(line, tag) for line in lines[:3]]
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)

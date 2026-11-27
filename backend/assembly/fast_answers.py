@@ -10,7 +10,7 @@ from uuid import uuid5
 
 from backend.contracts.engine import Action, AnswerResult, Citation, ClarificationOption
 from backend.db import connect
-from .demo_project import asks_about_demo_project, display_text, renamed_faq
+from .demo_project import asks_about_demo_project, display_text, legacy_faq_tag
 from .faq_scope import answer_entities, compatible_ids
 from eval.retrieval.extract import TITLES
 from eval.scope.procedures import clarify, directories, normalized
@@ -390,7 +390,7 @@ def faq_candidate(row, question_scope, normalized_question, conditions):
 
 
 def faq_identity_matches(key, answer, question, conditions, original=None):
-    if asks_about_demo_project(question, conditions) and renamed_faq(key, answer, original):
+    if asks_about_demo_project(question, conditions) and legacy_faq_tag(key, answer, original):
         key, answer = display_text(key), display_text(answer)
     return compatible_ids(key + "\n" + answer_entities(answer), question, conditions)
 

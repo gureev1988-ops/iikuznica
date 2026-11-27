@@ -6,7 +6,7 @@ import pytest
 
 from backend.assembly import quality, quality_seed
 from backend.assembly.corpus import seed
-from backend.assembly.demo_project import display_example, display_text, renamed_faq
+from backend.assembly.demo_project import display_example, display_report_text, display_text, legacy_faq_tag
 from backend.assembly.engine import A1Engine
 from backend.assembly.fast_answers import potential_faq
 from backend.contracts.engine import AnswerResult, SourceSnapshot
@@ -24,9 +24,9 @@ NAME = "«Тестовый проект iishka»"
 def test_display_only_known_training_phrases(tag):
     question = OLD_QUESTION.format(tag)
     answer = OLD_ANSWER.format(tag)
-    assert renamed_faq(question, answer)
-    assert not renamed_faq(question, OLD_ANSWER.format("JURY-101"))
-    assert not renamed_faq(question, answer.replace("18 процентов", "20 процентов"))
+    assert legacy_faq_tag(question, answer)
+    assert not legacy_faq_tag(question, OLD_ANSWER.format("JURY-101"))
+    assert not legacy_faq_tag(question, answer.replace("18 процентов", "20 процентов"))
     assert display_text(f"{question}\n\n{answer}.").count(NAME) == 2
     assert display_text("Кто руководит проектом JURY-7842?") == "Кто руководит проектом JURY-7842?"
     assert display_text(answer.replace(tag, "JURY-7842-А")) == answer.replace(tag, "JURY-7842-А")
@@ -45,14 +45,36 @@ def test_existing_scoped_faq_mail_and_citation(dsn, tmp_path, monkeypatch):
     seed(dsn, tmp_path)
     quality_seed.seed_quality(dsn, tmp_path)
     requested = f"Какой минимальный процент маржинальности требуется на пресейле ИБ для проекта {NAME}?"
+    reason = (f"В предоставленных документах отсутствует информация о конкретном процентном значении "
+              f"минимальной маржинальности для проекта {tag} или любого другого проекта.")
+    unrelated = "В другой проверке указан JURY-9119."
     with connect(dsn) as conn:
         (row,) = conn.execute(quality.CARD_SELECT, quality.SCOPE).fetchall()
+        conn.execute("""INSERT INTO assembly_quality_checks(faq_id,faq_revision_id,outcome,catalog,reason)
+            VALUES (%s,%s,'no_source',%s,%s)""",
+            (row["id"], row["current_revision_id"], quality.catalog(conn), reason + " " + unrelated))
+        row = quality.get_card(conn, row["id"])
         card = quality.serialize(conn, row)
         assert NAME in card["question"] and NAME in card["answer"]
         assert NAME in card["history"][0]["answer"]
+        assert card["evidence"]["reason"] == reason.replace(tag, NAME) + " " + unrelated
+        assert quality.serialize(conn, row, public=False)["evidence"]["reason"] == reason + " " + unrelated
+        # This stored preview boundary falls inside the old token.
+        conn.execute("""UPDATE mail_outbound SET body=%s, created_at=now()+interval '1 hour'""",
+                     ("А" * 144 + " " + tag + " · " + unrelated,))
         (thread,) = quality.read_threads(conn, quality.thread_rows(conn))
-        assert NAME in thread["preview"]
+        assert thread["preview"] == thread["messages"][-1]["text"][:150]
+        assert "QA-" not in thread["preview"] and unrelated in thread["messages"][-1]["text"]
         assert all(NAME in letter["text"] and tag not in letter["text"] for letter in thread["messages"])
+        other_block = f"Другой вопрос\nДействует. {unrelated} {tag}\nРазъяснение: чужой ответ"
+        quote = f"Название регламента, п. 4: {answer}."
+        old_report = f"{question}\nДействует. {reason} {unrelated}\nРазъяснение: {answer}\n{quote}\n\n{other_block}"
+        report_text = display_report_text(old_report)
+        assert reason.replace(tag, NAME) in report_text and unrelated in report_text
+        assert report_text.endswith(quote + "\n\n" + other_block)
+        report = quality.run_checks(conn, uuid4())
+        assert reason.replace(tag, NAME) in report["text"] and unrelated in report["text"]
+        assert quality.get_card(conn, row["id"])["reason"] == reason + " " + unrelated
         (fragment,) = list_fragments(conn, "guest", kind="faq")
         assert fragment.text == answer
         assert potential_faq(conn, requested, {}, (fragment,))
@@ -111,5 +133,5 @@ def test_new_name_in_an_old_correspondence(dsn, tmp_path, monkeypatch, saved_edi
     assert find(requested).citations[0].quote == fragment.text
     assert find(requested.replace(NAME, "JURY-1999")) is None
     assert find(requested.replace(NAME, "iishka-west")) is None
-    assert not renamed_faq(display_text(question), reply.replace("18 процентов", "22 процента"), question)
-    assert not renamed_faq(display_text(question), reply, question, question.replace(tag, "JURY-1234"))
+    assert not legacy_faq_tag(display_text(question), reply.replace("18 процентов", "22 процента"), question)
+    assert not legacy_faq_tag(display_text(question), reply, question, question.replace(tag, "JURY-1234"))
