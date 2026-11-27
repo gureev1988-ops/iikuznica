@@ -9,7 +9,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE.parent / "retrieval"))
 from extract import TITLES, clauses
-from run_12x3 import SEARCH_MODELS, fingerprint, load_dataset, make_request
+from openrouter import SEARCH_MODELS, fingerprint, make_request
 
 GEMMA = SEARCH_MODELS[0]
 MODEL = "perplexity/pplx-decider-flash-v1.3:free"
@@ -64,23 +64,6 @@ def draft(text):
             or not isinstance(obj.get("sources"), list)):
         raise ValueError("Invalid Gemma draft")
     return {k: obj[k] for k in ("action", "message", "sources")}
-
-
-def inputs():
-    base = HERE.parent / "rerank"
-    cases = rows(base / "contexts35.jsonl")
-    attempts = [r for r in rows(base / "results/attempts.jsonl") if r["model"] == GEMMA and r["ok"]]
-    by_id = {r["id"]: r for r in attempts}
-    ranks = {r["id"]: r["pool"] for r in rows(base / "rankings.jsonl")}
-    if len(cases) != 35 or len(attempts) != 35 or {c["id"] for c in cases} != set(by_id) or set(by_id) != set(ranks):
-        raise ValueError("Expected 35 paired questions and completed Gemma answers")
-    # Only the common historical system instruction enters this integrity check.
-    system = load_dataset(HERE.parent / "iikuznitsa_run12/IIkuznitsa_Run_12x3.py")["system"]
-    for case in cases:
-        row = by_id[case["id"]]
-        if fingerprint(make_request(case, GEMMA, system)) != row["request_hash"]:
-            raise ValueError("Stored Gemma draft used different sources or settings")
-    return cases, by_id, ranks
 
 
 def reference(p):

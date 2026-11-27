@@ -35,13 +35,22 @@
         text: approval.verifiedText || query.answer, version: query.version, role: 'primary', kind: 'faq'
       });
     }
-    const status = byExpert ? 'Ответ службы качества' : byRule ? 'Ответ по регламенту' : 'Требуется разъяснение';
+    const ruleLines = sources.flatMap((source, index) =>
+      source.role === 'discrepancy' ? [source.text + ' [' + (index + 1) + ']'] : []);
+    const offerQualityRequest = Boolean(byExpert && discrepancy && ruleLines.length);
+    const text = offerQualityRequest ? [
+      'Действующий регламент\n' + ruleLines.join('\n'),
+      'Разъяснение отдела качества\n' + query.answer + ' [1]',
+      'Отправить письмо в отдел качества, чтобы уточнить, какое правило применять?'
+    ].join('\n\n') : query.answer;
+    const status = offerQualityRequest ? 'Расхождение источников' :
+      byExpert ? 'Ответ службы качества' : byRule ? 'Ответ по регламенту' : 'Требуется разъяснение';
     const traceBasis = discrepancy
       ? 'Подтверждённое разъяснение эксперта применимо к вопросу. Расхождение с вики зафиксировано.'
       : byExpert ? 'Подтверждённое разъяснение эксперта относится к условиям вопроса.'
       : byRule ? 'Ответ содержится в опубликованной редакции Confluence.' : 'Для этой ситуации требуется уточнение.';
     return {
-      question: query.question, text: query.answer, sources, status, traceBasis, discrepancy,
+      question: query.question, text, sources, status, traceBasis, discrepancy, offerQualityRequest,
       context: 'Демоданные · снимок Confluence ' + query.currentRevision,
       pending: !byExpert && !byRule, demoRevision: query.currentRevision === 'v2',
       note: discrepancy ? discrepancy.note : '', label: titles[query.id] || query.question

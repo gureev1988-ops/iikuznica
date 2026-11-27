@@ -171,8 +171,8 @@
       const record = faqs.get(id);
       return record.status === 'withdrawn' ? null : record.approval;
     }
-    function withdrawKey(templateId, record, discrepancy) {
-      return record.status === 'published' && discrepancy
+    function withdrawKey(templateId, record) {
+      return record.status === 'published' && record.approval
         ? [session, templateId, record.approval.mailId, revision].join(':') : null;
     }
     function mailView(template) {
@@ -211,7 +211,7 @@
           const {refs, discrepancy} = evaluation(facts, scope, revision);
           return { id: template.id, question: template.question, status, answer, version, reason, refs, mailId: approval?.mailId || null,
             approval: approval && { ...approval }, discrepancy: status === 'published' ? discrepancy : null,
-            withdrawToken: withdrawKey(template.id, faqs.get(template.id), discrepancy) };
+            withdrawToken: withdrawKey(template.id, faqs.get(template.id)) };
         }),
         mails: inbox.map(mailView), log: log.map(line => ({ ...line }))
       };
@@ -312,8 +312,7 @@
     function withdrawFaq(id, expectedToken) {
       const record = faqs.get(id);
       if (!record || record.status !== 'published' || !expectedToken) return state();
-      const {discrepancy} = evaluation(record.facts, scope, revision);
-      if (withdrawKey(id, record, discrepancy) !== expectedToken) return state();
+      if (withdrawKey(id, record) !== expectedToken) return state();
       record.status = 'withdrawn';
       withdrawals.add(record.approval.mailId);
       record.reason = 'Служба качества явно отозвала разъяснение. Письмо и решение сохранены в истории.';
