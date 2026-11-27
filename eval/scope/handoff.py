@@ -48,12 +48,19 @@ def requested_fields(question):
     return ("handoff",)
 
 
+def _returned_keys(search, question):
+    if hasattr(search, "lexical_pool"):
+        # Assembly selects every reranked seed from this same authorized pool.
+        return {(r["doc"], r["ref"]) for r in search.lexical_pool(question)}
+    seeds, pool = search(question)
+    return {tuple(k) for k in seeds} | {(r["doc"], r["ref"]) for r in pool}
+
+
 def verified_parts(question, search, corpus, faq, faq_scope, *, norms=None):
     fields = requested_fields(question)
     if not fields:
         return None
-    seeds, pool = search(question)
-    returned = {tuple(s) for s in seeds} | {(r["doc"], r["ref"]) for r in pool}
+    returned = _returned_keys(search, question)
     p = corpus.get(HANDOFF)
     if not p or HANDOFF not in returned or SOURCE_LINE not in [re.sub(r"^[a-zа-я][.)]\s*", "", s.strip()) for s in p["text"].splitlines()]:
         return None
@@ -73,9 +80,7 @@ def verified_parts(question, search, corpus, faq, faq_scope, *, norms=None):
     official = faq.lookup(TRANSFER_QUESTION, faq_scope) if faq else None
     if not official:
         # A time limit from a different directorate, party or stage cannot establish this deadline.
-        seeds, pool = search(TRANSFER_QUESTION)
-        keys = {tuple(k) for k in seeds} | {(r["doc"], r["ref"]) for r in pool}
-        for key in keys:
+        for key in _returned_keys(search, TRANSFER_QUESTION):
             row = corpus[key]
             if row["doc"] not in {"IB", "PRE"}:
                 continue

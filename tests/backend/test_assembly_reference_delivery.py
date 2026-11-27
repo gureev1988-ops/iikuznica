@@ -79,3 +79,28 @@ def test_reference_wording_and_exact_catalog_identity():
     for name in ("Положение о проектировании", "Инструкция №12 от 05.03", "Положение «Тарифы»"):
         assert catalog_matches(name, catalog) == []
     assert catalog_matches("Инструкцией №05 от 12.03", catalog) == ["two"]
+
+
+def test_reference_search_ranks_only_when_the_seed_can_change_the_origins():
+    from backend.assembly.references import _candidate_origins
+
+    pool = [dict(doc="D", ref=str(i), text="Основной пункт.") for i in range(10)]
+    corpus = {(p["doc"], p["ref"]): p for p in pool}
+    calls = []
+
+    def lookup(question):
+        calls.append(question)
+        return [("D", "9")], pool
+
+    lookup.lexical_pool = lambda _: pool
+    assert _candidate_origins("q", lookup, corpus, set()) == {}
+    pool[0]["text"] = "Срок установлен инструкцией о поставке."
+    assert _candidate_origins("q", lookup, corpus, set()) == {("D", "0"): pool[0]}
+    assert not calls
+
+    pool[0]["text"], pool[9]["text"] = pool[9]["text"], pool[0]["text"]
+    assert _candidate_origins("q", lookup, corpus, set()) == {("D", "9"): pool[9]}
+    assert calls == ["q"]
+    # A cited origin is guaranteed even outside the lexical top eight.
+    assert _candidate_origins("q", lookup, corpus, {("D", "9")}) == {("D", "9"): pool[9]}
+    assert calls == ["q"]

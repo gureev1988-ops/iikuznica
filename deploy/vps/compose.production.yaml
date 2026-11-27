@@ -9,6 +9,8 @@ services:
     restart: unless-stopped
   interactive:
     restart: unless-stopped
+    environment:
+      II_MINILM_INTRA_THREADS: ${II_MINILM_INTRA_THREADS:-2}
   background:
     restart: unless-stopped
   https:

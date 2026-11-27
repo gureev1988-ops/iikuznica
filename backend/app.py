@@ -120,7 +120,7 @@ class Backend:
     def document_health_name(self):
         return "documents:hackathon" if self.settings.hackathon else "documents"
 
-    def run_job(self, queue):
+    def run_job(self, queue, *, on_claim=None):
         source_keys = None
         if queue == "interactive":
             handlers = {"answer_turn": self.dialog.answer_job}
@@ -142,7 +142,7 @@ class Backend:
             limit = self.settings.background_concurrency
             source_keys = self.document_source_keys(enabled_only=True)
         return run_once(self.dsn, queue, handlers, max_running=limit, terminal_handlers=terminal,
-                        active_kinds=handlers.keys(), document_source_keys=source_keys)
+                        active_kinds=handlers.keys(), document_source_keys=source_keys, on_claim=on_claim)
 
     def document_source_keys(self, *, enabled_only=False):
         connections = self.documents.connections

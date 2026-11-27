@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import time
@@ -74,7 +75,10 @@ def load_model(model_dir):
     tokenizer.no_padding()
     tokenizer.enable_truncation(max_length=512, strategy="only_second")
     options = ort.SessionOptions()
-    options.intra_op_num_threads = 4
+    threads = int(os.environ.get("II_MINILM_INTRA_THREADS", "4"))
+    if threads < 1:
+        raise ValueError("II_MINILM_INTRA_THREADS must be a positive integer")
+    options.intra_op_num_threads = threads
     options.inter_op_num_threads = 1
     session = ort.InferenceSession(str(weights), options, providers=["CPUExecutionProvider"])
     return session, tokenizer

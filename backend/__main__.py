@@ -2,14 +2,16 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import make_msgid
 import logging
 import os
+from pathlib import Path
 import signal
-from threading import Event
+from threading import Event, Lock
 
 from backend.config import Settings
 
@@ -27,7 +29,7 @@ def worker(backend, queue, once):
         signal.signal(sig, lambda *_args: stop.set())
     workers = (backend.settings.interactive_concurrency if queue == "interactive"
                else backend.settings.background_concurrency)
-    tasks = [(queue, lambda: backend.run_job(queue), backend.settings.poll_interval)] * workers
+    tasks = [(queue, lambda **options: backend.run_job(queue, **options), backend.settings.poll_interval)] * workers
     if queue == "interactive" and backend.settings.profile == "assembly" and not backend.model_profile.is_local:
         from backend.assembly.pricing import refresh
         tasks.append(("model-pricing", refresh, 900))
@@ -35,17 +37,28 @@ def worker(backend, queue, once):
         tasks.extend((name, operation, backend.settings.integration_poll_interval)
                      for name, operation in backend.polling().items())
 
+    claim_lock = Lock()
+
     def loop(name, operation, interval):
         while not stop.is_set():
-            try:
-                busy = operation()
-            except Exception as error:
-                # Avoid recording message contents, upstream payloads or credentials.
-                logging.error("%s iteration failed (%s)", name, type(error).__name__)
-                stop.wait(max(1, interval))
-            else:
-                if not busy:
-                    stop.wait(interval)
+            with ExitStack() as poll:
+                try:
+                    if name == "interactive":
+                        # One idle poller runs recovery and claim. A committed claim
+                        # releases the next poller before this thread runs the handler.
+                        poll.enter_context(claim_lock)
+                        if stop.is_set():
+                            return
+                        busy = operation(on_claim=poll.close)
+                    else:
+                        busy = operation()
+                except Exception as error:
+                    # Avoid recording message contents, upstream payloads or credentials.
+                    logging.error("%s iteration failed (%s)", name, type(error).__name__)
+                    stop.wait(max(1, interval))
+                else:
+                    if not busy:
+                        stop.wait(interval)
 
     with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
         futures = [executor.submit(loop, *task) for task in tasks]
@@ -116,7 +129,6 @@ def main():
         from backend.assembly.corpus import seed
         from backend.assembly.quality_seed import seed_quality
         from backend.assembly.search import load_model
-        from pathlib import Path
 
         profile = load_model_profile()
         migrate(settings.dsn)
@@ -148,7 +160,17 @@ def main():
             if args.mode == "interactive" and settings.profile == "assembly":
                 if not services.model_profile.is_local and not os.getenv("OPENROUTER_API_KEY"):
                     raise SystemExit("OPENROUTER_API_KEY is required for the assembly worker")
-                _ = services.engine.search.model
+                session, _ = services.engine.search.model
+                try:
+                    quota = Path("/sys/fs/cgroup/cpu.max").read_text(encoding="ascii").strip()
+                except OSError:
+                    quota = "unknown"
+                try:
+                    affinity = len(os.sched_getaffinity(0))
+                except (AttributeError, OSError):
+                    affinity = None
+                latency.info("stage=interactive_start cgroup_v2_cpu_max=%r affinity_cpus=%s onnx_intra_threads=%s",
+                             quota, affinity, session.get_session_options().intra_op_num_threads)
             worker(services, args.mode, args.once)
         else:
             simulator_command(services, args)

@@ -22,6 +22,8 @@ install -D -m 700 /opt/iikuznica/repo/deploy/vps/check-main.sh /opt/iikuznica/bi
 
 ## Автоматическое обновление
 
+На VPS обработчик диалогов использует два потока ONNX на оператор MiniLM. Это значение можно изменить через `II_MINILM_INTRA_THREADS` в `shared/production.env`. Сам контейнер может использовать все доступные ему ядра при параллельной обработке. В журнале `interactive` строка `stage=interactive_start` показывает применённое число потоков, доступные по affinity ядра и квоту cgroup v2.
+
 Установите таймер и сервис на VPS. В примере пользователь деплоя называется `iikdeploy`.
 
 ```sh
