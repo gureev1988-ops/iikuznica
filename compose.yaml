@@ -1,6 +1,6 @@
 name: iikuznica
 x-app: &app
-  image: iikuznica-assembly:local
+  image: ${II_APP_IMAGE:-iikuznica-assembly:local}
   build:
     context: .
     dockerfile: backend/Dockerfile
@@ -36,6 +36,7 @@ services:
     volumes: [db:/var/lib/postgresql/data]
     networks: [app]
   imap:
+    image: ${II_IMAP_IMAGE:-iikuznica-imap:local}
     build: deploy/mail
     environment:
       II_BOT_PASSWORD: ${II_BOT_PASSWORD:?Run deploy/init-env.sh}

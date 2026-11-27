@@ -1,0 +1,4 @@
+{$II_CADDY_ADDRESS} {
+    header X-IIKuznica-Revision {$II_RELEASE_SHA}
+    reverse_proxy api:8000
+}
