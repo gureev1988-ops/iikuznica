@@ -1,101 +1,6 @@
-# Запуск бэкенда ИИкузницы
+# Внешние документы, DION и почта
 
-## Демонстрация на хакатоне
-
-Адаптеры Confluence, DION и корпоративной почты подготовлены. В профиле `hackathon` приложение читает регламенты из локального корпуса, сохраняет переписку в почтовом имитаторе и показывает ответы в личной ленте HTTP/SSE. Сетевой бот DION выключен. Движок отвечает по синтетическим сценариям. Для демонстрации нужны Python 3.12 и отдельная локальная база PostgreSQL 16 для учебных данных.
-
-Регламенты демо доступны на чтение всем сотрудникам. Управляет разъяснениями один администратор службы качества. Корпоративному адресу `quality@softline.ru` в имитаторе соответствует `quality@softline.test`. Исходную переписку видит служба качества, а личную ленту — её владелец.
-
-Из корня репозитория подготовьте окружение и каталог участников.
-
-```sh
-python -m venv .ii-local/venv
-. .ii-local/venv/bin/activate
-pip install -r requirements-backend.txt
-docker run -d --name ii-postgres -p 127.0.0.1:5448:5432 \
-  -e POSTGRES_DB=iikuznica -e POSTGRES_PASSWORD=dev_only postgres:16-alpine
-export DATABASE_URL=postgresql://postgres:dev_only@127.0.0.1:5448/iikuznica
-export II_CONFIG="$PWD/.ii-local/identities.json"
-python - <<'PY'
-from hashlib import sha256
-from pathlib import Path
-import json, os, secrets
-p = Path(os.environ["II_CONFIG"])
-users = []
-for id, roles in (("employee1", ["employee"]), ("employee2", ["employee"]), ("quality", ["employee", "quality"]), ("ops", ["ops"])):
-    token = secrets.token_urlsafe(32)
-    email = "quality@softline.test" if id == "quality" else f"{id}@example.test"
-    users.append(dict(id=id, roles=roles, email=email, bearer_sha256=sha256(token.encode()).hexdigest()))
-    print(id, token)
-with p.open("x") as out:
-    json.dump(dict(profile="hackathon", identities=users, engine="fixture-alpha", integrations={"batch": []}), out)
-PY
-python -m backend migrate
-```
-
-Запустите в отдельных процессах с теми же переменными окружения.
-
-```sh
-python -m backend api
-python -m backend interactive
-python -m backend background
-```
-
-На пустом корпусе отправьте вопрос от первого сотрудника. В примере команды обращаются только к API на localhost. Введите токен `employee1`, напечатанный при подготовке каталога.
-
-```sh
-read -rs -p 'Токен employee1: ' employee_token
-chat_id=$(python -c 'import uuid; print(uuid.uuid4())')
-api=http://127.0.0.1:8000/v1
-curl -fsS -H "Authorization: Bearer $employee_token" -H 'Content-Type: application/json' \
-  -d '{"client_message_id":"example-1","text":"Сколько дней рассматривают заявку?"}' \
-  "$api/conversations/$chat_id/messages"
-```
-
-После обработки прочитайте снимок ленты. В `turns[].offers[]` найдите открытое предложение и его версию. Подтвердите отправку от имени того же сотрудника.
-
-```sh
-curl -fsS -H "Authorization: Bearer $employee_token" "$api/conversations/$chat_id/messages"
-read -r -p 'ID предложения: ' offer_id
-read -r -p 'Версия: ' offer_version
-curl -fsS -H "Authorization: Bearer $employee_token" -H 'Content-Type: application/json' \
-  -d "{\"version\":$offer_version}" "$api/offers/$offer_id/confirm"
-```
-
-Фоновый воркер положит письмо в локальный ящик. Введите токен участника `quality`, чтобы прочитать это письмо и ответить от имени администратора.
-
-```sh
-read -rs -p 'Токен quality: ' II_QUALITY_TOKEN
-export II_QUALITY_TOKEN
-python -m backend mail-list
-python -m backend mail-reply '<Message-ID из списка>' 'Заявку рассматривают в течение 2 дней.'
-```
-
-Когда фоновый воркер обработает письмо, в исходной ленте появится ответ администратора. Задайте тот же вопрос от второго сотрудника в новом чате.
-
-```sh
-curl -fsS -H "Authorization: Bearer $employee_token" "$api/conversations/$chat_id/messages"
-read -rs -p 'Токен employee2: ' second_token
-second_chat=$(python -c 'import uuid; print(uuid.uuid4())')
-curl -fsS -H "Authorization: Bearer $second_token" -H 'Content-Type: application/json' \
-  -d '{"client_message_id":"example-2","text":"Сколько дней рассматривают заявку?"}' \
-  "$api/conversations/$second_chat/messages"
-curl -fsS -H "Authorization: Bearer $second_token" "$api/conversations/$second_chat/messages"
-```
-
-Выполните последний запрос ещё раз, если ход пока в очереди. В готовом ответе `turns[].result.sources[0].kind` равно `faq`, а `url` ведёт к опубликованному фрагменту. В почтовом имитаторе остаётся одно исходящее письмо. Имитатор хранит письма между перезапусками в `.ii-local/mail.sqlite`. Переменная `II_LOCAL_MAILBOX` задаёт другой путь. Для тестов проверяемых ссылок и переключения движков команда `python -m backend seed-fixtures --version 1` загружает синтетические документы. Второй движок выбирается значением `engine: fixture-beta` в конфигурации.
-
-Встречный вопрос администратора продолжает ту же цепочку. Команда в ответном письме `Отзыв: вопрос снят` снимает обращение с очереди. Для уже опубликованного FAQ администратору также доступны операции замены и отзыва в API качества.
-
-## Справка по подготовленным адаптерам
-
-Сетевые параметры относятся к отдельному профилю `integrated`. При показе хакатона оставьте `profile` равным `hackathon`.
-
-- **Идентификация.** Локальный каталог хранит SHA-256 непрозрачных случайных bearer-токенов и роли employee, quality, ops. Поле dion_id связывает сотрудника с UUID пользователя корпоративного DION. Параметр enabled отключает доступ. После изменения файла перезапустите API и воркеры. Сырые письма и служебные операции доступны по разным ролям. Через обратный прокси используйте HTTPS.
-- **Почта.** MAIL_MODE принимает simulator, network или disabled. Для network задаются MAIL_SENDER, MAIL_RECIPIENT, MAIL_REPLY_TO, MAIL_TRUSTED_SENDERS, MAIL_AUTHSERV_ID, MAIL_SMTP_HOST/PORT/USER/PASSWORD, MAIL_IMAP_HOST/PORT/USER/PASSWORD и MAIL_MAILBOX. Получатель и единственный доверенный отправитель в профиле `integrated` — `quality@softline.ru`. SMTP использует STARTTLS или MAIL_SMTP_SSL=true, IMAP использует TLS. Входной шлюз должен удалять чужие Authentication-Results со своим идентификатором и подтверждать конкретный ящик. Включение MAIL_TRUST_GATEWAY_MAILBOX_POLICY предполагает, что шлюз проверяет право отправителя выступать от имени этого адреса.
-- **Документы.** Старые `integrations.confluence` и `integrations.batch` сохраняют ключи `confluence` и `batch` и запускаются вручную. Настройка новых выгрузок и проверка импорта описаны в [инструкции оператора](#как-подключить-ещё-один-источник).
-- **DION.** integrations.dion содержит base_url, email и password технического бота. public_base_url задаёт адрес для ссылок. Фоновый воркер обслуживает long polling и исходящие попытки. Контрактные тесты используют имитатор. Проверки с имитатором покрывают асинхронные квитанции, истечение токена и курсор.
-- **Модель.** В демонстрации используются детерминированные имитаторы. Для реальных моделей предусмотрен API OpenRouter. В репозитории хранятся код, контракты и синтетические фикстуры. Встроенные fixture-alpha и fixture-beta реализуют AnswerEngine v1. При подключении поискового ядра оно передаёт каждый физический сетевой вызов, включая судью и повтор, через request.attempts.call с ролью вызова. Обвязка связывает попытку с ходом и trace_id. ModelAttemptResult и ModelAttemptFailure передают фактический маршрут, количество токенов и доступную стоимость. Журнал и агрегаты доступны по /v1/ops/model-calls и /v1/ops/model-costs.
+Публичный стенд загружает четыре регламента из [корпуса](../../corpus). Эта инструкция предназначена для оператора, который подключает к отдельному экземпляру бэкенда документы, корпоративный DION или почту. [Запуск демостенда](../../README.md) · [Проверки сборки](assembly-run.md)
 
 ## Как подключить ещё один источник
 
@@ -127,11 +32,13 @@ curl -fsS -H "Authorization: Bearer $second_token" "$api/conversations/$second_c
 
 - Сохраняйте `id` при переименовании. При изменении заголовка, текста или `source_url` повышайте `revision` документа и `snapshot_revision` каталога. При добавлении или исключении документа также повышайте `snapshot_revision`. Для возврата к прежнему содержимому выпускайте новые версии. Порядок записей и полей можно менять без повышения версии.
 - Указывайте `count` равным длине `documents`. Схема принимает ровно показанные поля, целые положительные номера и абсолютные HTTPS-ссылки. Лимиты — 500 документов, 2 МиБ после распаковки и 2048 байт UTF-8 на `id` для индексов PostgreSQL. Запросу отведено 10 секунд. Ссылки служат для атрибуции и хранятся в редакции.
-- Штатная проверка источника читает весь файл. Импорт дополнительно сверяет выпуск и версии документов с PostgreSQL, включая историю исключённых записей. После проверки запуск закрепляет снимок за своим `run_id`. Обычное индексирование публикует редакции и фрагменты как `document`. После сбоя очередь дочитывает закреплённый снимок. По успешному завершению в базе остаются номер и контрольная сумма выпуска, редакции и фрагменты.
+- Проверка читает файл целиком. Импорт также сверяет версии с PostgreSQL и закрепляет выпуск за `run_id`. При повторе после сбоя воркер продолжает работать с тем же снимком.
 
 ### Настройка и первая проверка
 
-Используйте `integrated` с отдельными конфигурацией и PostgreSQL. Добавьте блок `integrations.document_sources` в файл `II_CONFIG`, сохранив действующих пользователей и остальные настройки. Выберите постоянный уникальный ключ для этого корпуса. Для второго каталога добавьте соседнюю запись с собственными ключом, адресом и переменной токена. Ключ `synthetic-v1` и ключ `batch` зарезервированы. Занятый ключ прежнего подключения сохраняется за этим подключением. Для другого набора данных создавайте новый ключ.
+Для подключения к системе заказчика подготовьте PostgreSQL 16 и профиль `integrated`. Задайте `DATABASE_URL` и путь к локальному JSON в `II_CONFIG`. У учётных записей в массиве `identities` должны быть `id`, массив `roles` и `bearer_sha256` с SHA-256 соответствующего случайного токена. Для проверки понадобятся роли `ops` и `employee`.
+
+Добавьте блок `integrations.document_sources` в файл `II_CONFIG`, сохранив действующих пользователей и остальные настройки. Выберите постоянный уникальный ключ для этого корпуса. Для второго каталога добавьте соседнюю запись с собственными ключом, адресом и переменной токена. Ключ `synthetic-v1` и ключ `batch` зарезервированы. Занятый ключ прежнего подключения сохраняется за этим подключением. Для другого набора данных создавайте новый ключ.
 
 ```json
 {
@@ -155,15 +62,20 @@ curl -fsS -H "Authorization: Bearer $second_token" "$api/conversations/$second_c
 
 Выдайте токен только на чтение и задайте его в `II_INSTRUCTIONS_READ_TOKEN` в окружении API и фонового воркера. Удалите поле `bearer_token_env`, если согласованный адрес доступен анонимно внутри контура. Значение токена передавайте через окружение. Для именованного `confluence` перенесите настройки из `integrations.confluence` в `settings`, включая `base_url`, `spaces` и необходимые учётные данные. Для именованного `batch` передайте старый массив страниц в `settings.pages`.
 
-Из корня репозитория примените миграции. Запустите API и `background` в отдельных процессах с одинаковым конфигом и окружением. Если процессы уже работают, перезапустите их.
+В Python 3.12 установите зависимости из корня репозитория и примените миграции. Затем запустите API и фоновый воркер в двух терминалах с одной конфигурацией и переменными окружения.
 
 ```sh
+python -m pip install -r requirements-backend.txt
 python -m backend migrate
+
+# Первый терминал
 python -m backend api
+
+# Второй терминал
 python -m backend background
 ```
 
-Задайте `API_BASE` без суффикса `/v1`. В `OPS_TOKEN` передайте токен учётной записи с ролью `ops`.
+Для показанного локального запуска задайте `API_BASE=http://127.0.0.1:8000`. В `OPS_TOKEN` передайте токен учётной записи с ролью `ops`.
 
 ```sh
 curl -fsS -H "Authorization: Bearer $OPS_TOKEN" "$API_BASE/v1/ops/documents/connections"
@@ -211,42 +123,19 @@ curl -fsS -H "Authorization: Bearer $EMPLOYEE_TOKEN" \
 
 Если у прикладной системы нет экспорта v1, владелец может разместить преобразователь на своей стороне. Согласуйте область чтения, устойчивое соответствие ID, версии изменений и ссылки на оригиналы. Для другого протокола реализуйте `DocumentSource.list_pages` и `probe`, зарегистрируйте фабрику адаптера и добавьте проверку связи. В приёмке проверьте повторный импорт, изменение, отзыв и открытие контрольной ссылки от имени сотрудника.
 
-Автоматическая приёмка использует PostgreSQL и синтетические HTTP-ответы. На стороне заказчика отдельно проверьте HTTPS и токен из контуров API и воркера, общедоступность согласованного набора документов, ссылки на оригиналы под ролью сотрудника, монотонность реальной выгрузки и два полных цикла с расписанием. При выборе Confluence проверьте также права на пространства и чтение страниц. В `hackathon` остаются локальный корпус и прежний ручной `batch`.
+Автоматическая приёмка использует PostgreSQL и синтетические HTTP-ответы. На стороне заказчика отдельно проверьте HTTPS и токен из контуров API и воркера, общедоступность согласованного набора документов, ссылки на оригиналы под ролью сотрудника, монотонность реальной выгрузки и два полных цикла с расписанием. При выборе Confluence проверьте также права на пространства и чтение страниц.
 
-## Проверка и восстановление
+## Корпоративные DION и почта
 
-```sh
-pip install pytest
-export TEST_DATABASE_URL="$DATABASE_URL"
-python -m pytest tests/acceptance/test_00_quality_loop.py
-env -u II_LOOPBACK_MAIL -u II_LIVE_MODEL python -m pytest -s tests/backend tests/acceptance
-python -m backend.contracts.export --check
-npm ci --prefix contracts
-npm run check --prefix contracts
-```
+Эти адаптеры работают в профиле `integrated`. Передайте API и воркерам одну конфигурацию через `II_CONFIG` и одну `DATABASE_URL`. Для диалога запустите также `python -m backend interactive`. Воркер `python -m backend background` получает события DION и обрабатывает почту. [Настройки приложения](../../backend/config.py) · [Подключение адаптеров](../../backend/app.py)
 
-Тест восстановления требует pg_dump и pg_restore версии сервера или новее и права создать временную БД. PostgreSQL-тесты создают собственные схемы. Режим `--once` у каждого воркера служит для воспроизводимого прогона одной итерации. Для штатной резервной копии используйте `pg_dump -Fc` и `pg_restore --exit-on-error` в новую БД. Тест проверяет связь истории с фактически восстановленным текстом и его хешем. Отдельная разработческая проверка реального OpenRouter включается через II_LIVE_MODEL=1 и OPENROUTER_API_KEY. Он использует одну короткую синтетическую реплику на фиксированном маршруте. Проверка локальных TLS-ящиков включается через II_LOOPBACK_MAIL=1 при запущенном стенде GreenMail.
+**DION.** Добавьте в `integrations.dion` поля `base_url` (например, `https://bots-api.dion.vc`), `email` и `password` технического бота. В записи каждого сотрудника в `identities` укажите его UUID в `dion_id`. Поле верхнего уровня `public_base_url` задаёт адрес ссылок на ответ и его источники. Храните JSON с паролем бота вне репозитория. [Клиент DION Bot API](../../backend/dion/client.py)
 
-### Отдельный стенд разработчика для SMTPS и IMAPS
+**Почта.** Задайте `MAIL_MODE=network`, адрес отправителя `MAIL_SENDER`, обратный адрес `MAIL_REPLY_TO` и идентификатор принимающего шлюза `MAIL_AUTHSERV_ID`. Профиль назначает `quality@softline.ru` одновременно получателем (`MAIL_RECIPIENT`) и единственным доверенным отправителем ответов (`MAIL_TRUSTED_SENDERS`). Активной учётной записи эксперта нужны этот email и роль `quality`.
 
-В тесте участвуют бот, ящик качества и сотрудник в копии. GreenMail принимает настоящее SMTP-письмо. Тест читает его из ящиков качества и сотрудника по IMAP, отправляет обычный Reply и читает вернувшееся письмо из INBOX бота. Заголовок проверки отправителя воспроизводит утверждение доверенного шлюза. Адреса и данные синтетические.
+| Подключение | Настройки |
+|---|---|
+| Исходящие письма | `MAIL_SMTP_HOST`, `MAIL_SMTP_PORT` (по умолчанию 587), при авторизации также `MAIL_SMTP_USER` и `MAIL_SMTP_PASSWORD`. По умолчанию клиент использует STARTTLS. Для SMTP с TLS сразу при соединении задайте `MAIL_SMTP_SSL=true` и соответствующий порт. |
+| Ответы эксперта | `MAIL_IMAP_HOST`, `MAIL_IMAP_PORT` (по умолчанию 993), `MAIL_IMAP_USER`, `MAIL_IMAP_PASSWORD`. Клиент подключается по TLS и читает `MAIL_MAILBOX` (по умолчанию `INBOX`). |
 
-Для отдельного локального стенда нужны Docker, keytool и свободные порты 3465/3993. Выполните в одном терминале из корня репозитория после запуска PostgreSQL.
-
-```sh
-stand=$(mktemp -d)
-keytool -genkeypair -alias localhost -keyalg RSA -storetype PKCS12 \
-  -keystore "$stand/loopback.p12" -storepass greenmail -keypass greenmail \
-  -dname "CN=localhost" -ext SAN=DNS:localhost,IP:127.0.0.1 -validity 2
-keytool -exportcert -rfc -alias localhost -keystore "$stand/loopback.p12" \
-  -storepass greenmail -file "$stand/loopback.pem"
-chmod 644 "$stand/loopback.p12"
-mail_container=$(docker run --rm -d -p 127.0.0.1:3465:3465 -p 127.0.0.1:3993:3993 \
-  -v "$stand/loopback.p12:/tmp/gm.p12:ro" \
-  -e 'GREENMAIL_OPTS=-Dgreenmail.setup.test.smtps -Dgreenmail.setup.test.imaps -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=bot:demo@sample.test,quality:demo@sample.test,first:demo@sample.test -Dgreenmail.tls.keystore.file=/tmp/gm.p12 -Dgreenmail.tls.keystore.password=greenmail' \
-  greenmail/standalone:2.1.5)
-SSL_CERT_FILE="$stand/loopback.pem" II_LOOPBACK_MAIL=1 python -m pytest -q tests/acceptance/test_network_mail.py
-docker stop "$mail_container"
-```
-
-Фикстура для веб-клиента содержит фактические HTTP-запросы и ответы синтетического сеанса, снимок открытого согласия и SSE после возобновления с его курсора. Её можно читать без API и базы. [HTTP и SSE v1](../../tests/acceptance/fixtures/web-v1.json) · [Сценарии и версии источников AnswerEngine v1](../../backend/contracts/fixtures/v1.json)
+Принимающий шлюз должен удалять входящие заголовки `Authentication-Results` со своим идентификатором и подтверждать отправителя. Включайте `MAIL_TRUST_GATEWAY_MAILBOX_POLICY` только если шлюз проверяет право отправки от имени конкретного ящика. [Настройки SMTP и IMAP](../../backend/mailfaq/transport.py) · [Проверка отправителя](../../backend/mailfaq/message.py)

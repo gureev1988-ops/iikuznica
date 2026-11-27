@@ -1,57 +1,87 @@
-# Проверка стенда ИИкузницы
+# Проверки сборки
 
-Для пилота сначала проверьте Gemma, Qwen и Decider из контейнера приложения. Команды и порядок отката приведены в [инструкции по внутренним моделям](local-models.md). Ниже описана проверка демостенда.
+Команды выполняются из корня репозитория. Для проверки кода достаточно локальной базы и тестовых данных. Браузерную приёмку и замеры ответов запускают отдельно, на работающем стенде с ключом OpenRouter.
 
-Запускайте браузерное испытание на выделенном экземпляре с отдельными томами и пустым FAQ. Сценарий отказа временно останавливает SMTP на этом экземпляре. Не используйте базу показа.
+## Проверки кода
+
+Для проверок поиска, PostgreSQL и контракта API подготовьте Python-окружение и отдельную тестовую базу по [инструкции разработчика](../../CONTRIBUTING.md). Те же сценарии выполняет [Core checks](../../.github/workflows/core-checks.yml).
+
+Для отдельной проверки сетевого адаптера модели задайте `II_LIVE_MODEL=1` и `OPENROUTER_API_KEY` при запуске [теста OpenRouter](../../tests/acceptance/test_model_network.py).
+
+Для проверки переключения на внутренние Gemma, Qwen и Decider используйте [инструкцию оператора локального профиля](local-models.md).
+
+## Локальный стенд
+
+Поднимите [сборку Compose](../../README.md) в отдельной копии репозитория со своим файлом `.env`, томами и свободным HTTPS-портом. Для изолированного набора томов задайте отдельное имя проекта, например `export COMPOSE_PROJECT_NAME=iikuznica-qa`, до запуска Compose. Браузерный сценарий создаёт тестовые обращения, отвечает на письма и на время останавливает SMTP. Начните со свежих данных этого проекта. Дальнейшие команды предполагают свободный локальный порт 4443 и Python-окружение `.venv` из инструкции разработчика.
 
 ```sh
-python3 -m venv .venv
-.venv/bin/pip install -r requirements-assembly.txt pytest playwright
-.venv/bin/python -m playwright install chromium
+docker compose ps -a
+docker compose exec -T https cat /data/caddy/pki/authorities/local/root.crt > local-ca.pem
+curl --cacert local-ca.pem https://localhost:4443/healthz
 docker compose exec -T interactive python - < deploy/qa/models.py
+
+.venv/bin/python -m pip install playwright
+.venv/bin/python -m playwright install chromium
 II_BROWSER_URL=https://localhost:4443 II_BROWSER_LOCAL_CA=1 \
   II_BROWSER_COMPOSE="docker compose" .venv/bin/python -m pytest -s tests/browser
+
 .venv/bin/python deploy/qa/load.py --ca local-ca.pem --count 1
 .venv/bin/python deploy/qa/load.py --ca local-ca.pem --count 10
 ```
 
-Параметр `II_BROWSER_LOCAL_CA=1` разрешает локальный сертификат только в контексте Playwright. Для стенда с публичным сертификатом пропустите параметр. Браузер и API используют один origin. Команда `/healthz` проверяет PostgreSQL и готовность корпуса. Доступность моделей и почты проверяется отдельными сценариями.
+Успешный `init` завершается с кодом 0. Если сервисы ожидают запуска, посмотрите `docker compose logs init`. В `/healthz` ожидаются `database: ready` и четыре регламента. Скрипт `models.py` проверяет рабочие маршруты моделей. Скрипт `load.py` создаёт новые гостевые сессии и показывает число завершённых ходов, число ответов с источником и задержки p50/p95 для этих ответов. Параметр `II_BROWSER_LOCAL_CA=1` используется только для локального теста Playwright.
 
-В инфраструктуре с собственным CA используйте сборочный секрет `pip_ca` и смонтируйте доверенный CA в контейнеры `init` и `interactive` с `SSL_CERT_FILE`. CA и параметры прокси конкретной площадки не выносятся в образ.
+## Внешний HTTPS в собственном Compose
 
-## Проверки кода
+Для своего домена направьте DNS на узел с Caddy и откройте входящий TCP 443, в том числе для проверки ACME TLS-ALPN. В локальном `.env` замените домен и контактный адрес на свои.
 
-```sh
-python3 eval/registry/registry.py --build
-python3 eval/registry/registry.py --check
-python3 -m unittest discover -s eval/scope
-python3 eval/search_core/check_permission.py
-.venv/bin/python -m backend.contracts.export --check
-npm ci --prefix contracts
-npm run check --prefix contracts
-TEST_DATABASE_URL=postgresql://... .venv/bin/python -m pytest -s tests/backend tests/acceptance
+```dotenv
+II_PUBLIC_URL=https://demo.example.org
+II_CADDY_ADDRESS=demo.example.org
+II_CADDY_TLS="tls ops@example.org"
+II_LISTEN_IP=0.0.0.0
+II_HTTPS_PORT=443
 ```
 
-Для PostgreSQL-тестов у тестового пользователя должно быть право создавать временные схемы и БД. Для восстановления нужны клиентские `pg_dump` и `pg_restore` версии сервера или новее. Контролируемая нагрузка 20/200 в `test_burst.py` использует fixture-engine и PostgreSQL. Она измеряет очередь и восстановление без внешних модельных расходов. Реальные ответы 1/10 измеряет `deploy/qa/load.py`. Фактически обслужившие маршруты и usage берутся из `model_calls` по идентификаторам хода.
-
-## Версии и восстановление
-
-Начальная редакция каждого регламента — 1. При импорте другой редакции подготовьте оригиналы и выполните `python -m backend assembly-init --version N` с общим томом оригиналов. База активирует редакцию только после сохранения фрагментов и postings. Ранее процитированный фрагмент остаётся доступен по своему идентификатору редакции при сохранении прав. Проверенная разметка применяется только при совпадении хеша оригинала.
-
-Сохраните PostgreSQL через `pg_dump -Fc`, а также тома оригиналов и почты. Восстанавливайте в отдельные тома и новую БД через `pg_restore --exit-on-error`. Затем проверьте миграции, исходную историю и открытие той же ссылки. Оригиналы и вес MiniLM проверяются по SHA-256.
-
-Сетевые Confluence и HTTPS/JSON используют именованные подключения и зафиксированный снимок. Формат страниц, авторизация и расписание описаны в [спецификации источников](../architecture/document-sources-v1.md). DION Bot API остаётся отдельным адаптером. Профиль `assembly` обслуживает браузерный «Демо DION».
+Примените настройки командой `docker compose up -d`, затем проверьте `curl -fsS https://demo.example.org/healthz` со своего компьютера. Сертификат и ключ Caddy сохраняет в именованном томе `caddy`. [Конфигурация Compose](../../compose.yaml) · [Настройки Caddy](../../deploy/Caddyfile)
 
 ## После публикации на публичном стенде
 
-Проверка **Published stand smoke** стартует после успешного **Core checks** на актуальном `main`. Автоматический режим отправляет один непрофильный вопрос в новом личном чате, восстанавливает историю и читает общие экраны. Расширенную оценку и почтовый цикл можно запустить вручную из `main`. Она ждёт совпадения полного SHA из заголовка `X-IIKuznica-Revision`, проверяет готовность базы и четырёх регламентов и повторяет проверку SHA в конце. При одновременной публикации другого изменения прогон старой ревизии не засчитывается.
+[Published stand smoke](../../.github/workflows/release-smoke.yml) запускается после успешного Core checks для актуального SHA ветки `main`. Проверка сверяет заголовок `X-IIKuznica-Revision` до и после сценария, состояние корпуса, изоляцию гостевых сессий, открытие оригиналов, общие экраны и историю диалога. Автоматический запуск отправляет один непрофильный вопрос в собственном тестовом чате.
 
-Для запуска с компьютера, который видит публичный HTTPS стенда и имеет Python, pytest, Playwright и Chromium, укажите адрес и SHA прошедшего CI:
+Ручной запуск из Actions добавляет содержательные ответы и проверку цитат. Воспроизвести его можно из проверяемой ревизии с установленными pytest, Playwright и Chromium. Укажите в `RELEASE_SHA` полный SHA прошедшего CI коммита.
 
 ```sh
-python deploy/qa/release_smoke.py --url "$STAND_URL" --sha "$RELEASE_SHA" --wait 1200 --browser --answers
+.venv/bin/python deploy/qa/release_smoke.py --url https://corpdoc.single-tech.ru \
+  --sha "$RELEASE_SHA" --wait 1200 --browser --roundtrip --answers
 ```
 
-Семь свежих гостевых сессий проверяют изоляцию, редакции и оригиналы, публичные карточки, учебную переписку и статистику. Браузерный прогон проходит экраны на широком и узком окне, проверяет ввод и оглавление. Ручной запуск добавляет уточнение в DION и сравнение содержательных ответов с источниками. Независимые запросы из согласованного набора выводят в журнал собственные вопросы и ответы, номера проверенных пунктов и время. Для каждой ссылки программа сравнивает выдержку с текстом сохранённой редакции. Проверки p50/p95 при нагрузке описаны выше.
+Флаг `exercise_mail` в Actions или `--mail` в CLI добавляет одно учебное обращение, ответ эксперта и проверку получившегося FAQ в другой сессии. Для изменённых учётных данных задайте `II_SMOKE_EXPERT_LOGIN` и `II_SMOKE_EXPERT_PASSWORD`. Проверка применяет учебный вход `admin` / `admin` только когда сам стенд сообщает, что он включён.
 
-Для тестовой почты включите `exercise_mail` в Actions или `--mail` при локальном запуске. Для собственного экспертного доступа задайте `II_SMOKE_EXPERT_LOGIN` и `II_SMOKE_EXPERT_PASSWORD`. Если обе переменные пусты и сам стенд сообщает, что стандартный демовход включён, используется учебная пара `admin` / `admin`. Прогон создаёт одно учебное обращение с уникальной меткой, отвечает только в его цепочку и проверяет применение соответствующего FAQ в другой сессии. Другие карточки, письма и регламенты используются для чтения. Результат `mail: false` в конце означает, что сквозная почтовая проверка в этом конкретном запуске отсутствует.
+## Сетевая почта в GreenMail
+
+В тесте участвуют бот, ящик качества и сотрудник в копии. GreenMail принимает настоящее SMTP-письмо. Тест читает его из ящиков качества и сотрудника по IMAP, отправляет обычный Reply и читает вернувшееся письмо из INBOX бота. Заголовок проверки отправителя воспроизводит утверждение доверенного шлюза. Адреса и данные синтетические.
+
+Для отдельного локального стенда нужны Docker, keytool и свободные порты 3465/3993. Выполните в одном терминале из корня репозитория после подготовки тестовой БД и экспорта `TEST_DATABASE_URL`.
+
+```sh
+stand=$(mktemp -d)
+keytool -genkeypair -alias localhost -keyalg RSA -storetype PKCS12 \
+  -keystore "$stand/loopback.p12" -storepass greenmail -keypass greenmail \
+  -dname "CN=localhost" -ext SAN=DNS:localhost,IP:127.0.0.1 -validity 2
+keytool -exportcert -rfc -alias localhost -keystore "$stand/loopback.p12" \
+  -storepass greenmail -file "$stand/loopback.pem"
+chmod 644 "$stand/loopback.p12"
+mail_container=$(docker run --rm -d -p 127.0.0.1:3465:3465 -p 127.0.0.1:3993:3993 \
+  -v "$stand/loopback.p12:/tmp/gm.p12:ro" \
+  -e 'GREENMAIL_OPTS=-Dgreenmail.setup.test.smtps -Dgreenmail.setup.test.imaps -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=bot:demo@sample.test,quality:demo@sample.test,first:demo@sample.test -Dgreenmail.tls.keystore.file=/tmp/gm.p12 -Dgreenmail.tls.keystore.password=greenmail' \
+  greenmail/standalone:2.1.5)
+SSL_CERT_FILE="$stand/loopback.pem" II_LOOPBACK_MAIL=1 .venv/bin/python -m pytest -q tests/acceptance/test_network_mail.py
+docker stop "$mail_container"
+```
+
+## Редакции и резервная копия
+
+Исходная редакция регламентов имеет номер 1. При смене исходников в `corpus/` пересоберите образ с новыми DOCX и запустите `docker compose run --rm init assembly-init --version N`, подставив номер новой редакции. Индексатор публикует её после сохранения фрагментов. Прежние цитаты указывают на свои редакции.
+
+Сохраните PostgreSQL через `pg_dump -Fc`, а также тома оригиналов и почты. Восстанавливайте в отдельные тома и новую БД через `pg_restore --exit-on-error`. Проверьте миграции, историю и открытие прежней цитаты. [Обновление и откат на VPS](vps-deploy.md) · [Подключение внешнего источника](run.md#как-подключить-ещё-один-источник)

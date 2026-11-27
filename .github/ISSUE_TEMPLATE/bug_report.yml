@@ -1,0 +1,22 @@
+name: Сообщить об ошибке
+description: Ошибка в ответе, ссылке на регламент, работе стенда или документации
+body:
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Как повторить
+      description: Укажите экран или файл, шаги и, если ошибка в ответе, текст учебного вопроса.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Что произошло и чего вы ожидали
+      description: Для расхождения с регламентом укажите документ, редакцию и пункт.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Где вы заметили ошибку
+      placeholder: Публичный стенд, браузер или версия локальной сборки
