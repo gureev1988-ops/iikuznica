@@ -68,7 +68,9 @@ jobs:
           fi
           .venv/bin/python deploy/qa/release_smoke.py "${args[@]}"
       - name: Check one synthetic mail round trip
-        if: steps.release.outputs.current == 'true' && github.event_name == 'workflow_dispatch' && inputs.exercise_mail
+        if: >-
+          !cancelled() && steps.release.outputs.current == 'true' &&
+          github.event_name == 'workflow_dispatch' && inputs.exercise_mail
         env:
           II_SMOKE_EXPERT_LOGIN: ${{ secrets.II_SMOKE_EXPERT_LOGIN }}
           II_SMOKE_EXPERT_PASSWORD: ${{ secrets.II_SMOKE_EXPERT_PASSWORD }}
