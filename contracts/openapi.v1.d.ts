@@ -1422,6 +1422,8 @@ export interface components {
              * @enum {string}
              */
             action: "example" | "open" | "inbox" | "none";
+            /** Case Id */
+            case_id?: string | null;
             /**
              * Example
              * @default
@@ -1924,6 +1926,8 @@ export interface components {
         };
         /** QualityCard */
         QualityCard: {
+            /** Additional Conflicts */
+            additional_conflicts: components["schemas"]["QualityEvidence"][];
             /** Answer */
             answer: string;
             /**
@@ -1965,6 +1969,8 @@ export interface components {
         QualityEvidence: {
             /** Anchor */
             anchor: string | null;
+            /** Claim */
+            claim?: string | null;
             /**
              * Outcome
              * @enum {string}

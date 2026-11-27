@@ -10,6 +10,7 @@ from backend.contracts.api import SourceReference
 from backend.db import connect
 from backend.documents import get_fragment
 from backend.assembly.fast_answers import faq_candidate
+from backend.assembly.faq_scope import compatible_ids
 from eval.scope.procedures import directories, normalized
 
 
@@ -23,6 +24,7 @@ class Hint(BaseModel):
     example: str = ""
     action: Literal["example", "open", "inbox", "none"] = "example"
     thread_id: UUID | None = None
+    case_id: UUID | None = None
     source: SourceReference | None = None
 
 
@@ -61,9 +63,9 @@ class LastLog(BaseModel):
 # These questions exercise the same corpus clauses and outcomes as the browser
 # and verified-answer acceptance cases. Private grading questions are kept separate.
 EXAMPLES = {
-    "simple": ("В какой срок в Дирекции ИБ назначают РП при инициации?",
-               "Кто назначает TPS в Дирекции ИБ?"),
-    "compound": ("В какой срок в Дирекции ИБ назначают РП при инициации? Кто назначает TPS в Дирекции ИБ?",),
+    "simple": ("В какой срок в Дирекции информационной безопасности назначают руководителя проекта при инициации?",),
+    "compound": ("В какой срок в Дирекции информационной безопасности назначают руководителя проекта при инициации? "
+                 "Какой срок подготовки бюджетной оценки для торгов у Технической дирекции?",),
     "clarify": ("В какой срок должны назначить руководителя проекта?",),
     "gap": ("Кто замещает координатора проектов Дирекции ИБ на время отпуска?",
             "Какой точный процент минимальной маржинальности применяется к проекту пресейла ИБ по внутреннему регламенту контроля маржинальности?"),
@@ -85,7 +87,8 @@ def example_hint(conn, session, stage):
             SELECT question_key, conditions_key FROM faq_entries WHERE status='active'
         """).fetchall()
         examples = [q for q in examples if not any(
-            faq_candidate(row, directories(q), normalized(q), {}) for row in faqs)]
+            faq_candidate(row, directories(q), normalized(q), {}) and compatible_ids(row["question_key"], q, {})
+            for row in faqs)]
         if not examples:
             return Hint(stage="done", text="", action="none")
     example = examples[session["id"].int % len(examples)]
@@ -115,14 +118,14 @@ def next_hint(conn, session):
         latest = rows[-1]
         if latest["offer"] == "open":
             return Hint(stage="consent", text="Подтвердите отправку обращения в Отдел качества.",
-                        example="Да, передай")
+                        example="Да, передай", case_id=latest["case_id"])
         if latest["offer"] == "declined" or (latest["result"] or {}).get("mail_decision") == "declined":
             return example_hint(conn, session, "gap")
         if latest["clarification"] == "open":
             options = latest["options"] or []
             preferred = next((o for o in options if o["text"] == "Дирекция ИБ"), None)
             example = str(options.index(preferred) + 1) if preferred else ("1" if options else "")
-            return Hint(stage="answer", text="Ответьте на уточнение бота.", example=example,
+            return Hint(stage="answer", text="Ответьте на уточнение бота.", example=example, case_id=latest["case_id"],
                         action="example" if example else "none")
     if request and request["state"] not in {"withdrawn", "delivery_failed"}:
         if request["state"] != "resolved":

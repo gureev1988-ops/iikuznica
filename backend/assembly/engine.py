@@ -14,11 +14,13 @@ from backend.db import connect
 from eval.search_core import core
 from registry import compile_records
 
+from . import faq_scope
 from .fast_answers import VerifiedAnswer, VerifiedAnswers, faq_candidate, potential_faq
 from .models import GEMMA, LATENCY_LOG, QWEN, ModelCalls, json_reply
 from .local_steps import record, record_steps
 from .search import SEARCH_TURN, Search, linked_norms
 from .navigation import document_answer, split_document_request
+from .competing_rules import competition
 from .references import resolve_reference
 from backend.dialog.clarifications import UNKNOWN as UNKNOWN_REPLY
 
@@ -31,7 +33,13 @@ options (до 4 коротких строк с возможными ответа
 FAQ_CHECK = """Определи, совпадает ли вопрос из базы FAQ по операции и всем существенным условиям
 с текущим вопросом. Совпадение по теме или словам недостаточно. Если условие изменилось, неизвестно
 или опущено, не применяй FAQ. Сравни разъяснение с подтверждённым ответом регламента, если он есть.
-Выведи только JSON {"id": null, "comparison": "gap|match|conflict|pending"}. Для совпадения верни
+Выведи JSON {"id": null, "comparison": "gap|match|conflict|pending", "scope": "general|specific",
+"faq_entity": null, "request_entity": null}. Если разъяснение относится к отдельному проекту, клиенту,
+договору или сделке, scope=specific. Для такой карточки укажи две дословные выдержки с кодом либо
+собственным названием одного и того же объекта из карточки и из исходной реплики сотрудника.
+Слова «этот проект» сами по себе не идентифицируют объект. При другом или неназванном объекте
+верни id=null. Восстановленный поисковый вопрос не доказывает, о каком объекте спросил сотрудник.
+Сравни смысл вопроса и ответа, включая отрицания, условия и ограничения. Для совпадения верни
 один переданный id. Ссылка на внутренний регламент в вопросе FAQ может быть способом сформулировать то же
 сведение. Учитывай совпадение идентификатора проекта, если он назван. Различай сокращение ИБ и полное
 название «информационная безопасность». Если regulation=null, итог проверки регламента уже установил
@@ -132,7 +140,9 @@ class A1Engine:
         if clarification is not None:
             value = core.procedures.normalized(clarification["value"])
             past = self._history(request)
-            if (clarification.get("key") != "directorate" or request.clarification_count != 1
+            original = clarification.get("original", clarification["value"]).strip()
+            explicit = original.isdecimal() or core.procedures.normalized(original) == value
+            if (not explicit or clarification.get("key") != "directorate" or request.clarification_count != 1
                     or {**request.conditions} != {"directorate": clarification["value"]}
                     or value != "дирекция иб"
                     or value not in {core.procedures.normalized(option) for option in clarification["choices"]}
@@ -230,7 +240,7 @@ class A1Engine:
             reply = self._retain_independent_answer(question, reply, lookup, corpus, norms, calls)
         resolved = reply.get("resolved_question", question)
         if reply["action"] in {"answer", "escalate"} or (reply["action"] == "clarify" and not reply["sources"]):
-            conflict = self._regulation_conflict(resolved, calls, lookup, corpus, refs)
+            conflict = self._regulation_conflict(resolved, calls, lookup, corpus, refs, reply["sources"])
             if conflict:
                 return self._preserve_parts(conflict, reply, refs)
         if reply["action"] == "clarify":
@@ -244,6 +254,11 @@ class A1Engine:
                         return variants
                     return AnswerResult("escalate", "Не удалось выбрать применимое правило. Передать вопрос в Отдел качества?",
                                         escalation_question=request.question, resolved_question=resolved)
+                text = reply["message"] + "\n\nПередать оставшуюся часть вопроса в Отдел качества?"
+                return AnswerResult("answer", text, citations=tuple(self._cite(item, refs)
+                                    for item in reply["sources"] if "doc" in item),
+                                    escalation_question=reply.get("escalation_question") or request.question,
+                                    resolved_question=resolved)
             else:
                 return self._clarify(reply, resolved, calls, lookup, corpus)
 
@@ -292,19 +307,27 @@ class A1Engine:
         return replace(conflict, text="\n\n".join(paragraphs), parts=tuple(parts), citations=tuple(citations),
                        escalation_question=" ".join(q for q in disputed_questions if q) or conflict.escalation_question)
 
-    def _regulation_conflict(self, question, calls, lookup, corpus, refs):
-        process = core.procedures.operation(question)
-        if process and core.procedures.pending_facets(process, question):
-            return None
+    def _regulation_conflict(self, question, calls, lookup, corpus, refs, sources):
         seeds, pool = lookup(question)
         pool_keys = [(passage["doc"], passage["ref"]) for passage in pool[:10]]
-        keys = list(dict.fromkeys([*map(tuple, seeds), *pool_keys]))
-        if len({doc for doc, _ in keys}) < 2:
+        cited = {(p["doc"], p["ref"]) for p in sources if "doc" in p}
+        keys = list(dict.fromkeys([*map(tuple, seeds), *pool_keys, *sorted(cited)]))
+        candidates = {key: corpus[key] for key in keys if key in corpus and key in refs}
+        pairs = competition(question, candidates, cited)
+        if not pairs:
             return None
-        candidates = {key: corpus[key] for key in keys}
+        candidates = {key: candidates[key] for pair in pairs for key in pair}
         body = core.make_request({"question": question, "sources": list(candidates.values())},
                                  GEMMA, REGULATION_CONFLICT)
-        decision = json_reply(calls.chat("conflict", body, "regulation-conflict"))
+        try:
+            decision = json_reply(calls.chat("conflict", body, "regulation-conflict"))
+        except (EngineUnavailable, ValueError, TypeError):
+            citations = tuple(self._cite(candidates[key], refs) for key in pairs[0])
+            links = [f"{refs[key].title}, п. {refs[key].anchor} [{i}]" for i, key in enumerate(pairs[0], 1)]
+            return AnswerResult("escalate", "Нашёл два возможных основания: " + "; ".join(links)
+                                + ". Не удалось подтвердить, какое из них действует в этих условиях. "
+                                "Передать вопрос в Отдел качества?", citations=citations, allow_faq=False,
+                                escalation_question=question, resolved_question=question)
         return self._conflict_result(decision.get("basis"), question, candidates, refs)
 
     @staticmethod
@@ -443,37 +466,75 @@ class A1Engine:
         with connect(self.dsn) as conn:
             rows = conn.execute("""
                 SELECT f.id, f.current_fragment_id, f.question_key, f.conditions_key,
-                       f.conflict_revision_id, r.pending
+                       f.conflict_revision_id, r.pending, r.case_id, r.question AS original_question,
+                       initial.text AS employee_question
                 FROM faq_entries f JOIN mail_requests r ON r.id = f.request_id
+                LEFT JOIN LATERAL (
+                    SELECT m.text FROM messages m WHERE m.conversation_id=r.conversation_id
+                      AND m.case_id=r.case_id AND m.role='user'
+                    ORDER BY m.created_at, m.id LIMIT 1
+                ) initial ON true
                 WHERE f.current_fragment_id = ANY(%s::uuid[]) AND f.status = 'active' AND r.pending = '[]'
                 ORDER BY ts_rank(to_tsvector('russian', f.question_key),
                                  plainto_tsquery('russian', %s)) DESC, f.updated_at DESC, f.id
-                LIMIT 12
             """, (list(fragments), question)).fetchall()
         if not rows:
             return None
         constraints = core.procedures.directories(question)
         normalized_question = core.procedures.normalized(question)
         by_id = {}
+        scopes = {}
         for row in rows:
-            if faq_candidate(row, constraints, normalized_question, request.conditions):
-                by_id[str(row["id"])] = row
+            if not faq_candidate(row, constraints, normalized_question, request.conditions):
+                continue
+            # The published card can have an edited question or a shortened mail subject.
+            # The employee's original case still defines the scope of its consultation.
+            origin = "\n".join(filter(None, [row["employee_question"], row["original_question"],
+                                             row["question_key"], faq_scope.answer_entities(
+                                                 fragments[row["current_fragment_id"]].text)]))
+            if not faq_scope.compatible_ids(origin, request.question, request.conditions):
+                continue
+            key = str(row["id"])
+            by_id[key] = row
+            scopes[key] = origin
         if not by_id:
             return None
-        candidates = [dict(id=id_, question=row["question_key"], conditions=json.loads(row["conditions_key"]),
+        # Apply the limit after identity checks. Newer answers for twelve other projects
+        # must not evict an older card with the very code the employee supplied.
+        specific_first = sorted(by_id, key=lambda id_: not faq_scope.identifiers(scopes[id_]))
+        by_id = {id_: by_id[id_] for id_ in specific_first[:12]}
+        candidates = [dict(id=id_, question=row["question_key"], original=scopes[id_],
+                           conditions=json.loads(row["conditions_key"]),
                            answer=fragments[row["current_fragment_id"]].text)
                       for id_, row in by_id.items()]
-        body = core.make_request({"question": {"question": question, "conditions": dict(request.conditions),
+        body = core.make_request({"question": {"question": question, "employee_question": request.question,
+                                               "conditions": dict(request.conditions),
                                                "regulation": result.text if result.citations else None},
                                   "sources": candidates}, GEMMA, FAQ_CHECK)
         match = json_reply(calls.chat("faq", body, "faq-applicability"))
-        row = by_id.get(match.get("id"))
+        chosen = match.get("id")
+        row = by_id.get(chosen) if isinstance(chosen, str) else None
         status = match.get("comparison")
-        if row is None:
+        if row is None or status not in {"gap", "match", "conflict"}:
             return None
         fragment = fragments[row["current_fragment_id"]]
+        scope = match.get("scope")
+        if scope not in {"general", "specific"}:
+            return None
+        original = scopes[chosen]
+        local = scope == "specific" or faq_scope.LOCAL_SCOPE.search(fragment.text) or faq_scope.quoted_entities(original)
+        if local and request.case_id != row["case_id"]:
+            def same_name(left, right):
+                # PostgreSQL's Russian dictionary compares inflections of natural names.
+                with connect(self.dsn) as conn:
+                    return conn.execute("""SELECT tsvector_to_array(to_tsvector('russian', %s))=
+                                                  tsvector_to_array(to_tsvector('russian', %s)) AS same""",
+                                        (left, right)).fetchone()["same"]
+            if not faq_scope.identifiers(original) and not faq_scope.grounded_entity(
+                    match, original, request.question, same_name):
+                return None
         ref = Citation(fragment.document_id, fragment.revision_id, fragment.fragment_id, fragment.text)
-        if result.action == "escalate" and not result.citations and not row["conflict_revision_id"]:
+        if result.action == "escalate" and status == "gap" and not result.citations and not row["conflict_revision_id"]:
             return AnswerResult("answer", f"Консультация Отдела качества\n{fragment.text} [1]",
                                 citations=(ref,), resolved_question=question)
         if result.action != "answer" or status not in {"match", "conflict"}:

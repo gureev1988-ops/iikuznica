@@ -38,6 +38,17 @@ def document_answer(request):
     if selected:
         choice = request.clarification["value"]
         candidates = [doc for doc, group in groups.items() if group[0].title == choice]
+        if choice.casefold() == "не знаю":
+            shown = set(request.clarification.get("choices", ()))
+            sources = [group[0] for group in groups.values() if group[0].title in shown]
+            if sources:
+                citations = tuple(Citation(f.document_id, f.revision_id, f.fragment_id, f.text,
+                                           "Открыть регламент") for f in sources)
+                text = "По известным условиям подходят следующие регламенты:\n" + "\n".join(
+                    f"{f.title}, редакция {f.version} [{i}]" for i, f in enumerate(sources, 1))
+                return AnswerResult("answer", text + "\n\nПередать вопрос о выборе регламента в Отдел качества?",
+                                    citations=citations, escalation_question=question, allow_faq=False,
+                                    resolved_question=question)
     else:
         keys = keywords(question)
         # A generic request can refer to the scope established by the previous user turn.
@@ -54,6 +65,7 @@ def document_answer(request):
     if len(candidates) > 1:
         choices = tuple(ClarificationOption(str(doc), groups[doc][0].title,
                                             {"document_to_open": groups[doc][0].title}) for doc in candidates)
+        choices += (ClarificationOption("unknown", "Не знаю", {"document_to_open": "не знаю"}),)
         return AnswerResult("clarify", "Какой регламент вы хотите открыть?", options=choices,
                             clarification_key="document_to_open", allow_faq=False, resolved_question=question)
     if not candidates:

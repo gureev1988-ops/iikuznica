@@ -144,3 +144,71 @@ def test_review_is_optimistic_and_keeps_evidence_on_provider_failure(dsn, tmp_pa
     assert changed.value.status_code == 409
     with connect(dsn) as conn:
         assert conn.execute("SELECT outcome FROM assembly_quality_checks").fetchone()["outcome"] == "conflict"
+
+
+def test_multiple_conflicting_clauses_remain_counted_once_per_card(dsn, tmp_path, monkeypatch):
+    from backend.assembly import quality
+    from backend.assembly.quality_checks import verified_claim
+    from backend.assembly.statistics import summary
+
+    seed(dsn, tmp_path)
+    seed_quality(dsn, tmp_path)
+    with connect(dsn) as conn:
+        row = conn.execute(quality.CARD_SELECT, quality.SCOPE).fetchone()
+        norms = conn.execute("""SELECT fr.id,fr.anchor,fr.text,r.title,r.id AS revision_id,s.id AS source_id
+            FROM source_fragments fr JOIN source_revisions r ON r.id=fr.revision_id
+            JOIN sources s ON s.current_revision_id=r.id WHERE s.external_id='DB' AND fr.anchor IN ('1.5','1.6')
+            ORDER BY fr.anchor""").fetchall()
+        answer = "Утверждение А. Утверждение Б."
+        first, second = [
+            verified_claim(
+                dict(index=i, quote=n["text"].splitlines()[0], claim=claim, reason="Требуется пересмотр."),
+                norms,
+                answer,
+            )
+            for i, (n, claim) in enumerate(zip(norms, ["Утверждение А.", "Утверждение Б."]))
+        ]
+        assert (
+            verified_claim(
+                dict(index=0, quote=norms[0]["text"], claim="Чужая формулировка", reason=""), norms, answer
+            )
+            is None
+        )
+        monkeypatch.setattr(quality, "judge", lambda *args: {**first, "additional_conflicts": [second]})
+        edited = quality.change_card(
+            conn,
+            row["id"],
+            quality.Edit(version=row["version"], question=QUESTION, answer=answer, confirm_conflict=True),
+            "edit",
+            "Эксперт",
+        )
+        assert edited["additional_conflicts"][0]["claim"] == "Утверждение Б."
+        quality.run_checks(conn, uuid4())
+        problems = summary(conn, "guest:review")["problems"]
+        assert sorted((p["anchor"], p["conflicts"]) for p in problems) == [("1.5", 1), ("1.6", 1)]
+        quality.change_card(
+            conn, row["id"], quality.Version(version=edited["version"]), "withdraw", "Эксперт"
+        )
+        assert summary(conn, "guest:review")["problems"] == []
+
+
+def test_legacy_faq_editions_survive_first_new_expert_action(dsn, tmp_path):
+    from backend.assembly import quality
+    from backend.mailfaq.faq import replace_faq
+
+    seed(dsn, tmp_path)
+    seed_quality(dsn, tmp_path)
+    with connect(dsn) as conn:
+        original = conn.execute(quality.CARD_SELECT, quality.SCOPE).fetchone()
+        replace_faq(conn, original["id"], original["version"], "Исправленный архивный ответ.")
+        before = quality.serialize(conn, quality.get_card(conn, original["id"]))
+        assert [(entry["version"], entry["answer"]) for entry in before["history"]] == [
+            (1, original["answer"]),
+            (2, "Исправленный архивный ответ."),
+        ]
+        after = quality.change_card(
+            conn, original["id"], quality.Version(version=before["version"]), "withdraw", "Эксперт"
+        )
+        assert [entry["version"] for entry in after["history"]] == [1, 2, 3]
+        assert after["history"][0]["action"] == "archived_revision"
+        assert after["history"][-1]["action"] == "withdraw"

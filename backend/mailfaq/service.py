@@ -1,5 +1,7 @@
 """Transactional mail intake, correspondence and delivery."""
 
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from email.headerregistry import Address
 import os
 import re
@@ -457,6 +459,13 @@ def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail, *,
     _note(conn, updated, inbound_id, "resolution" if kind == "substantive" else kind, message, refs)
 
 
+def _schedule_interpretation(conn, inbound_id, request_id):
+    conn.execute("UPDATE mail_inbound SET request_id=%s,state='interpreting',reason=NULL WHERE id=%s",
+                 (request_id, inbound_id))
+    enqueue(conn, queue="background", kind="mail.interpret", key=str(inbound_id),
+            payload={"request_id": str(request_id)}, max_attempts=5)
+
+
 def _store_receipt(conn, mailbox: str, uidvalidity: str, uid: int, raw: bytes,
                    parsed: ParsedMail, fingerprint: str, config: MailConfig) -> bool:
     inbound_id = uuid4()
@@ -479,10 +488,7 @@ def _store_receipt(conn, mailbox: str, uidvalidity: str, uid: int, raw: bytes,
     if request_id and parsed.kind in {"substantive", "correction", "partial", "counter_question", "unrecognized"}:
         request = _request_for_update(conn, request_id)
         if request["channel"] == "guest":
-            conn.execute("UPDATE mail_inbound SET request_id=%s,state='interpreting' WHERE id=%s",
-                         (request_id, inbound_id))
-            enqueue(conn, queue="background", kind="mail.interpret", key=str(inbound_id),
-                    payload={"request_id": str(request_id)}, max_attempts=5)
+            _schedule_interpretation(conn, inbound_id, request_id)
             return True
     if request_id is None or parsed.kind == "unrecognized":
         conn.execute(
@@ -503,14 +509,17 @@ def bind_inbound(conn, inbound_id: UUID, request_id: UUID, *, config: MailConfig
     request = _request_for_update(conn, request_id)
     if hackathon and request["recipient"] != config.recipient:
         raise MailError(404, "mail_request_not_found")
-    if row["state"] == "processed" and row["request_id"] == request_id:
+    if row["state"] in {"processed", "interpreting"} and row["request_id"] == request_id:
         return row
     if not row["trusted"] or row["state"] != "review" or row["reason"] not in {
         "no_matching_thread", "ambiguous_thread",
     }:
         raise MailError(409, "inbound_mail_cannot_be_bound")
     parsed = ParsedMail(**row["parsed"])
-    _apply_inbound(conn, inbound_id, request, parsed, hackathon=hackathon)
+    if request["channel"] == "guest" and parsed.kind in {"substantive", "correction", "partial", "counter_question"}:
+        _schedule_interpretation(conn, inbound_id, request_id)
+    else:
+        _apply_inbound(conn, inbound_id, request, parsed, hackathon=hackathon)
     return conn.execute("SELECT * FROM mail_inbound WHERE id = %s", (inbound_id,)).fetchone()
 
 
@@ -558,7 +567,17 @@ class MailService:
             except EngineUnavailable:
                 if job.attempt < job.max_attempts:
                     raise RuntimeError("mail_interpreter_unavailable") from None
-                from dataclasses import replace
+                wave = job.payload.get("wave", 0)
+                if wave < 3:
+                    with connect(self.dsn) as conn:
+                        require_lease(conn, job)
+                        enqueue(conn, queue="background", kind="mail.interpret",
+                                key=f"{receipt['id']}:retry:{wave+1}", max_attempts=5,
+                                payload={"request_id": str(request_id), "wave": wave+1},
+                                available_at=datetime.now(UTC) + timedelta(minutes=(1, 5, 60)[wave]))
+                        conn.execute("""UPDATE mail_inbound SET reason='interpreter_retry_scheduled'
+                                        WHERE id=%s AND state='interpreting'""", (receipt["id"],))
+                    return
                 result = replace(parsed, kind="unrecognized", reason="interpreter_unavailable")
             norm_review = None
             if result.kind in {"substantive", "correction"} and result.public_text:
@@ -580,6 +599,8 @@ class MailService:
                 if result.kind == "unrecognized":
                     conn.execute("UPDATE mail_inbound SET state='review',reason=%s WHERE id=%s",
                                  (result.reason, receipt["id"]))
+                    _note(conn, current, receipt["id"], "review",
+                          "Письмо Отдела качества получено и ожидает разбора. Обращение сохраняется.")
                 else:
                     _apply_inbound(conn, receipt["id"], current, result, norm_review=norm_review)
                 return

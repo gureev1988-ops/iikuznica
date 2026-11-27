@@ -8,7 +8,8 @@ const outcomes = {conflict: "Есть противоречие", consistent: "Н
 const usesForm = new Intl.PluralRules("ru");
 const historyActions = {
   published: "Публикация", edit: "Изменение текста", withdraw: "Отмена",
-  resume: "Возобновление", review: "Проверка",
+  resume: "Возобновление", review: "Проверка", archived_revision: "Сохранённая редакция",
+  archived_state: "Сохранённое состояние",
 };
 const cardsUrl = "/v1/browser/quality/cards";
 
@@ -24,6 +25,7 @@ export function createCards({api, requireExpert, run, status, openSource, refres
     if (!evidence) return null;
     const container = node("div", evidence.outcome === "conflict" ? "desk-alert" : "desk-block",
       node("strong", "", outcomes[evidence.outcome] || "Проверка карточки"));
+    if (evidence.claim) container.append(block("Утверждение разъяснения", evidence.claim));
     if (evidence.reason) container.append(node("p", "quality-copy", evidence.reason));
     if (evidence.quote) container.append(node("blockquote", "quality-copy", evidence.quote));
     if (evidence.url) {
@@ -50,7 +52,8 @@ export function createCards({api, requireExpert, run, status, openSource, refres
     const warning = byId("faq-edit-warning");
     warning.replaceChildren(node("p", "", message));
     if (evidence) {
-      warning.append(block("Редактируемый ответ", byId("faq-edit-answer").value), evidenceView(evidence));
+      warning.append(block("Редактируемый ответ", byId("faq-edit-answer").value), evidenceView(evidence),
+        ...(evidence.additional_conflicts || []).map(evidenceView));
     }
     warning.hidden = false;
   }
@@ -96,6 +99,7 @@ export function createCards({api, requireExpert, run, status, openSource, refres
     const body = node("div", "faq-row-answer", block("Ответ", card.answer));
     const evidence = evidenceView(card.evidence);
     if (evidence) body.append(evidence);
+    body.append(...(card.additional_conflicts || []).map(evidenceView));
     if (card.history?.length) {
       const list = node("ul", "desk-timeline");
       for (const version of [...card.history].sort((a, b) => b.version - a.version)) {

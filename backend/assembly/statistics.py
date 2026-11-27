@@ -95,6 +95,12 @@ WITH gaps AS (""" + PERIOD_GAPS + """), evidence AS (
     JOIN evidence e ON e.fragment_id=check_result.fragment_id
     WHERE check_result.outcome='conflict' AND f.status<>'withdrawn'
       AND check_result.faq_revision_id=f.current_revision_id
+    UNION ALL
+    SELECT f.id::text,e.fragment_id,FALSE FROM assembly_quality_conflict_fragments proof
+    JOIN faq_entries f ON f.id=proof.faq_id AND f.current_revision_id=proof.faq_revision_id
+    JOIN assembly_quality_checks checked ON checked.faq_id=f.id AND checked.faq_revision_id=f.current_revision_id
+    JOIN evidence e ON e.fragment_id=proof.fragment_id
+    WHERE checked.outcome='conflict' AND f.status<>'withdrawn' AND proof.ordinal > 0
 )
 SELECT e.document_id,e.revision_id,e.fragment_id,e.title,e.version,e.anchor,
     count(DISTINCT event_id) FILTER (WHERE gap) AS gaps,

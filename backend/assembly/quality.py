@@ -70,6 +70,23 @@ def get_card(conn, faq_id, *, version=None):
     return row
 
 
+def saved_conflicts(conn, row):
+    records = conn.execute(
+        """
+        SELECT x.ordinal,x.quote,x.claim,x.reason,f.id,f.anchor,r.source_id,r.id AS revision_id,r.title
+        FROM assembly_quality_conflict_fragments x JOIN source_fragments f ON f.id=x.fragment_id
+        JOIN source_revisions r ON r.id=f.revision_id JOIN sources s ON s.id=r.source_id
+        WHERE x.faq_id=%s AND x.faq_revision_id=%s AND s.status='active'
+            AND s.acl_actor_ids IS NULL AND r.acl_actor_ids IS NULL ORDER BY x.ordinal
+        """,
+        (row["id"], row["current_revision_id"]),
+    ).fetchall()
+    return [
+        {**evidence("conflict", r["reason"], r, r["quote"]), "claim": r["claim"], "ordinal": r["ordinal"]}
+        for r in records
+    ]
+
+
 def serialize(conn, row):
     value = {
         key: row[key]
@@ -90,23 +107,40 @@ def serialize(conn, row):
     value["evidence"] = (
         evidence(row["outcome"], row["reason"], source, row["quote"]) if row["outcome"] else None
     )
+    facts = saved_conflicts(conn, row) if row["outcome"] == "conflict" else []
+    value["additional_conflicts"] = [fact for fact in facts if fact["ordinal"] > 0]
+    if facts and facts[0]["ordinal"] == 0 and value["evidence"]:
+        value["evidence"]["claim"] = facts[0]["claim"]
+    # Before the browser audit log existed, each published answer already had an
+    # immutable source revision and an original mail request. Keep those editions
+    # visible alongside later expert actions, including after the first new edit.
     value["history"] = conn.execute(
         """
-        SELECT version,question,answer,at,action,actor FROM assembly_quality_history
-        WHERE faq_id=%s ORDER BY version""",
-        (row["id"],),
+        WITH audit AS (
+            SELECT version,question,answer,at,action,actor FROM assembly_quality_history WHERE faq_id=%s
+        )
+        SELECT * FROM audit
+        UNION ALL
+        SELECT rev.version,mail.question,fr.text,rev.created_at,'archived_revision','Архив Отдела качества'
+        FROM source_revisions rev JOIN source_fragments fr ON fr.revision_id=rev.id AND fr.ordinal=0
+        CROSS JOIN mail_requests mail
+        WHERE rev.source_id=%s AND mail.id=%s AND NOT EXISTS (
+            SELECT 1 FROM audit WHERE version=rev.version
+        )
+        ORDER BY version""",
+        (row["id"], row["document_id"], row["request_id"]),
     ).fetchall()
-    if not value["history"]:
-        value["history"] = [
+    if value["history"] and value["history"][-1]["version"] < row["version"]:
+        value["history"].append(
             dict(
                 version=row["version"],
                 question=row["question"],
                 answer=row["answer"],
-                at=row["created_at"],
-                action="published",
-                actor="Отдел качества",
+                at=row["updated_at"],
+                action="archived_state",
+                actor="Архив Отдела качества",
             )
-        ]
+        )
     return value
 
 
@@ -168,6 +202,28 @@ def save_check(conn, row, result, pinned, *, bump=True):
             pinned,
         ),
     )
+    conn.execute("DELETE FROM assembly_quality_conflict_fragments WHERE faq_id=%s", (row["id"],))
+    if result["outcome"] == "conflict":
+        facts = [result, *result.get("additional_conflicts", [])]
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO assembly_quality_conflict_fragments
+                    (faq_id,ordinal,faq_revision_id,fragment_id,quote,claim,reason)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                [
+                    (
+                        row["id"],
+                        i,
+                        row["current_revision_id"],
+                        fact["fragment_id"],
+                        fact["quote"],
+                        fact.get("claim", row["answer"]),
+                        fact["reason"],
+                    )
+                    for i, fact in enumerate(facts)
+                ],
+            )
     after = card_status({**row, "outcome": result["outcome"]})
     changed = bump and after != card_status(row)
     conn.execute(
@@ -356,7 +412,8 @@ def run_checks(conn, command_id):
     reviews = []
     for row in rows:
         if row["outcome"] in ("conflict", "consistent", "no_source") and row["catalog"] == pinned:
-            result = serialize(conn, row)["evidence"]
+            cached = serialize(conn, row)
+            result = {**cached["evidence"], "additional_conflicts": cached["additional_conflicts"]}
         else:
             result = judge(conn, row["question"], row["answer"], row["conditions"])
         reviews.append((row, result))
@@ -377,6 +434,10 @@ def run_checks(conn, command_id):
         line = f"{row['question']}\n{status}. {result['reason']}\nРазъяснение: {row['answer']}"
         if result["ref"]:
             line += f"\n{result['title']}, п. {result['anchor']}: {result['quote']}"
+        for fact in result.get("additional_conflicts", []):
+            line += (
+                f"\n{fact['claim']} — {fact['title']}, п. {fact['anchor']}: {fact['quote']}. {fact['reason']}"
+            )
         lines.append(line)
     subject = "Служебный отчёт о проверке конфликтов"
     text = "\n\n".join(lines) if lines else "Нет действующих разъяснений для проверки."

@@ -22,7 +22,11 @@ CONFIRM = """Проверь, закрывает ли целевой докуме
 
 def resolve_reference(question, lookup, corpus, refs, calls, reply):
     seeds, pool = lookup(question)
-    keys = set(map(tuple, seeds)) | {(p["doc"], p["ref"]) for p in [*pool[:8], *reply["sources"]] if "doc" in p}
+    cited = {(p["doc"], p["ref"]) for p in reply["sources"] if "doc" in p}
+    if reply["action"] == "answer" and cited:
+        keys = cited
+    else:
+        keys = set(map(tuple, seeds)) | cited | {(p["doc"], p["ref"]) for p in pool[:8]}
     origins = {k: corpus[k] for k in keys if k in corpus and REFERENCE.search(corpus[k]["text"])}
     if not origins:
         return None

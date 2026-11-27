@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from email import policy
 from email.parser import BytesParser
 from types import SimpleNamespace
+import re
 
 from .message import _body, clean_public_text
 
@@ -21,6 +22,22 @@ PROMPT = """Классифицируй новое письмо доверенн�
 выводов сохрани условия, исключения, сроки и единицы дословно. Не выдавай статус за инструкцию."""
 
 
+def qualified_excerpt(quote, body):
+    """Keep governing conditions/negations when a model selects only the main predicate."""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", body):
+        if quote not in sentence:
+            continue
+        before, _, after = sentence.partition(quote)
+        before = re.sub(r"^(?:добрый (?:день|вечер)|здравствуйте|коллеги)[,!]?\s*", "", before, flags=re.I)
+        if re.search(r"\b(?:если|для|при|только|кроме|когда|без|не)\b", before, flags=re.I):
+            quote = before + quote
+        if re.match(r"^[\s,;—–-]+(?:но только|если|кроме|за исключением|только|при условии|когда)\b",
+                    after, flags=re.I):
+            quote += after
+        return quote.strip()
+    return quote
+
+
 def verified_reply(parsed, decision, body, previous):
     def excerpts(name, corpus):
         values = decision.get(name, [])
@@ -30,7 +47,7 @@ def verified_reply(parsed, decision, body, previous):
         return list(dict.fromkeys(v.strip() for v in values))
     try:
         kind = decision["kind"]
-        answer = excerpts("answer", body)
+        answer = [qualified_excerpt(q, body) for q in excerpts("answer", body)]
         pending = excerpts("pending", body)
         status = excerpts("status", body)
         retain = excerpts("retain", "\n\n".join(previous))

@@ -37,7 +37,7 @@ export function chatTools({api, openCitation, openInbox, applyDraft}) {
   }
   $("dion-hint-apply").onclick = () => {
     if (hint?.action === "open" && hint.source) openCitation(hint.source);
-    else if (hint?.example) applyDraft(hint.example);
+    else if (hint?.example) applyDraft(hint);
   };
   $("dion-hint-inbox").onclick = () => { if (hint?.thread_id) openInbox(hint.thread_id); };
   function logRow(title, detail) {

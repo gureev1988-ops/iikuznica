@@ -358,7 +358,7 @@ class DialogueService:
             hint = (f"Выберите номер от 1 до {len(row['options'])}." if not matches
                     else "Подходят несколько вариантов. Уточните выбор.")
             raise DialogueError(422, f"clarification_choice_{issue}", message=numbered(hint, row["options"]))
-        if matches is None and text and QUESTION.search(text) and text.endswith("?") and not getattr(self.engine, "interpret_choice", None):
+        if matches is None and text and QUESTION.search(text) and not getattr(self.engine, "interpret_choice", None):
             # Preserve the open list in its original case when the employee changes the subject.
             return None, text, text, None
         if body.option_id is not None or matches:

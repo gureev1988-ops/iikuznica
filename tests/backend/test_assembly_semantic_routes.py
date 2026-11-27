@@ -34,7 +34,7 @@ def test_open_documents_uses_current_catalog_and_numbered_choice():
     assert answer.citations[0].claim == "Открыть регламент"
     req.question = "Где регламент по проектной деятельности?"
     ask = document_answer(req)
-    assert {o.text for o in ask.options} == {project.title, project_two.title}
+    assert {o.text for o in ask.options if o.id != "unknown"} == {project.title, project_two.title}
     req.clarification = {"key": ask.clarification_key, "value": project_two.title}
     assert document_answer(req).citations[0].document_id == project_two.document_id
     req.question, req.clarification = "Где найти регламент о закупке приборов?", None
@@ -59,7 +59,7 @@ def test_cross_reference_requires_grounded_origin_and_destination():
     calls = SimpleNamespace(chat=lambda _, body, stage: {"text": json.dumps(
         proposal if stage == "document-reference" else proof)})
     def run():
-        return resolve_reference("Когда привезут прибор?", lookup, corpus, refs, calls, {"sources": []})
+        return resolve_reference("Когда привезут прибор?", lookup, corpus, refs, calls, {"sources": [], "action": "escalate"})
     assert [r.fragment_id for r in run().citations] == [origin.fragment_id, target.fragment_id]
     proposal["target"] = None
     assert run().action == "escalate" and run().citations[0].quote == origin.text
@@ -92,6 +92,9 @@ def test_semantic_mail_quotes_must_be_from_the_correct_message():
     merged = verified_reply(parsed, {"kind": "substantive", "answer": [final], "retain": [answer]},
                             final, [answer])
     assert merged.public_text == f"{answer}\n\n{final}"
+    scoped = "Для участка Зета срок составляет 4 дня, кроме выходных."
+    assert verified_reply(parsed, {"kind": "substantive", "answer": ["срок составляет 4 дня"]},
+                          scoped, []).public_text == scoped
     assert verified_reply(parsed, {"kind": "substantive", "answer": [answer]}, final, []).kind == "unrecognized"
     assert verified_reply(parsed, {"kind": "status", "status": [later]}, later, []).kind == "status"
 
@@ -169,3 +172,33 @@ def test_number_and_explicit_mail_consent_freeze_only_the_current_case(dsn, monk
             assert conn.execute("SELECT state FROM mail_requests").fetchone()["state"] == (
                 "waiting_reply", "partial", "resolved")[i]
     assert mail.poll_inbox() == 0
+
+
+def test_conflict_review_compares_the_same_action_and_survives_provider_outage():
+    from backend.assembly.engine import A1Engine
+    from backend.contracts.engine import EngineUnavailable
+    from backend.assembly.competing_rules import competition
+
+    first = fragment("Положение Север", "Для перевозки прибора срок согласования составляет 3 дня.")
+    second = fragment("Положение Юг", "Для перевозки прибора срок согласования составляет 7 дней.")
+    unrelated = fragment("Выдача ключей", "Для ворот нужен ключ начальника смены.")
+    refs = {("n", "1"): first, ("s", "2"): second, ("k", "3"): unrelated}
+    entries = {k: dict(doc=k[0], ref=k[1], text=f.text, section=f.title) for k, f in refs.items()}
+    lookup = lambda text: (list(entries), list(entries.values()))
+    question = "Каков срок согласования перевозки прибора?"
+    def unavailable(*args):
+        raise EngineUnavailable("offline")
+    calls = SimpleNamespace(chat=unavailable)
+    result = A1Engine(None, search=object())._regulation_conflict(
+        question, calls, lookup, entries, refs, [entries["n", "1"]])
+    assert result.action == "escalate" and len(result.citations) == 2
+    assert "Не удалось подтвердить" in result.text
+    assert {c.fragment_id for c in result.citations} == {first.fragment_id, second.fragment_id}
+    assert not competition(question, {("n","1"):entries["n","1"], ("k","3"):entries["k","3"]}, set())
+
+
+def test_compound_document_request_keeps_the_independent_question():
+    from backend.assembly.navigation import split_document_request
+    link = "Пришлите сам регламент про пресейл ИБ."
+    question = "По моему запросу ресурс-менеджер не ответил уже рабочий день — к кому могу подключиться?"
+    assert split_document_request(link + " " + question) == (link, question)

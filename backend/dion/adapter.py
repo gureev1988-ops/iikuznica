@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
 
-from backend.dialog.clarifications import QUESTION, match_options
+from backend.dialog.clarifications import QUESTION, match_options, numbered
 from backend.contracts.api import MessageRequest
 from backend.db import connect, lock_source_catalog
 from backend.dialog import Actor, DialogueError, DialogueService
@@ -355,7 +355,7 @@ class DionAdapter:
 
         fields = {"text": text}
         implicit = None
-        if target is None and not command.startswith("/") and not (QUESTION.search(text) and text.endswith("?")):
+        if target is None and not command.startswith("/") and not QUESTION.search(text):
             actions = self.dialogue.open_actions(conn, actor, conversation_id)
             sent = {r["clarification_id"] for r in conn.execute("""
                 SELECT clarification_id FROM dion_outbox WHERE conversation_id=%s
@@ -587,6 +587,8 @@ class DionAdapter:
                 )
                 if clarification is None:
                     raise KnownDeliveryFailure("dion_clarification_no_longer_open")
+                if text == clarification["prompt"]:
+                    text = numbered(text, clarification["options"])
                 footer.append(
                     f"Ответьте на это сообщение номером или текстом. Можно отправить /answer {clarification_id} и ответ."
                 )

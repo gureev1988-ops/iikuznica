@@ -1119,6 +1119,18 @@
             "title": "Action",
             "type": "string"
           },
+          "case_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
           "example": {
             "default": "",
             "title": "Example",
@@ -2504,6 +2516,13 @@
       },
       "QualityCard": {
         "properties": {
+          "additional_conflicts": {
+            "items": {
+              "$ref": "#/components/schemas/QualityEvidence"
+            },
+            "title": "Additional Conflicts",
+            "type": "array"
+          },
           "answer": {
             "title": "Answer",
             "type": "string"
@@ -2578,6 +2597,7 @@
           "uses",
           "status",
           "evidence",
+          "additional_conflicts",
           "history"
         ],
         "title": "QualityCard",
@@ -2595,6 +2615,17 @@
               }
             ],
             "title": "Anchor"
+          },
+          "claim": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim"
           },
           "outcome": {
             "enum": [

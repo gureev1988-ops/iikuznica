@@ -12,6 +12,7 @@ from backend.contracts.api import SourceReference
 class QualityEvidence(BaseModel):
     outcome: Literal["conflict", "consistent", "unconfirmed", "no_source"]
     reason: str
+    claim: str | None = None
     ref: SourceReference | None
     title: str | None
     anchor: str | None
@@ -39,6 +40,7 @@ class QualityCard(BaseModel):
     uses: int
     status: Literal["active", "review", "withdrawn"]
     evidence: QualityEvidence | None
+    additional_conflicts: list[QualityEvidence]
     history: list[QualityHistory]
 
 

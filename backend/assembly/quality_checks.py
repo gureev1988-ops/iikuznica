@@ -100,6 +100,18 @@ def cited_quantity(conn, answer, conditions):
     )
 
 
+def verified_claim(item, rows, answer):
+    if not isinstance(item, dict) or type(item.get("index")) is not int or not 0 <= item["index"] < len(rows):
+        return None
+    row = rows[item["index"]]
+    quote, claim, reason = (item.get(k) for k in ("quote", "claim", "reason"))
+    if not all(isinstance(part, str) and part.strip() for part in (quote, claim, reason)):
+        return None
+    if quote not in row["text"][:3200] or claim not in answer:
+        return None
+    return {**evidence("conflict", reason[:1200], row, quote), "claim": claim}
+
+
 def judge(conn, question, answer, conditions, *, use_model=True):
     direct = cited_quantity(conn, answer, conditions)
     if direct:
@@ -127,7 +139,7 @@ def judge(conn, question, answer, conditions, *, use_model=True):
         "Верни JSON {outcome, index, quote, claim, reason}. outcome: conflict для двух явно несовместимых правил при "
         "совпадающих условиях, consistent для совпадения, no_source при отсутствии применимого правила, "
         "unconfirmed при неопределённости. Для conflict или consistent верни индекс и точную непрерывную цитату "
-        "из поля text и дословное утверждение claim из ответа отдела. В reason на русском укажи конкретное основание и предлагаемое действие."
+        "из поля text и дословное утверждение claim из ответа отдела. Для conflict также верни additional_conflicts: список остальных независимых противоречий, каждое {index, quote, claim, reason}. Учитывай все утверждения и условия. В reason на русском укажи конкретное основание и предлагаемое действие."
     )
     if not use_model:
         return {**evidence("unconfirmed", "Назначена проверка действующего регламента."), "pending": True}
@@ -143,27 +155,30 @@ def judge(conn, question, answer, conditions, *, use_model=True):
         ],
     )
     try:
-        body = model_settings(make_request(case, GEMMA, prompt), GEMMA, "deepinfra/fp8", 450)
+        body = model_settings(make_request(case, GEMMA, prompt), GEMMA, "deepinfra/fp8", 1000)
         value = json_reply(complete("quality", body, "faq_review", timeout=6))
         outcome = value.get("outcome")
         reason = value.get("reason")
         if isinstance(reason, str) and reason.strip():
-            if (
-                outcome in ("conflict", "consistent")
-                and type(value.get("index")) is int
-                and 0 <= value["index"] < len(rows)
-            ):
-                row = rows[value["index"]]
-                quote = value.get("quote")
-                if (
-                    isinstance(quote, str)
-                    and quote.strip()
-                    and quote in row["text"][:3200]
-                    and isinstance(value.get("claim"), str)
-                    and value["claim"].strip()
-                    and value["claim"] in answer
-                ):
-                    return evidence(outcome, reason[:1200], row, quote)
+            if outcome in ("conflict", "consistent"):
+                primary = verified_claim(value, rows, answer)
+                if primary:
+                    primary["outcome"] = outcome
+                    if outcome == "conflict":
+                        extra = value.get("additional_conflicts", [])
+                        if isinstance(extra, list):
+                            findings = [verified_claim(item, rows, answer) for item in extra]
+                            if all(findings):
+                                seen = {(primary["fragment_id"], primary["claim"])}
+                                primary["additional_conflicts"] = []
+                                for finding in findings:
+                                    key = (finding["fragment_id"], finding["claim"])
+                                    if key not in seen:
+                                        primary["additional_conflicts"].append(finding)
+                                        seen.add(key)
+                                return primary
+                    else:
+                        return primary
             if outcome in ("unconfirmed", "no_source"):
                 return evidence(outcome, reason[:1200])
     except (KeyError, ValueError, TypeError, UpstreamFailure):

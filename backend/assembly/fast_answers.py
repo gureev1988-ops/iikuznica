@@ -114,7 +114,9 @@ _DB_APPOINTMENT = _appointment(_DB)
 RULES = (
     Rule(
         re.compile(rf"(?:{_appointment(_IB, complete_data=True).pattern}|"
-                   rf"{_IB_PREFIX}{_APPOINT} {_ASSIGN} {_PM} {_INIT})"),
+                   rf"{_IB_PREFIX}{_APPOINT} {_ASSIGN} {_PM} {_INIT}|"
+                   rf"кто {_IB} {_INIT} при (?:полных данных|полной информации) "
+                   rf"{_ASSIGN} {_PM} и (?:за сколько(?: времени)?|в какой срок))"),
         _IB_APPOINTMENT_TEXT,
         _IB_APPOINTMENT_EVIDENCE,
     ),

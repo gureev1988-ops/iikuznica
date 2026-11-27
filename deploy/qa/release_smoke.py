@@ -149,8 +149,12 @@ def shared_screens(guests):
         check(status == 200 and payload, "Missing original")
     stats = guests[0].json("/v1/browser/statistics")
     check(stats["period"]["timezone"] == "Europe/Moscow" and "ratings" in stats, "Missing statistics")
-    check(bool(guests[0].json("/v1/browser/quality/cards")), "Missing demo FAQ")
-    check(bool(guests[0].json("/v1/browser/quality/threads?q=" + quote("Обращение ОК1"))), "Missing demo thread")
+    cards = guests[0].json("/v1/browser/quality/cards")
+    threads = guests[0].json("/v1/browser/quality/threads?q=" + quote("Обращение ОК1"))
+    seed = [thread for thread in threads if thread["subject"] == "Обращение ОК1"]
+    check(len(seed) == 1, "Expected exactly one OK1 demo thread")
+    check(any(card["request_id"] == seed[0]["id"] and card["uses"] >= 5 for card in cards),
+          "Missing FAQ or baseline counter for the OK1 demo thread")
     try:
         guests[1].request("/v1/conversations/" + guests[0].conversation + "/messages")
     except HTTPError as error:

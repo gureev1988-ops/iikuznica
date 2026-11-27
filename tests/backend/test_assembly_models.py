@@ -152,3 +152,73 @@ def test_decisions_reject_missing_and_corrupt_fields():
     assert not decisions_valid({"check": valid["check"]}, questions)
     assert not decisions_valid(dict(valid, check={"type":"noul", "noul": float("nan")}), questions)
     assert not decisions_valid(dict(valid, route=dict(valid["route"], choice="publish")), questions)
+
+
+class EvidenceStream(httpx.AsyncByteStream):
+    """OpenRouter SSE frames with separately controlled first content and body."""
+
+    def __init__(self, first_delay, tail_delay):
+        self.first_delay = first_delay
+        self.tail_delay = tail_delay
+
+    async def __aiter__(self):
+        yield b": SSE connection established\n\n"
+        yield b'data: {"choices":[{"delta":{"content":" "}}]}\n\n'
+        await asyncio.sleep(self.first_delay)
+        yield b'data: {"choices":[{"delta":{"content":"evidence"}}]}\n\n'
+        await asyncio.sleep(self.tail_delay)
+        yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n'
+
+
+@pytest.mark.parametrize("question,stage,first,tail,valid", [
+    ("Кто согласует? Когда подписывает?", "evidence-core", 0.01, 0.18, True),
+    ("Кто согласует? Когда подписывает?", "evidence-core", 0.18, 0, False),
+    ("Кто согласует? Когда подписывает?", "evidence-core", 0.01, 0.60, False),
+    ("Кто согласует?", "evidence-core", 0.01, 0.18, False),
+    ("Кто согласует? Когда подписывает?", "permission-review", 0.01, 0.18, False),
+])
+def test_only_started_compound_evidence_can_use_longer_read_deadline(
+    upstream, monkeypatch, question, stage, first, tail, valid,
+):
+    from backend.assembly import models
+
+    monkeypatch.setitem(ATTEMPT_SECONDS, GEMMA, (0.10, 0.10))
+    monkeypatch.setattr(models, "COMPOUND_EVIDENCE_SECONDS", 0.38)
+    seen = []
+
+    def serve(req):
+        seen.append(req)
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                              stream=EvidenceStream(first, tail))
+
+    upstream(serve)
+    calls = model_calls()
+    calls.request.question = question
+    if valid:
+        assert calls.chat("test", {"model": GEMMA}, stage)["text"].strip() == "evidence"
+        assert len(seen) == 1
+    else:
+        with pytest.raises(ModelAttemptFailure, match="request exceeded its deadline"):
+            calls.chat("test", {"model": GEMMA}, stage)
+        assert len(seen) == 2
+
+
+def test_compound_evidence_read_ends_at_the_turn_deadline(upstream, monkeypatch):
+    from backend.assembly import models
+
+    monkeypatch.setitem(ATTEMPT_SECONDS, GEMMA, (0.10, 0.10))
+    monkeypatch.setattr(models, "COMPOUND_EVIDENCE_SECONDS", 1)
+    seen = []
+
+    def serve(req):
+        seen.append(req)
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                              stream=EvidenceStream(first_delay=0.01, tail_delay=0.5))
+
+    upstream(serve)
+    calls = model_calls()
+    calls.request.question = "Кто согласует? Когда подписывает?"
+    calls.request.deadline = datetime.now(UTC) + timedelta(seconds=0.45)
+    with pytest.raises(ModelAttemptFailure, match="request exceeded its deadline"):
+        calls.chat("test", {"model": GEMMA}, "evidence-core")
+    assert len(seen) == 1

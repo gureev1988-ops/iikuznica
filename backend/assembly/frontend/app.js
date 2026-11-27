@@ -91,9 +91,12 @@ const reader = documentReader({api, onCitation: async (fragmentId) => {
 const guide = chatTools({
   api, openCitation: (ref) => reader.openSource(ref, {fromChat: true}),
   openInbox: (threadId) => activate("quality", {threadId}),
-  applyDraft: (example) => {
-    $("message").value = example;
+  applyDraft: (hint) => {
+    $("message").value = hint.example;
     saveDraft();
+    const continuation = ["answer", "consent"].includes(hint.stage);
+    const caseId = continuation ? hint.case_id || activeCase : null;
+    sessionStorage.setItem("hint:" + draftKey(), JSON.stringify({text: hint.example, caseId}));
     $("message").focus();
   },
 });
@@ -139,7 +142,10 @@ function saveDraft() {
   if ($("message").value) sessionStorage.setItem(draftKey(), $("message").value);
   else sessionStorage.removeItem(draftKey());
 }
-$("message").oninput = saveDraft;
+$("message").oninput = () => {
+  sessionStorage.removeItem("hint:" + draftKey());
+  saveDraft();
+};
 
 function selectCase(value) {
   saveDraft();
@@ -151,8 +157,8 @@ function selectCase(value) {
   $("message").focus();
 }
 
-function openClarification() {
-  return history?.turns.filter((turn) => turn.case_id === activeCase)
+function openClarification(caseId = activeCase) {
+  return history?.turns.filter((turn) => turn.case_id === caseId)
     .flatMap((turn) => turn.clarifications).find((action) => action.status === "open");
 }
 
@@ -186,16 +192,7 @@ function render() {
       item.append(name);
     }
     const text = el("p");
-    let visibleText = msg.text;
-    if (msg.role === "assistant" && !msg.source_refs) {
-      // Earlier turns stored the prompt and displayed its persisted options as buttons.
-      const oldList = turn?.clarifications.find((c) => c.prompt === visibleText && c.options.length);
-      if (oldList) {
-        const choices = oldList.options.map((option, index) => (index + 1) + ". " + option.text);
-        visibleText += "\n\n" + choices.join("\n") + "\n\nМожете ответить просто цифрой.";
-      }
-    }
-    renderText(text, visibleText, msg.source_refs ?? (msg.role === "assistant" ? turn?.result?.sources : []) ?? []);
+    renderText(text, msg.text, msg.source_refs ?? (msg.role === "assistant" ? turn?.result?.sources : []) ?? []);
     item.append(text);
     if (msg.role === "assistant" && !msg.source_refs && turn?.result?.notice) {
       const notice = el("p", turn.result.notice);
@@ -336,7 +333,7 @@ function watch() {
   stream = new EventSource(`/v1/conversations/${conversation}/events?after=${history.cursor}`);
   for (const type of ["turn.accepted", "turn.processing", "turn.completed", "turn.failed", "turn.technical_failure",
     "offer.confirmed", "offer.declined", "offer.superseded", "mail.resolution", "mail.counter_question",
-    "mail.partial", "mail.withdrawal", "mail.followup_queued"]) {
+    "mail.partial", "mail.status", "mail.review", "mail.correction", "mail.withdrawal", "mail.followup_queued"]) {
     stream.addEventListener(type, scheduleRefresh);
   }
   stream.addEventListener("reset", async () => {
@@ -348,6 +345,7 @@ function watch() {
 }
 
 async function send(fields) {
+  const selectedCase = activeCase;
   const key = `pending:${conversation}`;
   const previous = JSON.parse(sessionStorage.getItem(key) || "null");
   const same = previous && JSON.stringify(previous.fields) === JSON.stringify(fields);
@@ -361,7 +359,7 @@ async function send(fields) {
     throw error;
   }
   sessionStorage.removeItem(key);
-  if (activeCase === (fields.case_id || null) && activeCase !== result.case_id) {
+  if (activeCase === selectedCase && activeCase !== result.case_id) {
     activeCase = result.case_id;
     localStorage.setItem("case:" + conversation, activeCase);
   }
@@ -389,20 +387,24 @@ $("compose").onsubmit = (event) => {
   if (!text) return;
   if (!history || $("dion-send").disabled) return;
   const submittedKey = draftKey();
-  const clarification = openClarification();
-  const waiting = history?.mail_followups.find((req) => req.case_id === activeCase);
+  const applied = JSON.parse(sessionStorage.getItem("hint:" + submittedKey) || "null");
+  // Applying a hint only fills the composer. Select the target when the user sends it.
+  const caseId = applied?.text === text ? applied.caseId : activeCase;
+  const clarification = openClarification(caseId);
+  const waiting = history.mail_followups.find((req) => req.case_id === caseId);
   perform($("compose").querySelector("button"), async () => {
     if (waiting) {
       await sendMailFollowup(waiting, text);
     } else {
       await send({
-        text, case_id: activeCase || null,
+        text, case_id: caseId || null,
         ...(clarification ? {clarification_id: clarification.id, clarification_version: clarification.version} : {}),
       });
     }
     if ($("message").value.trim() === text) {
       $("message").value = "";
       sessionStorage.removeItem(submittedKey);
+      sessionStorage.removeItem("hint:" + submittedKey);
       saveDraft();
     }
   });

@@ -199,7 +199,9 @@ def test_02_clarification_free_change_and_unknown(guest):
     assert unclear["result"]["action"] == "clarify"
     options = unclear["clarifications"][0]["options"]
     number = next(i for i, option in enumerate(options, 1) if option["text"] == "Не знаю")
-    playwright.expect(page.locator("#dion-messages")).to_contain_text(f"{number}. Не знаю")
+    shown = page.locator(f'#dion-messages [data-case-id="{unclear["case_id"]}"]').filter(has_text=f"{number}. Не знаю")
+    playwright.expect(shown).to_be_visible()
+    playwright.expect(page.get_by_role("textbox", name="Сообщение")).to_have_attribute("placeholder", "Ответьте на уточнение")
     unknown = answer(page, str(number))
     assert unknown["result"]["action"] == "answer" and len(unknown["result"]["sources"]) >= 2, unknown
 
@@ -391,3 +393,45 @@ def test_dion_draft_guide_and_ime(guest):
     page.get_by_role("button", name="Демо чат DION", exact=True).click()
     playwright.expect(draft).to_have_value(example + "\n")
     playwright.expect(page.locator("#dion-messages article")).to_have_count(0)
+
+
+def test_dion_guided_examples_create_separate_cases(guest):
+    page = guest()
+    hint_text = page.locator("#dion-hint-text")
+    apply = page.locator("#dion-hint-apply")
+    composer = page.get_by_role("textbox", name="Сообщение")
+
+    def apply_and_send():
+        apply.click()
+        assert composer.input_value()
+        with page.expect_response(lambda r: "/conversations/" in r.url and r.request.method == "POST") as sent:
+            composer.press("Enter")
+        response = sent.value
+        assert response.status == 202, response.text()
+        return result(page, response.json()), response.request.post_data_json
+
+    playwright.expect(hint_text).to_contain_text("простого вопроса")
+    simple, command = apply_and_send()
+    assert simple["result"]["action"] == "answer" and command["case_id"] is None
+    source(page, simple)
+
+    playwright.expect(hint_text).to_contain_text("составной вопрос")
+    compound, command = apply_and_send()
+    assert command["case_id"] is None and compound["case_id"] != simple["case_id"]
+    assert len(compound["result"]["parts"]) >= 2
+    assert all(part["action"] == "answer" and part["sources"] for part in compound["result"]["parts"])
+
+    playwright.expect(hint_text).to_contain_text("без указания дирекции")
+    clarify, command = apply_and_send()
+    assert command["case_id"] is None and clarify["result"]["action"] == "clarify"
+    assert clarify["case_id"] not in {simple["case_id"], compound["case_id"]}
+    playwright.expect(hint_text).to_contain_text("Ответьте на уточнение")
+
+    # The selected topic can differ from the question linked by the guide.
+    page.locator("#topics button").first.click()
+    continuation, command = apply_and_send()
+    assert command["case_id"] == clarify["case_id"] == continuation["case_id"]
+    assert command["clarification_id"] == clarify["clarifications"][0]["id"]
+    assert continuation["result"]["action"] == "answer" and continuation["result"]["sources"]
+    # The server skips mail examples that the shared FAQ can already answer.
+    assert page.request.get(URL + "/v1/browser/hint").json()["stage"] in {"gap", "done"}
