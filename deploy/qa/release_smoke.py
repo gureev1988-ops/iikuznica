@@ -58,7 +58,9 @@ class Stand:
         return json.loads(self.request(path, data, method)[2])
 
     def session(self):
-        self.conversation = self.json("/v1/browser/session", {})["conversation_id"]
+        session = self.json("/v1/browser/session", {})
+        self.conversation = session["conversation_id"]
+        self.standard_demo_login = session.get("standard_demo_login") is True
 
     def answer(self, question, **context):
         start = time.monotonic()
@@ -75,10 +77,15 @@ class Stand:
 
 def wait_for(read, timeout, description):
     deadline = time.monotonic() + timeout
+    # These callbacks only poll existing turns or mail after the write was accepted.
     while True:
-        value = read()
-        if value:
-            return value
+        try:
+            value = read()
+            if value:
+                return value
+        except HTTPError as exc:
+            if exc.code not in (502, 503, 504):
+                raise
         if time.monotonic() >= deadline:
             raise CheckFailure(f"Timed out waiting for {description}")
         time.sleep(1)
@@ -186,12 +193,15 @@ def run_browser_tests(base, full):
     env["II_BROWSER_URL"] = base
     env.pop("II_BROWSER_LOCAL_CA", None)
     env.pop("II_BROWSER_COMPOSE", None)
-    subprocess.run([sys.executable, "-m", "pytest", "-q", *(test_file + "::" + case for case in checks)],
+    subprocess.run([sys.executable, "-m", "pytest", "-q", "--confcutdir=tests/browser",
+                    *(test_file + "::" + case for case in checks)],
                    cwd=ROOT, env=env, check=True)
 
 
 def live_mail(employee, expert, reader):
     login, password = os.environ.get("II_SMOKE_EXPERT_LOGIN"), os.environ.get("II_SMOKE_EXPERT_PASSWORD")
+    if not login and not password and expert.standard_demo_login:
+        login = password = "admin"
     check(login and password, "Mail check requires the stand's configured expert credentials")
     check(expert.json("/v1/browser/mail/login", {"login": login, "password": password})["mail"],
           "Expert session unavailable")
@@ -200,7 +210,7 @@ def live_mail(employee, expert, reader):
     gap, _ = employee.answer(question)
     offer = next((o for o in gap["offers"] if o["status"] == "open"), None)
     check(offer, "No escalation offered for the marked gap")
-    employee.json(f"/v1/offers/{offer['id']}/confirm", {"version": offer["version"]})
+    employee.answer("Да, передай", case_id=gap["case_id"])
     def matching_thread():
         hits = expert.json("/v1/browser/quality/threads?q=" + tag)
         check(len(hits) <= 1, "Duplicate synthetic thread")
@@ -211,9 +221,12 @@ def live_mail(employee, expert, reader):
     thread = wait_for(matching_thread, 100, "synthetic QA email")
     check(re.fullmatch(r"Обращение ОК\d+", thread["subject"]), "Missing stable request number")
     original = next(m for m in thread["messages"] if m["message_id"] == thread["reply_message_id"])
-    check(original["cc"] and tag in original["text"] and all(
+    check(original["sender"] == "bot@assembly.test" and original["to"] == "quality@assembly.test"
+          and re.fullmatch(r"guest-[a-f0-9]{32}@assembly\.test", original["cc"]),
+          "Unexpected sender, recipient or copy address for the test request")
+    check(tag in original["text"] and "Да, передай" in original["text"] and all(
         section in original["text"] for section in ("Вопрос от сотрудника", "Почему направлено обращение", "Диалог до отправки")
-    ), "Incorrect message recipient or missing mail section")
+    ), "Missing request content, consent or mail section")
     command = {"message_id": thread["reply_message_id"], "command_id": str(uuid4()),
                "text": f"Только для учебного проекта {tag} минимальный порог маржинальности составляет 18 процентов."}
     expert.json("/v1/browser/mail/reply", command)

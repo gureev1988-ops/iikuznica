@@ -202,3 +202,30 @@ def test_compound_document_request_keeps_the_independent_question():
     link = "Пришлите сам регламент про пресейл ИБ."
     question = "По моему запросу ресурс-менеджер не ответил уже рабочий день — к кому могу подключиться?"
     assert split_document_request(link + " " + question) == (link, question)
+
+
+def test_common_mail_does_not_publish_employee_only_evidence(dsn):
+    from psycopg.types.json import Jsonb
+    from backend.contracts.fixtures import seed_fixture_sources
+    from backend.mailfaq.shared_context import shared_context
+    with connect(dsn) as conn:
+        seed_fixture_sources(conn)
+        ref = conn.execute("SELECT f.id AS fragment_id,s.id AS document_id FROM source_fragments f "
+                           "JOIN source_revisions r ON r.id=f.revision_id JOIN sources s ON s.id=r.source_id "
+                           "WHERE s.acl_actor_ids IS NULL LIMIT 1").fetchone()
+        conn.execute("UPDATE sources SET acl_actor_ids=ARRAY['owner'] WHERE id=%s", (ref["document_id"],))
+        conversation = conn.execute("INSERT INTO conversations(owner_id) VALUES ('owner') RETURNING id").fetchone()["id"]
+        refs = [{"fragment_id": str(ref["fragment_id"])}]
+        case = conn.execute("INSERT INTO cases(conversation_id,condition_sources) VALUES (%s,%s) RETURNING id",
+                            (conversation,Jsonb({"special":refs}))).fetchone()["id"]
+        result = {"action":"escalate","text":"Секретный пункт","sources":refs}
+        turn = conn.execute("INSERT INTO turns(conversation_id,case_id,request_id,question,result) "
+                            "VALUES (%s,%s,'ask','Как согласовать?',%s) RETURNING id",
+                            (conversation,case,Jsonb(result))).fetchone()["id"]
+        history = [dict(case_id=case,turn_id=turn,role="user",text="Как согласовать?"),
+                   dict(case_id=case,turn_id=turn,role="assistant",text=result["text"])]
+        question, conditions, transcript, result = shared_context(conn,case,turn,history,
+            "Секретный пункт", {"special":"Секретный пункт","stage":"пресейл"})
+        assert question == "Как согласовать?" and not result
+        assert conditions == {"stage":"пресейл"}
+        assert "Секретный пункт" not in transcript[1]["text"]

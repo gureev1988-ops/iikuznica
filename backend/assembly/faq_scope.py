@@ -41,7 +41,9 @@ def identifiers(text):
 
 def answer_entities(answer):
     """In a factual answer ordinary numbers can be findings rather than identifiers."""
-    return " ".join(match[0] for match in ENTITY_VALUE.finditer(answer))
+    return " ".join(match[0] for match in ENTITY_VALUE.finditer(answer)
+                    if match[1] or any(character.isdigit() for character in match[2])
+                    or match[2][:1].isupper())
 
 
 def quoted_entities(text):

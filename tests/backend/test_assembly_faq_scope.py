@@ -57,7 +57,6 @@ def test_engine_retains_scoped_faq_only_for_grounded_question(dsn):
     _publish_faq(dsn, stored)
     with connect(dsn) as conn:
         fragments = list_fragments(conn, ACTOR.id, kind="faq")
-        card = str(conn.execute("SELECT id FROM faq_entries").fetchone()["id"])
     engine = A1Engine(dsn)
     gap = AnswerResult("escalate", "Передать вопрос в отдел качества?")
     answers = []
@@ -65,7 +64,7 @@ def test_engine_retains_scoped_faq_only_for_grounded_question(dsn):
 
     def chat(*_):
         answers.append(1)
-        return {"text": json.dumps({"id": card, "scope": "specific", "comparison": status})}
+        return {"text": json.dumps({"id": 1, "scope": "specific", "comparison": status})}
 
     def run(question, rewritten):
         req = SimpleNamespace(question=question, case_id=uuid4(), conditions={}, sources=SourceSnapshot(fragments))

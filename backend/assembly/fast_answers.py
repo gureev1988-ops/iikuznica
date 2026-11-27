@@ -10,6 +10,7 @@ from uuid import uuid5
 
 from backend.contracts.engine import Action, AnswerResult, Citation
 from backend.db import connect
+from .faq_scope import compatible_ids
 from eval.retrieval.extract import TITLES
 from eval.scope.procedures import directories, normalized
 
@@ -274,6 +275,8 @@ def potential_faq(conn, question, conditions, fragments):
         return True
     scope, text = directories(question), normalized(question)
     for row in rows:
+        if not compatible_ids(row["question_key"], question, conditions):
+            continue
         if not faq_candidate(row, scope, text, conditions):
             continue
         if row.get("is_seed") and _DB_APPOINTMENT.fullmatch(text.removesuffix("?").rstrip()):

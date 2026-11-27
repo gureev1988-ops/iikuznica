@@ -492,13 +492,18 @@ class DialogueService:
                                 VALUES (%s,%s,%s,'user',%s,clock_timestamp())""",
                              (turn["conversation_id"], turn["case_id"], turn["id"], "Подтверждаю отправку обращения."))
             history = self.history(conn, actor, turn["conversation_id"])["messages"]
+            context = (offer["payload"].get("question", turn["question"]), offer["payload"]["conditions"],
+                       history, turn["result"])
+            if actor.channel == "guest":
+                from backend.mailfaq.shared_context import shared_context
+                context = shared_context(conn, turn["case_id"], turn["id"], history, context[0], context[1])
+            question, public_conditions, transcript, result = context
             try:
                 create_request(
                     conn, self.mail_config, offer_id=offer_id,
                     conversation_id=turn["conversation_id"], case_id=turn["case_id"], turn_id=turn["id"],
                     actor_id=actor.id, actor_email=actor.email, channel=turn["request"].get("channel", actor.channel),
-                    question=offer["payload"].get("question", turn["question"]), conditions=offer["payload"]["conditions"],
-                    dialogue=history, result=turn["result"],
+                    question=question, conditions=public_conditions, dialogue=transcript, result=result,
                 )
             except MailError as exc:
                 raise DialogueError(exc.status, exc.code) from exc

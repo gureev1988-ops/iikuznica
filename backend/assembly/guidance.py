@@ -107,11 +107,12 @@ def next_hint(conn, session):
         ORDER BY t.created_at, t.id
     """, (conversation,)).fetchall()
     request = conn.execute("""
-        SELECT r.id, r.question, r.state, EXISTS (
+        SELECT r.id, r.question, r.state, o.state AS delivery, EXISTS (
            SELECT 1 FROM faq_entries f JOIN assembly_faq_uses u ON u.faq_id=f.id
            JOIN turns t ON t.id=u.turn_id WHERE f.request_id=r.id AND t.conversation_id=r.conversation_id
         ) AS reused
-        FROM mail_requests r WHERE r.conversation_id=%s
+        FROM mail_requests r JOIN mail_outbound o ON o.request_id=r.id AND o.business_key='initial'
+        WHERE r.conversation_id=%s
         ORDER BY r.created_at DESC, r.id DESC LIMIT 1
     """, (conversation,)).fetchone()
     if rows:
@@ -129,6 +130,10 @@ def next_hint(conn, session):
                         action="example" if example else "none")
     if request and request["state"] not in {"withdrawn", "delivery_failed"}:
         if request["state"] != "resolved":
+            if request["delivery"] != "sent":
+                label = ("Проверяем результат доставки письма." if request["delivery"] == "delivery_unknown"
+                         else "Письмо в очереди на отправку в Отдел качества.")
+                return Hint(stage="inbox", text=label, action="none")
             return Hint(stage="inbox", text="Ответьте на письмо в разделе «Отдел качества». После этого ответ появится здесь.",
                         action="inbox", thread_id=request["id"])
         if request["reused"]:

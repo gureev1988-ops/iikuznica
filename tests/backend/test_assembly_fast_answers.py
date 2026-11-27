@@ -171,6 +171,8 @@ def test_cached_reply_rechecks_authorized_originals_and_faq(engine, fragments):
     assert assembly.fast_answers.answer(question(IB_QUESTION, with_faq))
     assert assembly.fast_answers.answer(question(IB_QUESTION, with_faq))
     assert len(checks) == 3
+    faq_rows[faq.fragment_id]["question_key"] = IB_QUESTION + " Код тестового проекта 68042425."
+    assert assembly.fast_answers.answer(question(IB_QUESTION, with_faq))
     faq_rows[faq.fragment_id]["question_key"] = IB_QUESTION
     assert assembly.fast_answers.answer(question(IB_QUESTION, with_faq)) is None
     del faq_rows[faq.fragment_id]

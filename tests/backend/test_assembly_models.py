@@ -175,15 +175,17 @@ class EvidenceStream(httpx.AsyncByteStream):
     ("Кто согласует? Когда подписывает?", "evidence-core", 0.18, 0, False),
     ("Кто согласует? Когда подписывает?", "evidence-core", 0.01, 0.60, False),
     ("Кто согласует?", "evidence-core", 0.01, 0.18, False),
+    ("Какая маржа по проекту?", "faq-applicability", 0.01, 0.18, True),
+    ("Какая маржа по проекту?", "faq-applicability", 0.18, 0, False),
     ("Кто согласует? Когда подписывает?", "permission-review", 0.01, 0.18, False),
 ])
-def test_only_started_compound_evidence_can_use_longer_read_deadline(
+def test_started_evidence_and_faq_comparison_can_use_bounded_read_time(
     upstream, monkeypatch, question, stage, first, tail, valid,
 ):
     from backend.assembly import models
 
     monkeypatch.setitem(ATTEMPT_SECONDS, GEMMA, (0.10, 0.10))
-    monkeypatch.setattr(models, "COMPOUND_EVIDENCE_SECONDS", 0.38)
+    monkeypatch.setattr(models, "EVIDENCE_STREAM_SECONDS", 0.38)
     seen = []
 
     def serve(req):
@@ -207,7 +209,7 @@ def test_compound_evidence_read_ends_at_the_turn_deadline(upstream, monkeypatch)
     from backend.assembly import models
 
     monkeypatch.setitem(ATTEMPT_SECONDS, GEMMA, (0.10, 0.10))
-    monkeypatch.setattr(models, "COMPOUND_EVIDENCE_SECONDS", 1)
+    monkeypatch.setattr(models, "EVIDENCE_STREAM_SECONDS", 1)
     seen = []
 
     def serve(req):

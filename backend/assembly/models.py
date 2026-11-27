@@ -18,7 +18,7 @@ from .transport import UpstreamFailure, complete, decide
 PROVIDERS = {GEMMA: "deepinfra/fp8", QWEN: "alibaba"}
 RESERVE_ENV = {GEMMA: "II_GEMMA_RESERVE_PROVIDER", QWEN: "II_QWEN_RESERVE_PROVIDER"}
 ATTEMPT_SECONDS = {GEMMA: (3, 3.5), QWEN: (5, 5), DECIDER: (2.5, 3)}
-COMPOUND_EVIDENCE_SECONDS = 6.5
+EVIDENCE_STREAM_SECONDS = 6.5
 LATENCY_LOG = logging.getLogger("backend.assembly.latency")
 
 
@@ -45,12 +45,13 @@ class ModelCalls:
         def invoke(timeout, provider):
             payload = model_settings(body, model, provider, min(body.get("max_tokens", 1536), 8192))
             stream_timeout = None
-            if model == GEMMA and stage == "evidence-core" and re.search(
+            compound = stage == "evidence-core" and re.search(
                 r"\?\s+[^?\s][^?]*\?", getattr(self.request, "question", "")
-            ):
-                # The provider may need to stream a longer selection of evidence
-                # for several questions. Its time to first content stays bounded.
-                stream_timeout = min(COMPOUND_EVIDENCE_SECONDS, self.remaining() - 0.15)
+            )
+            if model == GEMMA and (compound or stage == "faq-applicability"):
+                # Both evidence selection and FAQ comparison can stream grounded details
+                # after a timely first token. Keep acquisition and total turn bounded.
+                stream_timeout = min(EVIDENCE_STREAM_SECONDS, self.remaining() - 0.15)
                 stream_timeout = max(timeout, stream_timeout)
             try:
                 row = complete(case, payload, stage, timeout=timeout, stream_timeout=stream_timeout)
