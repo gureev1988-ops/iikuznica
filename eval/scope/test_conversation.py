@@ -60,6 +60,8 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(c.explicit_pair("Как оформить отчёт и в какой срок?"), [])
         self.assertEqual(c.explicit_pair("Кто подписывает договор? А когда?"), [])
         self.assertEqual(c.explicit_pair("Кто подписывает договор? А в Дирекции ИБ?"), [])
+        self.assertEqual(c.explicit_pair("Кто назначает РП на инициации в ДБРЦТ? "
+                                         "А в дирекции ИБ в какой срок?"), [])
         self.assertEqual(c.explicit_pair("Кто подписывает договор? Куда его отправить в Дирекции ИБ?"), [])
         self.assertEqual(c.explicit_pair("Кто готовит площадку проекта? Кого в ИБ пригласить туда?"), [])
         self.assertEqual(c.explicit_pair("Кто подписывает договор? И как мне повысить себе зарплату?"),

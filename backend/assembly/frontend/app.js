@@ -58,7 +58,13 @@ async function api(path, body) {
   return data;
 }
 
-function perform(node, operation, report = status) {
+function chatNotice(message) {
+  if (!message) status("");
+  else if (message === "interactive_queue_full") status("Сейчас много вопросов. Попробуйте отправить чуть позже.");
+  else status("Пока не получается выполнить действие. Попробуйте ещё раз.");
+}
+
+function perform(node, operation, report = chatNotice) {
   node.disabled = true;
   report("");
   return Promise.resolve().then(operation).catch((error) => report(error.message))
@@ -141,6 +147,7 @@ function render() {
   const scroll = $("dion-scroll");
   const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 80;
   const turns = new Map(history.turns.map((turn) => [turn.turn_id, turn]));
+  const latestTurns = new Map(history.turns.map((turn) => [turn.case_id, turn.turn_id]));
   const topics = new Map();
   for (const turn of history.turns) if (!topics.has(turn.case_id)) topics.set(turn.case_id, turn.question);
   const topicNodes = [...topics].map(([id, title]) => {
@@ -192,7 +199,7 @@ function render() {
     items.push(item);
   }
   for (const turn of history.turns) {
-    if (turn.status === "technical_failure") {
+    if (turn.status === "technical_failure" && latestTurns.get(turn.case_id) === turn.turn_id) {
       const item = el("article", "Ответ пока не готов. Вопрос сохранён.");
       item.className = "message";
       item.append(" ", button("Продолжить поиск", (event) => perform(event.currentTarget, async () => {
@@ -485,5 +492,5 @@ try {
   const pending = JSON.parse(sessionStorage.getItem(`pending:${conversation}`) || "null");
   if (pending) await send(pending.fields);
 } catch (error) {
-  status(error.message);
+  chatNotice(error.message);
 }

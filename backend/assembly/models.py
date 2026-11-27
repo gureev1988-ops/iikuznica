@@ -8,6 +8,7 @@ import os
 import time
 
 from backend.contracts.engine import EngineUnavailable, ModelAttemptFailure, ModelAttemptResult
+from backend.runtime.jobs import PermanentJobFailure
 from eval.decider.policy import GEMMA, MODEL as DECIDER
 from eval.search_core.core import QWEN, model_settings
 from .transport import UpstreamFailure, complete, decide
@@ -18,8 +19,12 @@ ATTEMPT_SECONDS = {GEMMA: (3, 3.5), QWEN: (5, 5), DECIDER: (2.5, 3)}
 LATENCY_LOG = logging.getLogger("backend.assembly.latency")
 
 
-class RetryableModelAttempt(ModelAttemptFailure):
-    """A physical call failed transiently and can use the stage's second attempt."""
+class AssemblyModelFailure(ModelAttemptFailure, PermanentJobFailure):
+    """Allow stage failover without repeating an entire answer job."""
+
+    def __init__(self, reason, *, retryable=False, **usage):
+        super().__init__(reason, **usage)
+        self.retryable = retryable
 
 
 class ModelCalls:
@@ -41,8 +46,8 @@ class ModelCalls:
             except UpstreamFailure as error:
                 snapshot = error.row or {}
                 self.observe(stage, model, provider, snapshot, "failed")
-                failure = RetryableModelAttempt if error.retryable else ModelAttemptFailure
-                raise failure(str(error), **self.usage(snapshot, "chat")) from None
+                raise AssemblyModelFailure(str(error), retryable=error.retryable,
+                                           **self.usage(snapshot, "chat")) from None
             self.observe(stage, model, provider, row, "succeeded")
             return ModelAttemptResult(row, **self.usage(row, "chat"))
 
@@ -55,12 +60,11 @@ class ModelCalls:
                 result = decide(body, timeout=timeout)
             except UpstreamFailure as error:
                 self.observe("judge", DECIDER, provider, {"latency_s": time.monotonic() - started}, "failed")
-                failure = RetryableModelAttempt if error.retryable else ModelAttemptFailure
-                raise failure(str(error)) from None
+                raise AssemblyModelFailure(str(error), retryable=error.retryable) from None
             reply = result["response"]
             if not decisions_valid(reply.get("answers"), body["questions"]):
                 self.observe("judge", DECIDER, provider, {**reply, "latency_s": result["latency_s"]}, "failed")
-                raise ModelAttemptFailure("Decisions returned a malformed answer", **self.usage(reply, "decisions"))
+                raise AssemblyModelFailure("Decisions returned a malformed answer", **self.usage(reply, "decisions"))
             self.observe("judge", DECIDER, provider, {**reply, "latency_s": result["latency_s"]}, "succeeded")
             return ModelAttemptResult(result, **self.usage(reply, "decisions"))
 
@@ -105,8 +109,8 @@ class ModelCalls:
                     return self.request.attempts.call(perform, role=role, model=model,
                                                       route=f"openrouter/{endpoint}/{provider}")
                 return perform().value
-            except RetryableModelAttempt:
-                if attempt or self.remaining() < 0.6:
+            except AssemblyModelFailure as error:
+                if attempt or not error.retryable or self.remaining() < 0.6:
                     raise
                 time.sleep(0.1)
 

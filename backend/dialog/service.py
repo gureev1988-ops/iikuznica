@@ -716,7 +716,7 @@ class DialogueService:
             self.queue_reply(
                 conn, effect_key=f"turn:{turn['id']}:{turn['attempt']}:failed",
                 conversation_id=turn["conversation_id"], case_id=turn["case_id"], turn_id=turn["id"],
-                actor_id=actor.id, text="Не удалось обработать вопрос из-за технической ошибки.",
+                actor_id=actor.id, text="Ответ пока не готов. Можно повторить вопрос.",
             )
 
     def _refs_visible(self, conn, actor: Actor, refs: list[dict], *, current: bool = False) -> bool:

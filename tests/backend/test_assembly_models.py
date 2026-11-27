@@ -3,12 +3,15 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 import json
 from types import SimpleNamespace
+from uuid import uuid4
 
 import httpx
 import pytest
 
 from backend.assembly.models import ATTEMPT_SECONDS, DECIDER, GEMMA, ModelCalls, decisions_valid
 from backend.contracts.engine import ModelAttemptFailure
+from backend.dialog.service import _AttemptRecorder
+from backend.runtime import enqueue, run_once
 
 
 @pytest.fixture
@@ -113,6 +116,32 @@ def test_decisions_deadline_covers_trickled_body(upstream, monkeypatch):
     with pytest.raises(ModelAttemptFailure, match="request exceeded its deadline"):
         model_calls().decisions({"model": DECIDER, "questions": {}, "state": "test"})
     assert len(seen) == 2
+
+
+def test_exhausted_model_retries_do_not_restart_answer_job(upstream, dsn, db):
+    seen = []
+
+    def unavailable(req):
+        seen.append(req)
+        return httpx.Response(503)
+
+    upstream(unavailable)
+    job_id = enqueue(db, queue="interactive", kind="answer", key="turn", payload={},
+                     deadline_at=datetime.now(UTC) + timedelta(seconds=20))
+    db.commit()
+    turn_id, case_id = uuid4(), uuid4()
+
+    def answer(job):
+        context = SimpleNamespace(deadline=job.deadline_at, turn_id=turn_id,
+                                  attempts=_AttemptRecorder(dsn, job, turn_id, case_id))
+        ModelCalls(context).chat("test", {"model": GEMMA}, "answer")
+
+    assert run_once(dsn, "interactive", {"answer": answer}).id == job_id
+    assert run_once(dsn, "interactive", {"answer": answer}) is None
+    assert len(seen) == 2
+    assert db.execute("SELECT state FROM jobs WHERE id = %s", (job_id,)).fetchone()["state"] == "failed"
+    calls = db.execute("SELECT state FROM model_calls WHERE job_id = %s", (job_id,)).fetchall()
+    assert calls == [{"state": "failed"}, {"state": "failed"}]
 
 
 def test_decisions_reject_missing_and_corrupt_fields():

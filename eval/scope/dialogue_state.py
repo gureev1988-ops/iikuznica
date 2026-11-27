@@ -52,11 +52,13 @@ DIRECTORATE_FOLLOWUP = re.compile(rf"а\s+в\s+{conversation.DIRECTORATE_LABEL}\
 PRIOR_DIRECTORATE_PREFIX = re.compile(
     rf"^(?:у нас\s+|в\s+)?{conversation.DIRECTORATE_LABEL}(?:[.:,]\s*|\s+)", re.I
 )
-PRIOR_DIRECTORATE_SUFFIX = re.compile(rf"\s+в\s+{conversation.DIRECTORATE_LABEL}$", re.I)
+PRIOR_DIRECTORATE_INLINE = re.compile(rf"\s+(?:в|у)\s+{conversation.DIRECTORATE_LABEL}(?=\s|$)", re.I)
 # Closed patterns keep the employee's request and leave all normative facts to retrieval.
 PRIOR_TOPIC = re.compile(
-    r"кто (?:назначает|выделяет) (?:рп|руководителя проекта)(?: и (?:в какой срок|когда))?|"
-    r"(?:когда|в какой срок) назначают (?:рп|руководителя проекта)|"
+    r"(?:(?:кто(?: и в какой срок)?|когда|в какой срок) (?:назначает|выделяет|назначают) "
+    r"(?:рп|руководителя проекта)(?: и (?:в какой срок|когда))?)"
+    r"(?: (?:при инициации|на (?:этапе )?инициации)(?: проекта)?)?|"
+    r"какой срок подготовки бюджетной оценки для (?:торгов|конкурса)|"
     r"кому (?:направить|отправить|передать) заявку на расчет|"
     r"кого (?:пригласить|позвать) на установочную встречу|"
     r"кто отвечает за поставку|кто (?:подписывает|согласует) договор"
@@ -74,11 +76,11 @@ def _directorate_followup(question, past):
     prior = past[-1]
     user = prior["user"].strip()
     if (prior["action"] != "answer" or not user.endswith("?")
-            or len(procedures.directories(user) - {"PRE"}) > 1
+            or len(procedures.directories(user) - {"PRE"}) != 1
             or procedures.normalized(user) != procedures.normalized(prior["resolved"])):
         return None
     topic = PRIOR_DIRECTORATE_PREFIX.sub("", user[:-1].strip())
-    topic = PRIOR_DIRECTORATE_SUFFIX.sub("", topic).strip()
+    topic = PRIOR_DIRECTORATE_INLINE.sub("", topic, count=1).strip()
     if not PRIOR_TOPIC.fullmatch(procedures.normalized(topic)):
         return None
     directorate, = procedures.directories(question) - {"PRE"}

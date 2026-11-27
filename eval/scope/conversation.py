@@ -46,6 +46,10 @@ BACK_REFERENCE = re.compile(
     r"эт(?:от|а|у|ой|ого|им|ом|о|и|их)|так(?:ом|ой|ая|ое|их)|предыдущ\w*|указанн\w*|"
     r"так\s+же|тоже|тот\s+же|та\s+же|то\s+же|те\s+же)\b", re.I
 )
+BARE_TIMING = re.compile(
+    r"(?:в течение какого срока|в какой срок|в какие сроки|за какой срок|"
+    r"(?:через|за) сколько(?: времени| (?:рабочих )?(?:дней|часов))?)", re.I,
+)
 
 
 def fragments(question):
@@ -174,8 +178,9 @@ def explicit_pair(question):
     if ask.pay_shortcut(second):
         return [first, second]
     topic = re.sub(rf"\b(?:(?:в|для|по)\s+)?{DIRECTORATE_LABEL}\b", "", second, flags=re.I)
+    topic = " ".join(re.findall(r"\w+", topic))
     if (not procedures.directories(second) or BACK_REFERENCE.search(second)
-            or len(re.findall(r"\w+", topic)) < 3):
+            or len(topic.split()) < 3 or BARE_TIMING.fullmatch(topic)):
         return []
     return [first, second]
 
