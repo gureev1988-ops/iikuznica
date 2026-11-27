@@ -1,0 +1,270 @@
+"""Audited, source-bound answers for a small set of standalone questions."""
+from collections import OrderedDict, defaultdict
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from hashlib import sha256
+import json
+import re
+from threading import Lock
+from uuid import uuid5
+
+from backend.contracts.engine import AnswerResult, Citation
+from backend.db import connect
+from eval.retrieval.extract import TITLES
+from eval.scope.procedures import directories, normalized
+
+
+# Each pair pins an original DOCX and its complete sequence of extracted clauses
+# (sorted by anchor). Any corpus change requires reviewing scope and exceptions again.
+ORIGINALS = {
+    "DB": (
+        "be8a86386276768352e67cfeaef807f98b79f8532bef7c649981326184d4acbd",
+        "52e6b43a99cb1274d8480cf4c0aaaca33ddf2e7cde3820fd670dc43120ab4ddc",
+    ),
+    "IB": (
+        "35c9d64940273d19fc27f79e6436056b5944ea975533c53579222c049056b9b4",
+        "f963e1a26f6632ea78d23e6a667628c4bdf600d1d70af56d91fcbe0d1f2a1d80",
+    ),
+    "PRE": (
+        "e39235e9a4257c0cb55ccb557198cb9e0f4313d1c4e4e797cdefacc5e279b7f3",
+        "a82e73ebcabd043c280c0efac2d7ec831a3c2c68972813335b9251b62e1acc7c",
+    ),
+    "TECH": (
+        "d0a84128c45ba50eccd6715ae534bba0642f1a1b5af1468269d5ad8e079b5dbf",
+        "7245b6dc51b3b0de1dd8113537e1e29943cdc48e427baff50835c63b8c22dc2a",
+    ),
+}
+DOC_BY_TITLE = {title: doc for doc, title in TITLES.items()}
+POLICY_VERSION = 1
+CACHE_SIZE = 64
+
+
+class VerifiedAnswer(AnswerResult):
+    """A local result whose assumptions depend on the entire visible catalog."""
+
+    __slots__ = ()
+
+
+@dataclass(frozen=True)
+class Rule:
+    question: re.Pattern
+    text: str
+    evidence: tuple[tuple[str, str], ...]
+
+
+# Full matches keep a compound request, exception, or unstated scope out of the fast path.
+_APPOINT = r"(?:кто и в какой срок|в какой срок|за сколько времени|когда|кто)"
+_ASSIGN = r"(?:назначают|назначает|назначат|должны назначить)"
+_PM = r"(?:руководителя проекта|рп)"
+_INIT = r"(?:при инициации(?: проекта)?|на этапе инициации(?: проекта)?|на инициации(?: проекта)?)"
+_IB = r"в дирекции (?:иб|информационной безопасности)"
+_DB = r"в дбрцт"
+
+
+def _appointment(directorate, *, complete_data=False):
+    data = r"(?: при (?:полных данных|полной информации))?" if complete_data else ""
+    return re.compile(
+        rf"{_APPOINT} (?:{directorate} {_ASSIGN} {_PM} {_INIT}|"
+        rf"{_ASSIGN} {_PM} {_INIT} {directorate}|"
+        rf"{_ASSIGN} {_PM} {directorate} {_INIT}|"
+        rf"{_INIT} {directorate} {_ASSIGN} {_PM}){data}"
+    )
+
+
+RULES = (
+    Rule(
+        _appointment(_IB, complete_data=True),
+        "При полных данных координатор департамента назначает руководителя проекта "
+        "в течение 1 рабочего дня в соответствии с итоговым расчётом [1]. "
+        "При неполных данных координатор запрашивает уточнения в карточке проекта и ждёт ответа "
+        "менеджера по продаже решений (SS) [2].",
+        (
+            (
+                "IB:2.7:1",
+                "Если предоставлена полная информация, Координатор департамента назначает РП "
+                "в соответствии с итоговым Расчётом проекта в течение 1 рабочего дня.",
+            ),
+            (
+                "IB:2.2:1",
+                "Если предоставлена неполная информация, Координатор департамента задаёт уточняющие "
+                "вопросы в карточке проекта и ожидает ответа от SS (Менеджера по продаже решений).",
+            ),
+        ),
+    ),
+    Rule(
+        _appointment(_DB),
+        "На инициации в ДБРЦТ руководитель отдела управления проектами и технологической компетенцией "
+        "назначает руководителя проекта не позднее 12 рабочих часов с момента запроса [1].",
+        (
+            (
+                "DB:7.2:1",
+                "Руководитель отдела управления проектами и технологической компетенцией назначает "
+                "на инициацию проекта РП не позднее 12 рабочих часов с момента запроса.",
+            ),
+        ),
+    ),
+    Rule(
+        re.compile(
+            rf"(?:на пресейле {_IB}|{_IB} на пресейле|для иб) заказчик (?:уже )?выбрал "
+            r"(?:по|оборудование|продукт), запросил только расчет поставки и (?:явно )?отказался от всех услуг[.,] "
+            r"(?:кто готовит и кому направляет ткп|кому bdm направляет ткп|кому направляют ткп|кому передать ткп)"
+        ),
+        "BDM готовит ТКП только на поставку и отправляет его аккаунт-менеджеру (АМ) [1].",
+        (
+            (
+                "PRE:1.3:5",
+                "Если Заказчик явно обозначил, что ему не потребуются услуги, BDM формирует "
+                "ТКП только на поставку и отправляет его АМ.",
+            ),
+        ),
+    ),
+    Rule(
+        re.compile(
+            r"(?:(?:какой срок подготовки бюджетной оценки|сколько времени занимает подготовка бюджетной оценки)"
+            r" для (?:торгов|конкурса) (?:у|в) технической дирекции|"
+            r"можно ли (?:подать бюджетную оценку технической дирекции на конкурс|"
+            r"использовать бюджетную оценку технической дирекции для подачи (?:в|на) конкурс))"
+        ),
+        "Предварительную бюджетную оценку Технической дирекции запрещено использовать для подачи в конкурс [1]. "
+        "Для конкурса расчёт нужно инициировать за 2 недели до подачи [2].",
+        (
+            (
+                "TECH:2.4:2",
+                "Бюджетная оценка не может использоваться для подачи в конкурс, контрактования "
+                "и определения начальной максимальной цены (НМЦ), т.к. данный расчёт не считается окончательным.",
+            ),
+            ("TECH:1.5:2", "Расчёт должен быть инициирован за 2 недели до подачи конкурса."),
+        ),
+    ),
+)
+
+
+def _digest(value):
+    return sha256(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def faq_candidate(row, question_scope, normalized_question, conditions):
+    known_scope = directories(row["question_key"])
+    return (not known_scope or known_scope == question_scope) and all(
+        conditions.get(key) == value
+        or (isinstance(value, str) and normalized(value) in normalized_question)
+        for key, value in json.loads(row["conditions_key"]).items()
+    )
+
+
+def potential_faq(conn, question, conditions, fragments):
+    faq_ids = {fragment.fragment_id for fragment in fragments if fragment.kind == "faq"}
+    if not faq_ids:
+        return False
+    rows = conn.execute("""
+        SELECT current_fragment_id, question_key, conditions_key FROM faq_entries
+        WHERE current_fragment_id = ANY(%s::uuid[])
+    """, (list(faq_ids),)).fetchall()
+    scope, text = directories(question), normalized(question)
+    return (
+        {row["current_fragment_id"] for row in rows} != faq_ids
+        or any(faq_candidate(row, scope, text, conditions) for row in rows)
+    )
+
+
+def _scope(fragments):
+    """Check that every visible regulation belongs to the audited active source set."""
+    documents = defaultdict(list)
+    faq = []
+    for fragment in fragments:
+        if fragment.kind == "faq":
+            faq.append((fragment.document_id.hex, fragment.revision_id.hex, fragment.fragment_id.hex, fragment.version))
+            continue
+        doc = DOC_BY_TITLE.get(fragment.title)
+        if fragment.kind != "document" or doc is None or fragment.version != 1:
+            return None
+        documents[doc].append(fragment)
+    if documents.keys() != ORIGINALS.keys():
+        return None
+    versions = []
+    refs = {}
+    for doc, passages in sorted(documents.items()):
+        content = sorted((p.anchor, p.text) for p in passages)
+        if _digest(content) != ORIGINALS[doc][1]:
+            return None
+        document_id, revision_id = passages[0].document_id, passages[0].revision_id
+        for passage in passages:
+            if (passage.document_id != document_id or passage.revision_id != revision_id
+                    or passage.fragment_id != uuid5(revision_id, passage.anchor)):
+                return None
+            refs[doc, passage.anchor] = passage
+        versions.append((doc, document_id, revision_id))
+    if len({version[1] for version in versions}) != len(ORIGINALS):
+        return None
+    return tuple(versions), faq, refs
+
+
+def _official_originals(conn, versions):
+    revisions = [version[2] for version in versions]
+    rows = conn.execute("""
+        SELECT s.external_id, s.id AS document_id, r.id AS revision_id, o.sha256
+        FROM assembly_originals o JOIN source_revisions r ON r.id = o.revision_id
+        JOIN sources s ON s.id = r.source_id
+        WHERE r.id = ANY(%s::uuid[]) AND s.source_key = 'assembly-corpus'
+    """, (revisions,)).fetchall()
+    return {(row["external_id"], row["document_id"], row["revision_id"], row["sha256"]) for row in rows} == {
+        (doc, document_id, revision_id, ORIGINALS[doc][0])
+        for doc, document_id, revision_id in versions
+    }
+
+
+class VerifiedAnswers:
+    def __init__(self, dsn, records):
+        self.dsn = dsn
+        self.records = records
+        self._cache = OrderedDict()
+        self._lock = Lock()
+
+    def answer(self, request):
+        if (request.conditions or request.history or request.clarification is not None
+                or request.clarification_count or datetime.now(UTC) >= request.deadline):
+            return None
+        question = normalized(request.question).removesuffix("?").rstrip()
+        rule = next((rule for rule in RULES if rule.question.fullmatch(question)), None)
+        if rule is None:
+            return None
+        scoped = _scope(request.sources.fragments)
+        if scoped is None:
+            return None
+        versions, faq, refs = scoped
+        # Standalone only. Keep fixed-size keys and omit raw question text and case data.
+        key = POLICY_VERSION, _digest(request.question), versions, _digest(sorted(faq))
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None:
+                self._cache.move_to_end(key)
+        if cached is None or faq:
+            with connect(self.dsn) as conn:
+                if potential_faq(conn, request.question, request.conditions, request.sources.fragments):
+                    return None
+                if cached is None and not _official_originals(conn, versions):
+                    return None
+        if cached is None:
+            cached = self._verify(rule, refs)
+            if cached is None:
+                return None
+            with self._lock:
+                self._cache[key] = cached
+                self._cache.move_to_end(key)
+                if len(self._cache) > CACHE_SIZE:
+                    self._cache.popitem(last=False)
+        return replace(cached, resolved_question=request.question)
+
+    def _verify(self, rule, refs):
+        by_id = {entry["id"]: entry for entry in self.records()}
+        citations = []
+        for claim_id, quote in rule.evidence:
+            doc, ref, _ = claim_id.split(":")
+            record = by_id.get(claim_id)
+            part = refs[doc, ref]
+            if (not record or record["status"] != "indexed" or (record["doc"], record["ref"]) != (doc, ref)
+                    or record["source_sha256"] != ORIGINALS[doc][0] or record["quote"] != part.text
+                    or quote not in part.text):
+                return None
+            citations.append(Citation(part.document_id, part.revision_id, part.fragment_id, quote))
+        return VerifiedAnswer("answer", rule.text, citations=tuple(citations), allow_faq=False)

@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
 
+from backend.assembly.fast_answers import VerifiedAnswer, potential_faq
 from backend.contracts.api import AcceptedMessage, MessageRequest
 from backend.contracts.engine import (
     AnswerEngine,
@@ -526,7 +527,13 @@ class DialogueService:
             conditions, condition_sources = self._conditions(conn, actor, turn["case_id"])
             if conditions != dict(request.conditions):
                 raise EvidenceChanged("Case conditions changed during the turn")
-            if actor.channel == "guest":
+            if isinstance(result, VerifiedAnswer):
+                from backend.documents import list_fragments
+
+                current = list_fragments(conn, actor.id, hackathon=self.hackathon)
+                if current != request.sources.fragments or potential_faq(conn, request.question, conditions, current):
+                    raise EvidenceChanged("Verified answer source snapshot changed during the turn")
+            elif actor.channel == "guest":
                 from backend.documents import list_fragments
                 current = list_fragments(conn, actor.id, kind="document", hackathon=self.hackathon)
                 expected = {_fragment_key(fragment) for fragment in request.sources.fragments
