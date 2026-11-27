@@ -85,6 +85,8 @@ class AnswerPartView(BaseModel):
 
 
 class ResultView(BaseModel):
+    mail_request_id: UUID | None = None
+    case_number: int | None = None
     action: Action
     text: str
     sources: list[SourceReference] = Field(default_factory=list)

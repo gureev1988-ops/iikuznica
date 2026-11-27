@@ -1,0 +1,76 @@
+name: Published stand smoke
+on:
+  workflow_run:
+    workflows: [Core checks]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      exercise_mail:
+        description: Create one synthetic QA case and verify the expert reply
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: published-stand-smoke-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_run' }}
+jobs:
+  verify:
+    if: >-
+      github.repository == 'gureev1988-ops/iikuznica' &&
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.head_branch == 'main' &&
+        (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      EXPECTED_REVISION: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - name: Check latest main revision
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [[ "$current" == "$EXPECTED_REVISION" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipped superseded revision $EXPECTED_REVISION (main is $current)"
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        if: steps.release.outputs.current == 'true'
+        with:
+          ref: ${{ env.EXPECTED_REVISION }}
+          persist-credentials: false
+      - name: Install the browser
+        if: steps.release.outputs.current == 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install pytest playwright
+          .venv/bin/python -m playwright install --with-deps chromium
+      - name: Check the published revision and guest chat
+        if: steps.release.outputs.current == 'true'
+        env:
+          II_STAND_URL: https://45.8.146.122
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [[ "$current" != "$EXPECTED_REVISION" ]]; then
+            echo "Superseded during setup (main is $current)"
+            exit 0
+          fi
+          args=(--url "$II_STAND_URL" --sha "$EXPECTED_REVISION" --wait 1200 --browser --roundtrip)
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            args+=(--answers)
+          fi
+          .venv/bin/python deploy/qa/release_smoke.py "${args[@]}"
+      - name: Check one synthetic mail round trip
+        if: steps.release.outputs.current == 'true' && github.event_name == 'workflow_dispatch' && inputs.exercise_mail
+        env:
+          II_SMOKE_EXPERT_LOGIN: ${{ secrets.II_SMOKE_EXPERT_LOGIN }}
+          II_SMOKE_EXPERT_PASSWORD: ${{ secrets.II_SMOKE_EXPERT_PASSWORD }}
+        run: |
+          .venv/bin/python deploy/qa/release_smoke.py --url https://45.8.146.122 --sha "$EXPECTED_REVISION" --mail

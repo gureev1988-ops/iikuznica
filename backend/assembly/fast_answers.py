@@ -10,6 +10,7 @@ from uuid import uuid5
 
 from backend.contracts.engine import Action, AnswerResult, Citation
 from backend.db import connect
+from .faq_scope import compatible_ids
 from eval.retrieval.extract import TITLES
 from eval.scope.procedures import directories, normalized
 
@@ -34,6 +35,12 @@ ORIGINALS = {
         "7245b6dc51b3b0de1dd8113537e1e29943cdc48e427baff50835c63b8c22dc2a",
     ),
 }
+# The training edition changes only DB 1.6. _verify still requires the
+# registry's entire underlying clause to match before it can return any rule.
+DB_TRAINING_REVISION = (
+    "b393a87402817a588bc75cc9f29011324977e18db835bdbfb64298cd95769a08",
+    "386c756cbd29ca454eeee57c3f6516a0388c92037e4e5cd78010b052f224cf0c",
+)
 DOC_BY_TITLE = {title: doc for doc, title in TITLES.items()}
 POLICY_VERSION = 2
 CACHE_SIZE = 64
@@ -102,10 +109,15 @@ def _appointment(directorate, *, complete_data=False):
     )
 
 
+_DB_APPOINTMENT = _appointment(_DB)
+
+
 RULES = (
     Rule(
         re.compile(rf"(?:{_appointment(_IB, complete_data=True).pattern}|"
-                   rf"{_IB_PREFIX}{_APPOINT} {_ASSIGN} {_PM} {_INIT})"),
+                   rf"{_IB_PREFIX}{_APPOINT} {_ASSIGN} {_PM} {_INIT}|"
+                   rf"кто {_IB} {_INIT} при (?:полных данных|полной информации) "
+                   rf"{_ASSIGN} {_PM} и (?:за сколько(?: времени)?|в какой срок))"),
         _IB_APPOINTMENT_TEXT,
         _IB_APPOINTMENT_EVIDENCE,
     ),
@@ -118,7 +130,7 @@ RULES = (
         _IB_APPOINTMENT_EVIDENCE,
     ),
     Rule(
-        _appointment(_DB),
+        _DB_APPOINTMENT,
         "На инициации в ДБРЦТ руководитель отдела управления проектами и технологической компетенцией "
         "назначает руководителя проекта не позднее 12 рабочих часов с момента запроса [1]. "
         "Команду формируют при действующем точном расчёте трудозатрат и вероятности сделки более 80% [2]. "
@@ -251,18 +263,34 @@ def faq_candidate(row, question_scope, normalized_question, conditions):
 
 
 def potential_faq(conn, question, conditions, fragments):
-    faq_ids = {fragment.fragment_id for fragment in fragments if fragment.kind == "faq"}
-    if not faq_ids:
+    faq = {fragment.fragment_id: fragment for fragment in fragments if fragment.kind == "faq"}
+    if not faq:
         return False
     rows = conn.execute("""
-        SELECT current_fragment_id, question_key, conditions_key FROM faq_entries
-        WHERE current_fragment_id = ANY(%s::uuid[])
-    """, (list(faq_ids),)).fetchall()
+        SELECT f.current_fragment_id, f.question_key, f.conditions_key, seed.faq_id IS NOT NULL AS is_seed
+        FROM faq_entries f LEFT JOIN assembly_quality_seed seed ON seed.faq_id=f.id
+        WHERE f.current_fragment_id = ANY(%s::uuid[])
+    """, (list(faq),)).fetchall()
+    if {row["current_fragment_id"] for row in rows} != faq.keys():
+        return True
     scope, text = directories(question), normalized(question)
-    return (
-        {row["current_fragment_id"] for row in rows} != faq_ids
-        or any(faq_candidate(row, scope, text, conditions) for row in rows)
-    )
+    for row in rows:
+        if not compatible_ids(row["question_key"], question, conditions):
+            continue
+        if not faq_candidate(row, scope, text, conditions):
+            continue
+        if row.get("is_seed") and _DB_APPOINTMENT.fullmatch(text.removesuffix("?").rstrip()):
+            from .quality_seed import ANSWER, QUESTION
+            from backend.mailfaq.faq import _key
+            # A question about the duration of an exact estimate cannot govern
+            # who appoints the PM at initiation. Any edit or other FAQ still
+            # requires the ordinary applicability check and publication guard.
+            fragment = faq[row["current_fragment_id"]]
+            if (fragment.version == 1 and fragment.text == ANSWER and row["question_key"] == _key(QUESTION)
+                    and row["conditions_key"] == "{}"):
+                continue
+        return True
+    return False
 
 
 def _scope(fragments):
@@ -274,7 +302,7 @@ def _scope(fragments):
             faq.append((fragment.document_id.hex, fragment.revision_id.hex, fragment.fragment_id.hex, fragment.version))
             continue
         doc = DOC_BY_TITLE.get(fragment.title)
-        if fragment.kind != "document" or doc is None or fragment.version != 1:
+        if fragment.kind != "document" or doc is None:
             return None
         documents[doc].append(fragment)
     if documents.keys() != ORIGINALS.keys():
@@ -283,15 +311,22 @@ def _scope(fragments):
     refs = {}
     for doc, passages in sorted(documents.items()):
         content = sorted((p.anchor, p.text) for p in passages)
-        if _digest(content) != ORIGINALS[doc][1]:
+        version = passages[0].version
+        if version == 1:
+            original_hash, indexed_hash = ORIGINALS[doc]
+        elif doc == "DB" and version == 2:
+            original_hash, indexed_hash = DB_TRAINING_REVISION
+        else:
+            return None
+        if _digest(content) != indexed_hash:
             return None
         document_id, revision_id = passages[0].document_id, passages[0].revision_id
         for passage in passages:
             if (passage.document_id != document_id or passage.revision_id != revision_id
-                    or passage.fragment_id != uuid5(revision_id, passage.anchor)):
+                    or passage.version != version or passage.fragment_id != uuid5(revision_id, passage.anchor)):
                 return None
             refs[doc, passage.anchor] = passage
-        versions.append((doc, document_id, revision_id))
+        versions.append((doc, document_id, revision_id, original_hash))
     if len({version[1] for version in versions}) != len(ORIGINALS):
         return None
     return tuple(versions), faq, refs
@@ -305,10 +340,7 @@ def _official_originals(conn, versions):
         JOIN sources s ON s.id = r.source_id
         WHERE r.id = ANY(%s::uuid[]) AND s.source_key = 'assembly-corpus'
     """, (revisions,)).fetchall()
-    return {(row["external_id"], row["document_id"], row["revision_id"], row["sha256"]) for row in rows} == {
-        (doc, document_id, revision_id, ORIGINALS[doc][0])
-        for doc, document_id, revision_id in versions
-    }
+    return {(row["external_id"], row["document_id"], row["revision_id"], row["sha256"]) for row in rows} == set(versions)
 
 
 class VerifiedAnswers:

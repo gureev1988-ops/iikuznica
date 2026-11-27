@@ -57,7 +57,8 @@ class Submission:
         target = QUALITY if sender == BOT else BOT
         recipients = {r.casefold() for r in envelope.rcpt_tos}
         copies = recipients - {target}
-        if target not in recipients or len(copies) != 1 or not GUEST.fullmatch(next(iter(copies))):
+        report = sender == BOT and recipients == {QUALITY}
+        if not report and (target not in recipients or len(copies) != 1 or not GUEST.fullmatch(next(iter(copies)))):
             return "550 Only the designated mailbox and one provisioned employee alias are allowed"
         message = BytesParser(policy=policy.SMTP).parsebytes(envelope.original_content)
         mids = message.get_all("Message-ID", [])
@@ -66,6 +67,8 @@ class Submission:
                 or len(source) != 1 or len(source[0].addresses) != 1
                 or source[0].addresses[0].addr_spec.casefold() != sender):
             return "550 Invalid From or Message-ID"
+        if report and not re.fullmatch(r"<quality-report-[0-9a-f-]{36}@assembly\.test>", str(mids[0])):
+            return "550 Invalid report identity"
         del message["Authentication-Results"]
         message["Authentication-Results"] = f"{AUTHSERV}; auth=pass smtp.auth={sender}"
         try:

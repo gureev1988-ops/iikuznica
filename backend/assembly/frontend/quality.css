@@ -1,0 +1,20 @@
+.quality-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--red, #882941);
+  font: inherit;
+  text-align: start;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.quality-ratings { display: flex; flex-wrap: wrap; gap: 18px; }
+.quality-questions { list-style: disc; padding-inline-start: 1.3em; margin-block: .5em; }
+.quality-questions li + li { margin-top: .35em; }
+.faq-row-button .faq-chevron { font-size: 1rem; color: var(--muted); }
+.faq-row-button[aria-expanded=true] .faq-chevron { transform: rotate(180deg); }
+.mail-refresh { margin-inline-start: auto; font-size: 11px; }
+.mail-inbox-heading { gap: 6px; flex-wrap: wrap; }
+.mail-message-body .mail-addresses { overflow-wrap: anywhere; }
+.quality-dialog .quality-copy, .faq-row-id { overflow-wrap: anywhere; }

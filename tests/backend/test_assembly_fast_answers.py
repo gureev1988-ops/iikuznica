@@ -85,6 +85,10 @@ def allow_originals(rows, fragments):
 
 @pytest.mark.parametrize(("text", "expected", "anchors"), [
     (IB_QUESTION, "1 рабочего дня", ["2.7", "2.2", "2.3"]),
+    ("Кто в дирекции ИБ на инициации при полных данных назначает руководителя проекта и за сколько?",
+     "1 рабочего дня", ["2.7", "2.2", "2.3"]),
+    ("Кто в дирекции информационной безопасности при инициации проекта при полной информации "
+     "назначает РП и в какой срок?", "1 рабочего дня", ["2.7", "2.2", "2.3"]),
     (DB_QUESTION, "вероятности сделки более 80%", ["7.2", "7.1.1", "7.1.2"]),
     (PRE_QUESTION, "отправляет его аккаунт-менеджеру (АМ)", ["1.3"]),
     (TECH_QUESTION, "запрещено использовать для подачи в конкурс", ["2.4", "1.5"]),
@@ -167,6 +171,8 @@ def test_cached_reply_rechecks_authorized_originals_and_faq(engine, fragments):
     assert assembly.fast_answers.answer(question(IB_QUESTION, with_faq))
     assert assembly.fast_answers.answer(question(IB_QUESTION, with_faq))
     assert len(checks) == 3
+    faq_rows[faq.fragment_id]["question_key"] = IB_QUESTION + " Код тестового проекта 68042425."
+    assert assembly.fast_answers.answer(question(IB_QUESTION, with_faq))
     faq_rows[faq.fragment_id]["question_key"] = IB_QUESTION
     assert assembly.fast_answers.answer(question(IB_QUESTION, with_faq)) is None
     del faq_rows[faq.fragment_id]
@@ -390,3 +396,43 @@ def test_local_compound_rechecks_faq_for_each_scope(dsn, tmp_path, monkeypatch, 
         target = conn.execute("SELECT payload->>'question' AS question FROM offers WHERE turn_id = %s",
                               (turn.turn_id,)).fetchone()
         assert target["question"] == TPS_QUESTION
+
+
+def test_db_training_edition_and_seed_preserve_only_independent_fast_answer(dsn, tmp_path, monkeypatch):
+    from backend.assembly.quality_seed import QUESTION as ESTIMATE_QUESTION, seed_quality
+    from backend.documents import list_fragments
+
+    seed(dsn, tmp_path)
+    assembly = A1Engine(dsn)
+    with connect(dsn) as conn:
+        baseline = assembly.fast_answers.answer(question(DB_QUESTION, list_fragments(conn, ACTOR.id)))
+    assert isinstance(baseline, VerifiedAnswer)
+
+    seed_quality(dsn, tmp_path)
+    with connect(dsn) as conn:
+        current = list_fragments(conn, ACTOR.id)
+        faq = next(f for f in current if f.kind == "faq")
+        db_fragments = {f.fragment_id: f for f in current if f.title == TITLES["DB"]}
+        assert len({f.document_id for f in current if f.kind == "document"}) == 4
+        assert all(f.version == 2 for f in db_fragments.values())
+        assert fast_answers.potential_faq(conn, ESTIMATE_QUESTION, {}, current)
+    monkeypatch.setattr(assembly, "_answer", lambda *_: pytest.fail("Independent appointment used model path"))
+    answer = assembly.answer(question(DB_QUESTION, current))
+    assert isinstance(answer, VerifiedAnswer) and answer.text == baseline.text
+    assert [ref.quote for ref in answer.citations] == [ref.quote for ref in baseline.citations]
+    assert all(ref.fragment_id in db_fragments for ref in answer.citations)
+    assert {ref.revision_id for ref in answer.citations}.isdisjoint(ref.revision_id for ref in baseline.citations)
+
+    # The source guard at publication must make the same decision as the fast engine.
+    service = DialogueService(dsn=dsn, engine=assembly)
+    admitted = _admit(dsn, service, DB_QUESTION)
+    service.answer_job(claim(dsn, "interactive"))
+    with connect(dsn) as conn:
+        tx = conn.execute("SELECT status,result FROM turns WHERE id=%s", (admitted.turn_id,)).fetchone()
+        assert tx["status"] == "completed" and tx["result"]["text"] == baseline.text
+    # A changed seed, or an additional applicable FAQ, must invalidate cached decisions.
+    mutated = tuple(replace(f, text="Назначение выполняет другой сотрудник") if f == faq else f for f in current)
+    assert assembly.fast_answers.answer(question(DB_QUESTION, mutated)) is None
+    _publish_faq(dsn, DB_QUESTION)
+    with connect(dsn) as conn:
+        assert assembly.fast_answers.answer(question(DB_QUESTION, list_fragments(conn, ACTOR.id))) is None

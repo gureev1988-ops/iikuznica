@@ -25,6 +25,7 @@ from backend.mailfaq.transport import ImapInbox, MailConfig, Outbound, SmtpTrans
 from backend.runtime import PermanentJobFailure, enqueue, reconcile_delivery, require_lease, send_once
 
 from .smtp_gateway import AUTHSERV, BOT, DOMAIN, QUALITY
+from .quality import DEMO_SCOPE, SCOPE, REPORT_JOB, build_router, deliver_report, reconcile_reports, report_terminal
 
 GUEST_COOKIE = "__Host-ii-guest"
 JUDGE_COOKIE = "__Host-ii-mail"
@@ -41,6 +42,7 @@ class Login(BaseModel):
 class BrowserSession(BaseModel):
     conversation_id: UUID
     mail: bool
+    standard_demo_login: bool
 
 
 class MailAccess(BaseModel):
@@ -91,6 +93,8 @@ class Assembly:
         credentials = os.environ if credentials is None else credentials
         self.judge_login = credentials["II_JUDGE_LOGIN"]
         self.judge_password = credentials["II_JUDGE_PASSWORD"]
+        self.demo_login = credentials.get("II_DEMO_EXPERT_LOGIN")
+        self.demo_password = credentials.get("II_DEMO_EXPERT_PASSWORD")
         bot_password = credentials["II_BOT_PASSWORD"]
         quality_password = credentials["II_QUALITY_PASSWORD"]
         if min(map(len, (self.judge_password, bot_password, quality_password))) < 16:
@@ -147,16 +151,16 @@ class Assembly:
 
         return authenticate
 
-    def judge_active(self, request):
+    def judge_active(self, request, *, operator_only=False):
         token = request.cookies.get(JUDGE_COOKIE)
         if token:
             with connect(self.dsn) as conn:
-                return conn.execute("SELECT 1 FROM judge_sessions WHERE token_sha256 = %s AND expires_at > now()",
-                                    (digest(token),)).fetchone() is not None
+                return conn.execute("SELECT 1 FROM judge_sessions WHERE token_sha256 = %s AND expires_at > now() AND (NOT %s OR NOT demo_only)",
+                                    (digest(token), operator_only)).fetchone() is not None
         return False
 
-    def authorized_inbox(self, request):
-        if not self.judge_active(request):
+    def authorized_inbox(self, request, *, operator_only=False):
+        if not self.judge_active(request, operator_only=operator_only):
             raise HTTPException(401, "Войдите в общий ящик")
 
     def inbound(self):
@@ -177,11 +181,11 @@ class Assembly:
 
     @property
     def handlers(self):
-        return {REPLY_KIND: self.reply_job}
+        return {REPLY_KIND: self.reply_job, REPORT_JOB: lambda job: deliver_report(self, job)}
 
     @property
     def terminal_handlers(self):
-        return {REPLY_KIND: self.reply_terminal}
+        return {REPLY_KIND: self.reply_terminal, REPORT_JOB: report_terminal}
 
     def reply_terminal(self, conn, job, reason):
         conn.execute("""
@@ -193,7 +197,7 @@ class Assembly:
         command_id = job.payload["command_id"]
         with connect(self.dsn) as conn:
             row = conn.execute("""
-                SELECT a.*, r.actor_email, r.token
+                SELECT a.*, r.actor_email, r.token, r.case_number
                 FROM assembly_mail_replies a JOIN mail_requests r ON r.id = a.request_id
                 WHERE a.command_id = %s
                 """, (command_id,)).fetchone()
@@ -201,7 +205,7 @@ class Assembly:
             raise PermanentJobFailure("mail_reply_not_found")
         mid = row["in_reply_to"]
         outbound = Outbound(row["message_id"], QUALITY, BOT, row["actor_email"], QUALITY,
-                            f"Re: Разъяснение [case:{row['token']}]", row["reply"],
+                            f"Re: Обращение ОК{row['case_number']}", row["reply"],
                             mid, (*row["references_ids"], mid))
         outcome = send_once(self.dsn, channel="smtp", effect_key=f"judge:{command_id}", job=job,
                             send=lambda: self.transport.send(outbound))
@@ -214,6 +218,7 @@ class Assembly:
                          (state, command_id))
 
     def reconcile_mail(self, service):
+        reconcile_reports(self)
         with connect(self.dsn) as conn:
             unknown = conn.execute("""
                 SELECT o.id, o.attempt_id, o.message_id
@@ -241,6 +246,12 @@ class Assembly:
         return False
 
     def mount(self, app, backend):
+        from .analytics_web import mount_analytics
+        mount_analytics(app, backend)
+        from .guidance import browser_guidance
+
+        app.include_router(browser_guidance(self))
+        app.include_router(build_router(self))
         frontend = Path(__file__).with_name("frontend")
         app.mount("/assets", StaticFiles(directory=frontend), name="assets")
 
@@ -274,7 +285,8 @@ class Assembly:
                     set_cookie(response, GUEST_COOKIE, token, GUEST_SECONDS)
                 backend.dialog.ensure_conversation(conn, guest_actor(row["id"]), row["conversation_id"])
             response.headers["Cache-Control"] = "no-store"
-            return {"conversation_id": row["conversation_id"], "mail": self.judge_active(request)}
+            return {"conversation_id": row["conversation_id"], "mail": self.judge_active(request),
+                    "standard_demo_login": self.demo_login == "admin" and self.demo_password == "admin"}
 
         @app.post("/v1/browser/mail/login", response_model=MailAccess)
         def login(request: Request, response: Response, body: Login):
@@ -295,14 +307,18 @@ class Assembly:
                                         THEN EXCLUDED.reset_at ELSE judge_login_limits.reset_at END
                     RETURNING attempts
                     """, (guest["id"],)).fetchone()["attempts"]
-                if attempts <= 8 and (hmac.compare_digest(digest(body.login), digest(self.judge_login))
-                                      & hmac.compare_digest(digest(body.password), digest(self.judge_password))):
+                operator = (hmac.compare_digest(digest(body.login), digest(self.judge_login))
+                            & hmac.compare_digest(digest(body.password), digest(self.judge_password)))
+                demo = self.demo_login and self.demo_password and (
+                    hmac.compare_digest(digest(body.login), digest(self.demo_login))
+                    & hmac.compare_digest(digest(body.password), digest(self.demo_password)))
+                if attempts <= 8 and (operator or demo):
                     token = token_urlsafe(32)
                     old = request.cookies.get(JUDGE_COOKIE)
                     if old:
                         conn.execute("DELETE FROM judge_sessions WHERE token_sha256 = %s", (digest(old),))
-                    conn.execute("INSERT INTO judge_sessions VALUES (%s, now() + make_interval(secs => %s))",
-                                 (digest(token), JUDGE_SECONDS))
+                    conn.execute("INSERT INTO judge_sessions VALUES (%s, now() + make_interval(secs => %s), %s)",
+                                 (digest(token), JUDGE_SECONDS, not operator))
                     conn.execute("DELETE FROM judge_login_limits WHERE guest_id = %s", (guest["id"],))
                     set_cookie(response, JUDGE_COOKIE, token, JUDGE_SECONDS)
                     return {"mail": True}
@@ -319,7 +335,7 @@ class Assembly:
 
         @app.get("/v1/browser/mail/inbox", response_model=list[InboxMessage])
         def inbox(request: Request, response: Response):
-            self.authorized_inbox(request)
+            self.authorized_inbox(request, operator_only=True)
             response.headers["Cache-Control"] = "no-store"
             return self.inbound()
 
@@ -329,16 +345,18 @@ class Assembly:
             self.authorized_inbox(request)
             if not MESSAGE_ID.fullmatch(body.message_id) or not body.text.strip():
                 raise HTTPException(422, "Укажите письмо и текст ответа")
-            if not any(m["message_id"] == body.message_id for m in self.inbound()):
-                raise HTTPException(404, "Письмо отсутствует во входящих")
             with connect(self.dsn) as conn:
-                original = conn.execute("""
-                    SELECT o.request_id, o.references_ids FROM mail_outbound o
-                    JOIN mail_requests r ON r.id = o.request_id
-                    WHERE o.message_id = %s AND r.recipient = %s
-                    """, (body.message_id, QUALITY)).fetchone()
+                original = conn.execute(f"""
+                    SELECT o.request_id,o.references_ids,r.state FROM mail_outbound o
+                    JOIN mail_requests r ON r.id=o.request_id
+                    WHERE o.message_id=%s AND o.state='sent' AND {DEMO_SCOPE} FOR UPDATE OF r
+                    """, (body.message_id, *SCOPE)).fetchone()
                 if original is None:
-                    raise HTTPException(404, "Неизвестная цепочка")
+                    raise HTTPException(404, "Неизвестная учебная цепочка")
+                existing = conn.execute(
+                    "SELECT command_id FROM assembly_mail_replies WHERE command_id=%s", (body.command_id,)).fetchone()
+                if not existing and original["state"] in ("resolved","withdrawn"):
+                    raise HTTPException(409, "Обращение уже завершено")
                 conn.execute("""
                     INSERT INTO assembly_mail_replies (command_id, request_id, message_id, reply, state,
                                                        in_reply_to, references_ids)
@@ -358,8 +376,10 @@ class Assembly:
             self.authorized_inbox(request)
             response.headers["Cache-Control"] = "no-store"
             with connect(self.dsn) as conn:
-                row = conn.execute("SELECT state, message_id FROM assembly_mail_replies WHERE command_id = %s",
-                                   (command_id,)).fetchone()
+                row = conn.execute(f"""
+                    SELECT a.state,a.message_id FROM assembly_mail_replies a
+                    JOIN mail_requests r ON r.id=a.request_id WHERE a.command_id=%s AND {DEMO_SCOPE}
+                    """, (command_id,*SCOPE)).fetchone()
             if row is None:
                 raise HTTPException(404)
             return row
@@ -385,7 +405,7 @@ class Assembly:
         def correspondence(actor=Depends(get_actor)):
             with connect(self.dsn) as conn:
                 rows = conn.execute("""
-                    SELECT r.id, r.turn_id, r.case_id, r.state, o.state AS delivery
+                    SELECT r.id, r.case_number, r.turn_id, r.case_id, r.state, o.state AS delivery
                     FROM mail_requests r JOIN mail_outbound o ON o.request_id = r.id AND o.business_key = 'initial'
                     WHERE actor_id = %s AND recipient = %s ORDER BY r.created_at
                     """, (actor.id, QUALITY)).fetchall()

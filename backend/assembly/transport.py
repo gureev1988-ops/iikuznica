@@ -18,13 +18,16 @@ class UpstreamFailure(Exception):
         self.row = None
 
 
-async def _request(endpoint, body, timeout, row=None):
+async def _request(endpoint, body, timeout, row=None, stream_timeout=None):
     headers = {"Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"]}
     if row is not None:
         headers["Accept"] = "text/event-stream"
     started = monotonic()
     try:
-        async with asyncio.timeout(timeout), httpx.AsyncClient(timeout=None) as client:
+        loop = asyncio.get_running_loop()
+        deadline = asyncio.timeout_at(loop.time() + timeout)
+        stream_end = loop.time() + stream_timeout if stream_timeout is not None else None
+        async with deadline, httpx.AsyncClient(timeout=None) as client:
             async with client.stream("POST", endpoint, headers=headers, json=body) as response:
                 if row is not None:
                     row["http"] = response.status_code
@@ -37,7 +40,13 @@ async def _request(endpoint, body, timeout, row=None):
                 if "text/event-stream" not in response.headers.get("Content-Type", "").lower():
                     raise UpstreamFailure("OpenRouter did not return an event stream", retryable=True)
                 async for line in response.aiter_lines():
-                    if read_chat_line(row, line.encode(), started):
+                    done = read_chat_line(row, line.encode(), started)
+                    if stream_end is not None and row["ttft_s"] is not None:
+                        # Only the first non-whitespace content earns the remaining
+                        # reading time. Keep-alives and later chunks never reset it.
+                        deadline.reschedule(stream_end)
+                        stream_end = None
+                    if done:
                         finish_chat(row, True)
                         if not row["ok"]:
                             raise UpstreamFailure("OpenRouter returned an incomplete answer")
@@ -53,11 +62,11 @@ async def _request(endpoint, body, timeout, row=None):
                               retryable=isinstance(code, int) and code in RETRYABLE_STATUS) from None
 
 
-def complete(case, body, stage, *, timeout):
+def complete(case, body, stage, *, timeout, stream_timeout=None):
     row = chat_row(case, body, stage)
     started = monotonic()
     try:
-        return asyncio.run(_request(CHAT, body, timeout, row))
+        return asyncio.run(_request(CHAT, body, timeout, row, stream_timeout))
     except UpstreamFailure as error:
         error.row = row
         raise

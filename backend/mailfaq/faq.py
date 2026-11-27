@@ -239,7 +239,8 @@ def _document_questions(conn, revision_id: UUID) -> list[str]:
     return list({_key(name) for name in [row["title"], *row["headings"]]})
 
 
-def publish_faq(conn, request: dict, text: str, *, replace: bool = False, hackathon: bool = False) -> FaqMatch | None:
+def publish_faq(conn, request: dict, text: str, *, replace: bool = False, hackathon: bool = False,
+                force_revision: bool = False) -> FaqMatch | None:
     """Publish a new immutable source revision using the caller's locked transaction."""
     text = clean_public_text(text)
     if not text:
@@ -254,7 +255,7 @@ def publish_faq(conn, request: dict, text: str, *, replace: bool = False, hackat
     ).fetchone()
     if row and row["status"] == "withdrawn" and not replace:
         return None
-    if row and row["status"] == "active" and row["text"] == text:
+    if row and row["status"] == "active" and row["text"] == text and not force_revision:
         if row["coverage_source_id"] is not None:
             current = conn.execute(
                 "SELECT current_revision_id FROM sources WHERE id = %s",

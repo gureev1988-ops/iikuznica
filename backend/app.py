@@ -131,6 +131,9 @@ class Backend:
                 handlers.update(self.dion.handlers)
             terminal = {"documents.sync": self.documents.terminal_job}
             if self.assembly:
+                from backend.assembly.gap_groups import classify_gap
+                from backend.assembly.statistics import GROUP_JOB
+                handlers[GROUP_JOB] = partial(classify_gap, self.dsn, self.engine.search)
                 handlers.update(self.assembly.handlers)
                 terminal.update(self.assembly.terminal_handlers)
             limit = self.settings.background_concurrency
@@ -150,7 +153,9 @@ class Backend:
         if self.mail_config.mode != "disabled":
             operations["mail"] = lambda: self.observe("mail", self.mail.poll_inbox)
         if self.assembly:
+            from backend.assembly.quality import recheck_revision
             operations["mail-receipts"] = lambda: self.assembly.reconcile_mail(self.mail)
+            operations["quality-revisions"] = lambda: recheck_revision(self.assembly)
         if self.dion:
             operations["dion"] = lambda: self.observe("dion", lambda: self.dion.poll_once(timeout=10))
             operations["dion-route"] = self.dion.route_once

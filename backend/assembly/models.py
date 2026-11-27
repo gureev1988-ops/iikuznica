@@ -5,17 +5,20 @@ import json
 import logging
 import math
 import os
+import re
 import time
 
 from backend.contracts.engine import EngineUnavailable, ModelAttemptFailure, ModelAttemptResult
 from backend.runtime.jobs import PermanentJobFailure
 from eval.decider.policy import GEMMA, MODEL as DECIDER
 from eval.search_core.core import QWEN, model_settings
+from .pricing import charge
 from .transport import UpstreamFailure, complete, decide
 
 PROVIDERS = {GEMMA: "deepinfra/fp8", QWEN: "alibaba"}
 RESERVE_ENV = {GEMMA: "II_GEMMA_RESERVE_PROVIDER", QWEN: "II_QWEN_RESERVE_PROVIDER"}
 ATTEMPT_SECONDS = {GEMMA: (3, 3.5), QWEN: (5, 5), DECIDER: (2.5, 3)}
+EVIDENCE_STREAM_SECONDS = 6.5
 LATENCY_LOG = logging.getLogger("backend.assembly.latency")
 
 
@@ -41,15 +44,24 @@ class ModelCalls:
 
         def invoke(timeout, provider):
             payload = model_settings(body, model, provider, min(body.get("max_tokens", 1536), 8192))
+            stream_timeout = None
+            compound = stage in {"evidence-core", "permission-review"} and re.search(
+                r"\?\s+[^?\s][^?]*\?", getattr(self.request, "question", "")
+            )
+            if model == GEMMA and (compound or stage == "faq-applicability"):
+                # Both evidence selection and FAQ comparison can stream grounded details
+                # after a timely first token. Keep acquisition and total turn bounded.
+                stream_timeout = min(EVIDENCE_STREAM_SECONDS, self.remaining() - 0.15)
+                stream_timeout = max(timeout, stream_timeout)
             try:
-                row = complete(case, payload, stage, timeout=timeout)
+                row = complete(case, payload, stage, timeout=timeout, stream_timeout=stream_timeout)
             except UpstreamFailure as error:
                 snapshot = error.row or {}
                 self.observe(stage, model, provider, snapshot, "failed")
                 raise AssemblyModelFailure(str(error), retryable=error.retryable,
-                                           **self.usage(snapshot, "chat")) from None
+                                           **self.usage(snapshot, "chat", model, provider)) from None
             self.observe(stage, model, provider, row, "succeeded")
-            return ModelAttemptResult(row, **self.usage(row, "chat"))
+            return ModelAttemptResult(row, **self.usage(row, "chat", model, provider))
 
         return self.call(invoke, stage, model, "chat", (primary, reserve))
 
@@ -64,9 +76,9 @@ class ModelCalls:
             reply = result["response"]
             if not decisions_valid(reply.get("answers"), body["questions"]):
                 self.observe("judge", DECIDER, provider, {**reply, "latency_s": result["latency_s"]}, "failed")
-                raise AssemblyModelFailure("Decisions returned a malformed answer", **self.usage(reply, "decisions"))
+                raise AssemblyModelFailure("Decisions returned a malformed answer", **self.usage(reply, "decisions", DECIDER, provider))
             self.observe("judge", DECIDER, provider, {**reply, "latency_s": result["latency_s"]}, "succeeded")
-            return ModelAttemptResult(result, **self.usage(reply, "decisions"))
+            return ModelAttemptResult(result, **self.usage(reply, "decisions", DECIDER, provider))
 
         return self.call(invoke, "judge", DECIDER, "decisions", ("perplexity", "perplexity"))
 
@@ -81,10 +93,16 @@ class ModelCalls:
         )
 
     @staticmethod
-    def usage(row, endpoint):
+    def usage(row, endpoint, requested, tag):
         usage = row.get("usage") or {}
         cost = usage.get("cost")
         provider = row.get("provider")
+        served = row.get("served_model") or row.get("model") or requested
+        if cost is None:
+            if served == DECIDER and served.endswith(":free") and usage:
+                cost = Decimal(0)
+            elif served == requested:
+                cost = charge(served, tag, provider, usage)
         return dict(input_tokens=usage.get("prompt_tokens", usage.get("input_tokens")),
                     output_tokens=usage.get("completion_tokens", usage.get("output_tokens")),
                     cost=Decimal(str(cost)) if cost is not None else None,
