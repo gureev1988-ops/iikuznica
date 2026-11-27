@@ -303,6 +303,63 @@ def test_explicit_followup_keeps_subject_and_changes_directorate(dsn, tmp_path):
         assert "бюджетной оценки для торгов" in target["question"].casefold()
 
 
+def test_two_independent_gaps_do_not_silently_drop_a_quality_question(engine, fragments, monkeypatch):
+    assembly, _, originals, _ = engine
+    allow_originals(originals, fragments)
+    fallback = AnswerResult("escalate", "Требуется проверить оба вопроса.")
+    monkeypatch.setattr(assembly, "_answer", lambda req, calls: fallback)
+    text = f"{TPS_QUESTION} Какой срок подготовки бюджетной оценки для торгов в Дирекции ИБ?"
+    assert assembly.answer(question(text, fragments)) is fallback
+
+
+def test_local_clarification_keeps_previous_phase_context(engine, fragments, monkeypatch):
+    assembly, _, originals, _ = engine
+    allow_originals(originals, fragments)
+    fallback = AnswerResult("clarify", "Уточните этап.")
+    monkeypatch.setattr(assembly, "_answer", lambda req, calls: fallback)
+    by_dir = dict(key="directorate", value="Дирекция ИБ", choices=("Дирекция ИБ",))
+    history = (
+        HistoryMessage("user", "Вопрос о реализации"),
+        HistoryMessage("assistant", "Ответ", question="Вопрос о реализации", action="answer"),
+        HistoryMessage("user", PM_QUESTION),
+        HistoryMessage("assistant", "Какая дирекция?", question=PM_QUESTION, action="clarify"),
+    )
+    request = question(PM_QUESTION, fragments, history=history, clarification=by_dir,
+                       clarification_count=1, conditions={"directorate": "Дирекция ИБ"})
+    assert assembly.answer(request) is fallback
+
+
+def test_local_followup_does_not_skip_a_newer_unanswered_message(engine, fragments, monkeypatch):
+    assembly, _, originals, _ = engine
+    allow_originals(originals, fragments)
+    fallback = AnswerResult("clarify", "Уточните, о каком вопросе речь.")
+    monkeypatch.setattr(assembly, "_answer", lambda req, calls: fallback)
+    history = (HistoryMessage("user", TECH_QUESTION),
+               HistoryMessage("assistant", "Ответ", question=TECH_QUESTION, action="answer"),
+               HistoryMessage("user", "А как назначают технического специалиста?"))
+    assert assembly.answer(question("А в Дирекции ИБ?", fragments, history=history)) is fallback
+
+
+def test_conflict_review_reuses_the_search_results_from_the_same_turn(monkeypatch):
+    from backend.assembly import engine
+
+    calls = []
+
+    def search(text):
+        calls.append(text)
+        return [], []
+
+    def core_answer(text, lookup, **kwargs):
+        lookup(text)
+        return {"action": "escalate", "message": "Проверка", "sources": []}
+
+    monkeypatch.setattr(engine.core, "answer", core_answer)
+    service = A1Engine("unused", search=SimpleNamespace(snapshot=lambda fragments: ({}, search, {}, {})))
+    text = "Кто распределяет экспертов по смежным проектам?"
+    assert service.answer(question(text, ())).action == "escalate"
+    assert calls == [text]
+
+
 @pytest.mark.parametrize("faq_race", [False, True])
 def test_local_compound_rechecks_faq_for_each_scope(dsn, tmp_path, monkeypatch, faq_race):
     seed(dsn, tmp_path)

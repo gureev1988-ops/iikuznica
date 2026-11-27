@@ -104,7 +104,8 @@ def _appointment(directorate, *, complete_data=False):
 
 RULES = (
     Rule(
-        _appointment(_IB, complete_data=True),
+        re.compile(rf"(?:{_appointment(_IB, complete_data=True).pattern}|"
+                   rf"{_IB_PREFIX}{_APPOINT} {_ASSIGN} {_PM} {_INIT})"),
         _IB_APPOINTMENT_TEXT,
         _IB_APPOINTMENT_EVIDENCE,
     ),

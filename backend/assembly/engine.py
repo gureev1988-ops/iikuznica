@@ -82,10 +82,14 @@ class A1Engine:
         clarification = request.clarification
         if clarification is not None:
             value = core.procedures.normalized(clarification["value"])
+            past = self._history(request)
             if (clarification.get("key") != "directorate" or request.clarification_count != 1
                     or {**request.conditions} != {"directorate": clarification["value"]}
                     or value != "дирекция иб"
                     or value not in {core.procedures.normalized(option) for option in clarification["choices"]}
+                    or len(request.history) != 2 or len(past) != 1 or past[0]["action"] != "clarify"
+                    or any(core.procedures.normalized(past[0][field]) != core.procedures.normalized(request.question)
+                           for field in ("user", "resolved"))
                     or core.procedures.operation(request.question) != "appoint_pm"):
                 return None
             return self._verified_context(request, f"Дирекция ИБ. {request.question}")
@@ -93,6 +97,8 @@ class A1Engine:
         if request.conditions or request.clarification_count:
             return None
         if request.history:
+            if tuple(message.role for message in request.history) != ("user", "assistant"):
+                return None
             past = self._history(request)
             restored = core.dialogue_state._directorate_followup(request.question.strip(), past)
             return self._verified_context(request, restored) if restored else None
@@ -107,6 +113,8 @@ class A1Engine:
         for question in pair:
             answer = self.fast_answers.answer(replace(request, question=question))
             if answer is None or answer.action not in {"answer", "escalate"}:
+                return None
+            if target and answer.action == "escalate":
                 return None
             target = target or answer.escalation_question
             parts.append(AnswerPart(answer.action, answer.text, answer.citations))
