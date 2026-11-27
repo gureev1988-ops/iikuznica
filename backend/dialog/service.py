@@ -503,6 +503,7 @@ class DialogueService:
                     """, (turn["id"], clarification_id, turn["case_id"])).fetchone()
                 if resolved:
                     clarification = dict(value=resolved["text"], prompt=resolved["prompt"],
+                                         key=resolved["clarification_key"],
                                          choices=tuple(o["text"] for o in resolved["options"] if o["id"] != "unknown"))
             count = conn.execute("SELECT count(*) AS n FROM clarifications WHERE case_id = %s AND status = 'resolved'",
                                  (turn["case_id"],)).fetchone()["n"]
@@ -531,7 +532,10 @@ class DialogueService:
                 from backend.documents import list_fragments
 
                 current = list_fragments(conn, actor.id, hackathon=self.hackathon)
-                if current != request.sources.fragments or potential_faq(conn, request.question, conditions, current):
+                questions = result.checked_questions or (request.question,)
+                if current != request.sources.fragments or any(
+                    potential_faq(conn, question, conditions, current) for question in questions
+                ):
                     raise EvidenceChanged("Verified answer source snapshot changed during the turn")
             elif actor.channel == "guest":
                 from backend.documents import list_fragments

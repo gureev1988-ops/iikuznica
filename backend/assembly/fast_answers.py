@@ -8,7 +8,7 @@ import re
 from threading import Lock
 from uuid import uuid5
 
-from backend.contracts.engine import AnswerResult, Citation
+from backend.contracts.engine import Action, AnswerResult, Citation
 from backend.db import connect
 from eval.retrieval.extract import TITLES
 from eval.scope.procedures import directories, normalized
@@ -35,14 +35,15 @@ ORIGINALS = {
     ),
 }
 DOC_BY_TITLE = {title: doc for doc, title in TITLES.items()}
-POLICY_VERSION = 1
+POLICY_VERSION = 2
 CACHE_SIZE = 64
 
 
+@dataclass(frozen=True, slots=True)
 class VerifiedAnswer(AnswerResult):
     """A local result whose assumptions depend on the entire visible catalog."""
 
-    __slots__ = ()
+    checked_questions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ class Rule:
     question: re.Pattern
     text: str
     evidence: tuple[tuple[str, str], ...]
+    action: Action = "answer"
 
 
 # Full matches keep a compound request, exception, or unstated scope out of the fast path.
@@ -57,8 +59,37 @@ _APPOINT = r"(?:кто и в какой срок|в какой срок|за с�
 _ASSIGN = r"(?:назначают|назначает|назначат|должны назначить)"
 _PM = r"(?:руководителя проекта|рп)"
 _INIT = r"(?:при инициации(?: проекта)?|на этапе инициации(?: проекта)?|на инициации(?: проекта)?)"
-_IB = r"в дирекции (?:иб|информационной безопасности)"
+_IB_GENITIVE = r"дирекции (?:иб|информационной безопасности)"
+_IB = rf"в {_IB_GENITIVE}"
+_IB_PREFIX = r"дирекция (?:иб|информационной безопасности)[.,:] "
 _DB = r"в дбрцт"
+_ESTIMATE_TIME = r"(?:какой срок подготовки бюджетной оценки|сколько времени занимает подготовка бюджетной оценки)"
+_TPS = r"(?:tps|технического пресейл[- ]специалиста(?: \(tps\))?)"
+
+_IB_APPOINTMENT_TEXT = (
+    "При полных данных координатор департамента назначает руководителя проекта "
+    "в течение 1 рабочего дня в соответствии с итоговым расчётом [1]. "
+    "При неполных данных координатор запрашивает уточнения в карточке проекта и ждёт ответа "
+    "менеджера по продаже решений (SS) [2]. Если необходимых данных или ответа от SS нет "
+    "более 5 рабочих дней, карточку проекта переводят в статус «Отклонён» [3]."
+)
+_IB_APPOINTMENT_EVIDENCE = (
+    (
+        "IB:2.7:1",
+        "Если предоставлена полная информация, Координатор департамента назначает РП "
+        "в соответствии с итоговым Расчётом проекта в течение 1 рабочего дня.",
+    ),
+    (
+        "IB:2.2:1",
+        "Если предоставлена неполная информация, Координатор департамента задаёт уточняющие "
+        "вопросы в карточке проекта и ожидает ответа от SS (Менеджера по продаже решений).",
+    ),
+    (
+        "IB:2.3:1",
+        "В случае отсутствия необходимой информации или ответа от SS более 5 рабочих дней "
+        "карточка проекта переводится в статус «Отклонён».",
+    ),
+)
 
 
 def _appointment(directorate, *, complete_data=False):
@@ -73,29 +104,18 @@ def _appointment(directorate, *, complete_data=False):
 
 RULES = (
     Rule(
-        _appointment(_IB, complete_data=True),
-        "При полных данных координатор департамента назначает руководителя проекта "
-        "в течение 1 рабочего дня в соответствии с итоговым расчётом [1]. "
-        "При неполных данных координатор запрашивает уточнения в карточке проекта и ждёт ответа "
-        "менеджера по продаже решений (SS) [2]. Если необходимых данных или ответа от SS нет "
-        "более 5 рабочих дней, карточку проекта переводят в статус «Отклонён» [3].",
-        (
-            (
-                "IB:2.7:1",
-                "Если предоставлена полная информация, Координатор департамента назначает РП "
-                "в соответствии с итоговым Расчётом проекта в течение 1 рабочего дня.",
-            ),
-            (
-                "IB:2.2:1",
-                "Если предоставлена неполная информация, Координатор департамента задаёт уточняющие "
-                "вопросы в карточке проекта и ожидает ответа от SS (Менеджера по продаже решений).",
-            ),
-            (
-                "IB:2.3:1",
-                "В случае отсутствия необходимой информации или ответа от SS более 5 рабочих дней "
-                "карточка проекта переводится в статус «Отклонён».",
-            ),
+        re.compile(rf"(?:{_appointment(_IB, complete_data=True).pattern}|"
+                   rf"{_IB_PREFIX}{_APPOINT} {_ASSIGN} {_PM} {_INIT})"),
+        _IB_APPOINTMENT_TEXT,
+        _IB_APPOINTMENT_EVIDENCE,
+    ),
+    Rule(
+        re.compile(
+            rf"(?:{_IB_PREFIX}{_APPOINT} {_ASSIGN} {_PM}|"
+            rf"{_APPOINT} (?:{_IB} {_ASSIGN} {_PM}|{_ASSIGN} {_PM} {_IB}))"
         ),
+        f"На этапе инициации проекта в Дирекции ИБ действует следующий порядок. {_IB_APPOINTMENT_TEXT}",
+        _IB_APPOINTMENT_EVIDENCE,
     ),
     Rule(
         _appointment(_DB),
@@ -136,8 +156,7 @@ RULES = (
     ),
     Rule(
         re.compile(
-            r"(?:(?:какой срок подготовки бюджетной оценки|сколько времени занимает подготовка бюджетной оценки)"
-            r" для (?:торгов|конкурса) (?:у|в) технической дирекции|"
+            rf"(?:{_ESTIMATE_TIME} для (?:торгов|конкурса) (?:у|в) технической дирекции|"
             r"можно ли (?:подать бюджетную оценку технической дирекции на конкурс|"
             r"использовать бюджетную оценку технической дирекции для подачи (?:в|на) конкурс))"
         ),
@@ -151,6 +170,69 @@ RULES = (
             ),
             ("TECH:1.5:2", "Расчёт должен быть инициирован за 2 недели до подачи конкурса."),
         ),
+    ),
+    Rule(
+        re.compile(
+            rf"(?:{_IB_PREFIX}кто назначает {_TPS}|"
+            rf"кто (?:{_IB} назначает {_TPS}|назначает {_TPS} {_IB}))"
+        ),
+        "В доступных регламентах Дирекции ИБ нет правила назначения TPS. По общему порядку при наличии всех "
+        "входных данных сотрудник первой линии назначает ответственным за заявку пресейл-архитектора или TSS [1]. "
+        "Передать вопрос о назначении TPS в Отдел качества?",
+        (
+            (
+                "PRE:4.1:1",
+                "При наличии всех необходимых входных данных Сотрудник 1 линии назначает ответственным "
+                "по заявке Пресейл-архитектора или TSS.",
+            ),
+        ),
+        action="escalate",
+    ),
+    Rule(
+        re.compile(
+            rf"(?:{_IB_PREFIX}{_ESTIMATE_TIME} для (?:торгов|конкурса|тендера)|"
+            rf"{_ESTIMATE_TIME} (?:для (?:торгов|конкурса|тендера) (?:в|у) {_IB_GENITIVE}|"
+            rf"{_IB} для (?:торгов|конкурса|тендера)))"
+        ),
+        "Срок подготовки бюджетной оценки для торгов в доступных регламентах Дирекции ИБ не указан. "
+        "По квалифицированному запросу менеджер по продаже решений (SS) по возможности готовит для заказчика "
+        "диапазон цен типового проекта [1]. Для тендера SS проверяет комплектность и актуальность документов, "
+        "на которых основан расчёт пресейл-архитектора [2]. Если документы изменились или архитектор получил "
+        "неполный комплект, SS запрашивает актуализацию расчёта проекта до подачи тендерной заявки [3]. "
+        "Передать вопрос о сроке в Отдел качества?",
+        (
+            (
+                "PRE:2.2:2",
+                "готовит Бюджетную оценку проекта для Заказчика в виде диапазона цен типового проекта по данной теме "
+                "(при наличии такой возможности)",
+            ),
+            (
+                "PRE:16.4:1",
+                "Была передана ПА в полном объеме для подготовки расчета проекта,\n"
+                "Заказчиком не вносились правки в тендерную документацию, на основании которой ПА делал расчет.",
+            ),
+            (
+                "PRE:16.4.1:1",
+                "SS направляет ПА запрос на актуализацию расчета проекта до подачи тендерной заявки.",
+            ),
+        ),
+        action="escalate",
+    ),
+    Rule(
+        re.compile(
+            r"кто (?:замещает|заменяет) координатора (?:проектов|департамента) "
+            rf"{_IB_GENITIVE} (?:на время отпуска|во время отпуска)"
+        ),
+        "В доступных регламентах Дирекции ИБ не указан порядок замещения координатора на время отпуска. "
+        "Назначение руководителя проекта поручено координатору департамента после уведомления из CRM [1]. "
+        "Передать вопрос о замещении в Отдел качества?",
+        (
+            (
+                "IB:2.1:1",
+                "Назначение выполняет Координатор департамента после получения уведомления по электронной почте из CRM.",
+            ),
+        ),
+        action="escalate",
     ),
 )
 
@@ -260,16 +342,19 @@ class VerifiedAnswers:
                     return None
                 if cached is None and not _official_originals(conn, versions):
                     return None
-        if cached is None:
-            cached = self._verify(rule, refs)
-            if cached is None:
-                return None
-            with self._lock:
-                self._cache[key] = cached
-                self._cache.move_to_end(key)
-                if len(self._cache) > CACHE_SIZE:
-                    self._cache.popitem(last=False)
-        return replace(cached, resolved_question=request.question)
+        if cached is not None:
+            return replace(cached, resolved_question=request.question)
+        result = self._verify(rule, refs)
+        if result is None:
+            return None
+        if result.action == "escalate":
+            return replace(result, resolved_question=request.question, escalation_question=request.question)
+        with self._lock:
+            self._cache[key] = result
+            self._cache.move_to_end(key)
+            if len(self._cache) > CACHE_SIZE:
+                self._cache.popitem(last=False)
+        return replace(result, resolved_question=request.question)
 
     def _verify(self, rule, refs):
         by_id = {entry["id"]: entry for entry in self.records()}
@@ -283,4 +368,4 @@ class VerifiedAnswers:
                     or quote not in part.text):
                 return None
             citations.append(Citation(part.document_id, part.revision_id, part.fragment_id, quote))
-        return VerifiedAnswer("answer", rule.text, citations=tuple(citations), allow_faq=False)
+        return VerifiedAnswer(rule.action, rule.text, citations=tuple(citations), allow_faq=False)
