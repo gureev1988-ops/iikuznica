@@ -37,7 +37,7 @@ def frozen_turn(cid, question, turn, trial):
     return {"turn": cid, "response": dict(result, resolved_question=question), "trace": trial.calls.trace}
 
 
-def run_arm(arm, candidate, cases, lookup, out, reuse):
+def run_arm(arm, candidate, cases, lookup, out, reuse, *, postprocess=None):
     out.mkdir(mode=0o700, exist_ok=True)
     rows = []
     for case in cases:
@@ -63,6 +63,8 @@ def run_arm(arm, candidate, cases, lookup, out, reuse):
                         row["response"] = dict(replacement, resolved_question=row["response"]["resolved_question"])
                 except ERRORS as exc:
                     trial.events.append({"stage": "candidate_error", "error": str(exc)})
+            if postprocess is not None and not row.get("error"):
+                row["response"] = postprocess(question, row["response"])
             row.update(question=question, past=list(past), events=trial.events, wall_seconds=time.monotonic() - start)
             past.append(control.prior_turn(question, row["response"]))
             rows.append(row)
