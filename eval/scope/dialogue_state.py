@@ -27,13 +27,30 @@ PROCEDURE_CONTEXT = (
     "и ранее восстановленную тему. Уточнение участника или условия само по себе не меняет объект действия. "
     "Укажи конкретный объект и известную дирекцию выбранной темы. "
     "Различай исходный процесс и событие в последней реплике. Условия и стадию бери из последней реплики, "
-    "а вопрос формулируй только о том действии, сроке или условии, о котором сотрудник спрашивает сейчас."
+    "а вопрос формулируй только о том действии, сроке или условии, о котором сотрудник спрашивает сейчас. "
+    "Для короткого follow укажи также subject: одну дословную фразу до восьми слов из исходной "
+    "реплики выбранного хода, которая называет нужный объект. Если объект уже назван, верни subject пустым. "
+    "В subject оставь только объект, без прошлых просьб или шагов."
 )
 REPLY_REFERENCE = re.compile(
     r"\b(?:в (?:тво[её]м|предыдущем) ответе|ты (?:сказал|написал|упомянул)\w*|"
     r"(?:шаг|пункт)\w*\s+(?:№\s*)?\d+|(?:перв\w*|втор\w*|треть\w*|последн\w*)\s+(?:шаг|пункт)\w*)\b", re.I
 )
 DIRECTORATE_NAMES = {"IB": "Дирекция ИБ", "DB": "ДБРЦТ", "TECH": "Техническая дирекция"}
+
+
+def _focus_followup(question, query, topic, subject):
+    if subject is not None:
+        if not isinstance(subject, str):
+            raise ValueError("Invalid follow-up subject")
+        subject = subject.strip()
+        if subject:
+            if (len(subject.split()) > 8 or re.search(r"[.!?;\n]", subject)
+                    or subject.casefold() not in topic.casefold()):
+                raise ValueError("Follow-up subject must be a short quote from the employee's topic")
+            return f"Контекст — {subject}. {question}"
+        return question
+    return query
 
 
 def restore(question, past, model, call):
@@ -71,6 +88,9 @@ def restore(question, past, model, call):
             raise ValueError
         context = by_id[anchor]["resolved"] + " " + by_id[anchor]["user"] + " " + question
         dirs = procedures.directories(question) or procedures.directories(context)
+        focused = anchor in procedure_context and not procedures.full_procedure(question)
+        if focused:
+            query = _focus_followup(question, query, by_id[anchor]["user"], obj.get("subject"))
         query_dirs = procedures.directories(query)
         if query_dirs - dirs or set(re.findall(r"\d+", query)) - set(re.findall(r"\d+", context)):
             raise ValueError
@@ -78,6 +98,8 @@ def restore(question, past, model, call):
         if (anchor in procedure_context and not query_dirs and len(known_dirs) == 1
                 and not re.search(r"\b\w*дирекц", question, re.I)):
             query = DIRECTORATE_NAMES[next(iter(known_dirs))] + ". " + query.strip()
+        if focused and (procedures.full_procedure(query) or len(query.split()) > len(question.split()) + 12):
+            raise ValueError("Follow-up reintroduced a full procedure")
         return "follow", query.strip()
     except (TypeError, KeyError, ValueError):
         return "ambiguous", "О каком процессе или документе ты спрашиваешь?"
