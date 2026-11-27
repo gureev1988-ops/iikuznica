@@ -4,6 +4,8 @@
 
 ## Запуск
 
+Для публичного стенда доступен [автодеплой из main на VPS](docs/backend/vps-deploy.md).
+
 Нужны Docker Compose v2, OpenSSL и переменная окружения `OPENROUTER_API_KEY` с доступом к Gemma, Qwen и OpenRouter Decisions. Из корня чистого checkout:
 
 ```sh

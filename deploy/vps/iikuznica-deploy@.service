@@ -1,0 +1,13 @@
+[Unit]
+Description=Deploy the latest green main for IIKuznica
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+ConditionPathExists=/opt/iikuznica/shared/production.env
+
+[Service]
+Type=oneshot
+User=%i
+ExecStart=/opt/iikuznica/bin/check-main
+TimeoutStartSec=30min
+UMask=0077

@@ -1,0 +1,44 @@
+# Автодеплой ИИкузницы на VPS
+
+Для стенда подходят Linux x86‑64, Docker Engine и Compose v2 с поддержкой `up --wait`. Рекомендуемый размер — 4 vCPU, 8 ГБ RAM и 80 ГБ SSD. На публичный IPv4 направьте A-запись домена стенда. Откройте входящие TCP 80 и 443 для Caddy и SSH для оператора. PostgreSQL, SMTP и IMAP работают во внутренних сетях Compose. Моделям нужен исходящий доступ к OpenRouter, сборке также нужны GitHub, Docker Hub, PyPI и Hugging Face.
+
+## Первичная настройка
+
+На сервере создайте отдельного пользователя деплоя с доступом к Docker. Разместите публичный checkout в `/opt/iikuznica/repo`. Пользователь деплоя должен владеть каталогом `/opt/iikuznica`. Конфигурацию удобно установить из того же проверенного SHA, с которого запускается первый деплой.
+
+```sh
+git clone https://github.com/gureev1988-ops/iikuznica.git /opt/iikuznica/repo
+install -D -m 700 /opt/iikuznica/repo/deploy/vps/check-main.sh /opt/iikuznica/bin/check-main
+/opt/iikuznica/repo/deploy/vps/configure.sh /opt/iikuznica demo.example.org < /path/to/openrouter-token
+```
+
+Скрипт создаёт `shared/production.env` с правами 0600, записывает домен и генерирует пароли PostgreSQL, учебного SMTP/IMAP и судьи. Логин и пароль судьи из этого файла передавайте закрытым каналом. Ключ OpenRouter хранится на сервере. При его ротации обновите только `OPENROUTER_API_KEY` в этом файле. Команда `II_FORCE_DEPLOY=1 /opt/iikuznica/bin/check-main`, выполненная пользователем деплоя, повторно применит текущий зелёный выпуск.
+
+## Автоматическое обновление
+
+Установите таймер и сервис на VPS. В примере пользователь деплоя называется `iikdeploy`.
+
+```sh
+sudo install -m 644 /opt/iikuznica/repo/deploy/vps/iikuznica-deploy@.service /etc/systemd/system/
+sudo install -m 644 /opt/iikuznica/repo/deploy/vps/iikuznica-deploy@.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now iikuznica-deploy@iikdeploy.timer
+sudo systemctl start iikuznica-deploy@iikdeploy.service
+```
+
+GitHub Actions запускает `core` и `backend` на каждом обновлении `main`. Таймер проверяет текущий SHA примерно раз в две минуты. VPS допускает к сборке только SHA из `main` с успешным публичным запуском Core checks. Старые SHA и результаты PR не подходят. Сервер сам скачивает код, поэтому GitHub Actions Secrets, приватный токен GitHub и входящий SSH из Actions не требуются. Первичный запуск также возможен после ручного запуска Core checks на `main`.
+
+```sh
+sudo journalctl -u iikuznica-deploy@iikdeploy.service -n 100 --no-pager
+curl -fsS -D - https://demo.example.org/healthz
+```
+
+Заголовок `X-IIKuznica-Revision` показывает SHA стенда. Если новый SHA не прошёл CI, прежний выпуск продолжает работать.
+
+## Проверка выпуска и восстановление
+
+На VPS используется постоянный Compose-проект `iikuznica-prod`. Подготовка нового выпуска отдельно собирает образы и проверяет три модельных маршрута с серверными ключами. Перед сменой версии сохраняется `pg_dump`. После запуска проверяются публичный HTTPS и оба почтовых ящика. Данные, оригиналы, MiniLM, почта и сертификаты переживают пересборку в именованных томах.
+
+При ошибке после смены версии скрипт пытается вернуть сервисы предыдущего SHA на тех же томах. Откат образов и восстановление PostgreSQL выполняют разные операции. Если миграция несовместима с предыдущим приложением, сначала сохраните текущее состояние и отдельно согласуйте восстановление из копии. До проверки сохранности не удаляйте предыдущий выпуск, образы и резервную копию. Ход сборки и результат публикации видны в журнале systemd.
+
+После первого выпуска вручную или браузерным тестом подтвердите точную цитату, уточнение и полный Reply через живую тестовую почту.

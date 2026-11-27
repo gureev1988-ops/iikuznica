@@ -1,0 +1,10 @@
+[Unit]
+Description=Check IIKuznica main for successful CI
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=2min
+Unit=iikuznica-deploy@%i.service
+
+[Install]
+WantedBy=timers.target

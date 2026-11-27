@@ -1,0 +1,21 @@
+services:
+  db:
+    restart: unless-stopped
+  smtp:
+    restart: unless-stopped
+  imap:
+    restart: unless-stopped
+  api:
+    restart: unless-stopped
+  interactive:
+    restart: unless-stopped
+  background:
+    restart: unless-stopped
+  https:
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      II_RELEASE_SHA: ${II_RELEASE_SHA:?Set the release commit}
+    volumes:
+      - ./deploy/vps/Caddyfile:/etc/caddy/Caddyfile:ro
