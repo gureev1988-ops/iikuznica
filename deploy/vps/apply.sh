@@ -22,17 +22,23 @@ fi
 compose() {
     local sha=$1
     local source=$root/releases/$sha
+    local files=(-f "$source/compose.yaml" -f "$source/deploy/vps/compose.production.yaml")
+    local site="$source/deploy/vps/sites/$public_host.yaml"
+    if [[ -f $site ]]; then
+        files+=(-f "$site")
+    fi
     shift
     II_APP_IMAGE="iikuznica-assembly:$sha" II_IMAP_IMAGE="iikuznica-imap:$sha" II_RELEASE_SHA="$sha" \
         docker compose --project-name iikuznica-prod --project-directory "$source" --env-file "$config" \
-        -f "$source/compose.yaml" -f "$source/deploy/vps/compose.production.yaml" "$@"
+        "${files[@]}" "$@"
 }
 
-verify_https() {
+verify_host() {
     local sha=$1
+    local host=$2
     local headers
     headers=$(curl -fsS --connect-timeout 5 --max-time 10 --retry 15 --retry-delay 3 --retry-all-errors \
-        --resolve "$public_host:443:127.0.0.1" -D - -o /dev/null "https://$public_host/healthz") || return
+        --resolve "$host:443:127.0.0.1" -D - -o /dev/null "https://$host/healthz") || return
     printf '%s\n' "$headers" | awk -v sha="$sha" '
         tolower($1) == "x-iikuznica-revision:" {
             sub(/\r$/, "", $2)
@@ -40,6 +46,20 @@ verify_https() {
         }
         END { exit !found }
     '
+}
+
+verify_https() {
+    local sha=$1
+    verify_host "$sha" "$public_host" || return
+    if [[ -f $root/releases/$sha/deploy/vps/sites/$public_host.yaml ]]; then
+        local public_url
+        public_url=$(compose "$sha" exec -T api printenv II_PUBLIC_URL) || return
+        local domain=${public_url#https://}
+        domain=${domain%/}
+        if [[ $domain != "$public_host" ]]; then
+            verify_host "$sha" "$domain" || return
+        fi
+    fi
 }
 
 compose "$revision" config --quiet

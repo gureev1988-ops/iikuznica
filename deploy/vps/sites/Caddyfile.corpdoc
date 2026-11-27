@@ -1,0 +1,21 @@
+{
+	default_sni 45.8.146.122
+}
+
+(assembly) {
+	header X-IIKuznica-Revision {$II_RELEASE_SHA}
+	reverse_proxy api:8000
+}
+
+corpdoc.single-tech.ru {
+	import assembly
+}
+
+45.8.146.122 {
+	tls {
+		issuer acme https://acme-v02.api.letsencrypt.org/directory {
+			profile shortlived
+		}
+	}
+	import assembly
+}

@@ -7,6 +7,7 @@ import hmac
 import imaplib
 import os
 from pathlib import Path
+import re
 from secrets import token_urlsafe
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -82,15 +83,30 @@ def set_cookie(response, name, token, max_age):
     response.headers["Cache-Control"] = "no-store"
 
 
+def browser_origin(value):
+    base = urlsplit(value)
+    # Validate one authority, including an optional port or bracketed IPv6 address.
+    if (base.scheme != "https" or not base.hostname or base.path not in ("", "/")
+            or "?" in value or "#" in value or any(ch.isspace() for ch in value)
+            or not re.fullmatch(r"(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:.]+\])(?::[0-9]+)?", base.netloc)):
+        raise ValueError("Expected a single HTTPS browser origin")
+    host = f"[{base.hostname}]" if ":" in base.hostname else base.hostname
+    return "https://" + host + (f":{base.port}" if base.port not in (None, 443) else "")
+
+
 class Assembly:
     def __init__(self, settings, *, credentials=None):
         self.settings = settings
         self.dsn = settings.dsn
-        base = urlsplit(settings.public_base_url)
-        if base.scheme != "https" or not base.hostname or base.path not in ("", "/"):
-            raise ValueError("The assembly browser origin must be HTTPS")
-        self.origin = f"{base.scheme}://{base.netloc}"
         credentials = os.environ if credentials is None else credentials
+        origins = [browser_origin(settings.public_base_url)]
+        if legacy := credentials.get("II_LEGACY_BROWSER_ORIGIN"):
+            origins.append(browser_origin(legacy))
+        self.browser_origins = {}
+        for origin in origins:
+            self.browser_origins[origin] = origin
+            if urlsplit(origin).port is None:
+                self.browser_origins[origin + ":443"] = origin
         self.judge_login = credentials["II_JUDGE_LOGIN"]
         self.judge_password = credentials["II_JUDGE_PASSWORD"]
         self.demo_login = credentials.get("II_DEMO_EXPERT_LOGIN")
@@ -112,8 +128,14 @@ class Assembly:
         self.transport = SmtpTransport(quality_mail)
 
     def check_origin(self, request):
-        if request.headers.get("Origin") != self.origin or request.headers.get("Sec-Fetch-Site") == "cross-site":
-            raise HTTPException(403, "Invalid request origin")
+        # Caddy preserves the public Host while terminating TLS. Neither Host nor forwarded
+        # headers grant access: the configured origin must also match the request authority.
+        origins, hosts = request.headers.getlist("Origin"), request.headers.getlist("Host")
+        if len(origins) == len(hosts) == 1 and request.headers.get("Sec-Fetch-Site") != "cross-site":
+            origin = self.browser_origins.get(origins[0].lower())
+            if origin and origin == self.browser_origins.get("https://" + hosts[0].lower()):
+                return
+        raise HTTPException(403, "Invalid request origin")
 
     def session(self, conn, request):
         token = request.cookies.get(GUEST_COOKIE)

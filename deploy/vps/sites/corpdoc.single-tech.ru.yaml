@@ -1,0 +1,17 @@
+x-public-url: &public-url
+  II_PUBLIC_URL: https://corpdoc.single-tech.ru
+
+services:
+  init:
+    environment: *public-url
+  api:
+    environment:
+      <<: *public-url
+      II_LEGACY_BROWSER_ORIGIN: https://45.8.146.122
+  interactive:
+    environment: *public-url
+  background:
+    environment: *public-url
+  https:
+    volumes:
+      - ./deploy/vps/sites/Caddyfile.corpdoc:/etc/caddy/Caddyfile:ro
