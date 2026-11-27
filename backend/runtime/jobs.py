@@ -314,7 +314,7 @@ def run_once(
     """Recover expired work in the queue, then claim and run one eligible job.
 
     Pass active_kinds to park jobs for disabled integrations until a worker
-    enables their kind. Deadline recovery applies to the whole queue.
+    enables their kind. Document work can be scoped to configured source keys.
     """
     from .journal import recover_journal
 

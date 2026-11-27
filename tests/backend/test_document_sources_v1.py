@@ -232,6 +232,7 @@ async def slow_response(_request):
     ('title', 'document_version_conflict'), ('url', 'document_version_conflict'), ('older', 'document_version_regression'),
     ('acl', 'invalid_document'), ('faq', 'invalid_document'), ('nul', 'invalid_document'),
     ('surrogate', 'invalid_document'), ('too_many', 'too_many_documents'), ('huge_version', 'invalid_document'),
+    ('unindexable_id', 'invalid_document'),
 ])
 def test_bad_export_preserves_all_previously_available_data(dsn, upstream, monkeypatch, caplog, name, expected):
     responses, calls = upstream
@@ -240,6 +241,7 @@ def test_bad_export_preserves_all_previously_available_data(dsn, upstream, monke
     monkeypatch.setenv('II_TOKEN_A', 'private-marker-token')
     backend = Backend(settings(dsn, {'a': feed('a', token='II_TOKEN_A')}), mail_config=MAIL)
     fresh = document('a-first')
+    unindexable_id = 'z-' + ''.join(sha256(str(i).encode()).hexdigest() for i in range(110))
     monkeypatch.setattr(http_json, 'HTTP_BUDGET_SECONDS', 0.12)
     poisoned = {
         'malformed': b'{"bad":"private marker"',
@@ -261,6 +263,7 @@ def test_bad_export_preserves_all_previously_available_data(dsn, upstream, monke
         'surrogate': json.dumps(export(2, fresh | {'text': 'surrogate\ud800in text'})).encode(),
         'too_many': export(2, *(document(str(i)) for i in range(501))),
         'huge_version': export(2, fresh | {'revision': 2**63}),
+        'unindexable_id': export(2, fresh, document(unindexable_id)),
     }
     with TestClient(create_app(services=backend)) as client, caplog.at_level(logging.DEBUG):
         assert sync(backend, client, 'a')['status'] == 'completed'

@@ -22,6 +22,8 @@ MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_DOCUMENTS = 500
 HTTP_BUDGET_SECONDS = 10
 MAX_DOCUMENT_VERSION = 2**63 - 1
+# Leave room for source_key and tuple overhead in PostgreSQL's composite B-tree keys.
+MAX_EXTERNAL_ID_BYTES = 2048
 _HEADER_FIELDS = {'schema_version', 'snapshot_revision', 'complete', 'count', 'documents'}
 _DOCUMENT_FIELDS = {'id', 'revision', 'title', 'text', 'source_url'}
 _NEWLINE = r'(?:\r\n|\r(?!\n)|(?<!\r)\n)'
@@ -130,6 +132,7 @@ def parse_inventory(body: bytes) -> HttpInventory:
         if (not isinstance(record, dict) or record.keys() != _DOCUMENT_FIELDS
                 or type(record['revision']) is not int or not 1 <= record['revision'] <= MAX_DOCUMENT_VERSION
                 or not all(_valid_text(record[field]) for field in ('id', 'title', 'text', 'source_url'))
+                or len(record['id'].encode('utf-8')) > MAX_EXTERNAL_ID_BYTES
                 or not _https_url(record['source_url'])):
             raise HttpJsonError('invalid_document')
         if record['id'] in seen:
