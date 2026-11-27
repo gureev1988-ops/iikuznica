@@ -1,0 +1,11 @@
+# Native, reference (BF16) path in perplexity-ai/pplx-decider-flash-v1.3 revision
+# 3df8d577c17facbdc995536bfb65785f1582a1e6, source/pyproject.toml.
+torch==2.14.0
+torchvision==0.29.0
+transformers==5.17.0
+safetensors==0.8.0
+pillow==12.3.0
+huggingface-hub==1.31.0
+fastapi==0.165.0
+pydantic==2.14.4
+uvicorn==0.54.0

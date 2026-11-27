@@ -52,7 +52,7 @@ docker compose up -d --no-deps --force-recreate api interactive background
 | Задача | Материалы |
 | --- | --- |
 | Проверить демонстрацию | [Сценарии, устройство стенда и результаты измерений](docs/architecture/product-release.md) · [Четыре исходных регламента и глоссарий](corpus/) |
-| Подготовить пилот | [Этапы и критерии пилота в Softline](docs/pilot-softline.md) · [Как подключить ещё один источник](docs/backend/run.md#как-подключить-ещё-один-источник) |
+| Подготовить пилот | [Этапы и критерии пилота в Softline](docs/pilot-softline.md) · [Запуск и переключение на локальные модели](docs/backend/local-models.md) · [Как подключить ещё один источник](docs/backend/run.md#как-подключить-ещё-один-источник) |
 | Изменить интерфейс или API | [Макет и дизайн-система](docs/design/README.md) · [Контракты OpenAPI и типы TypeScript](contracts/README.md) |
 | Запустить проверки или развернуть стенд | [Руководство для участников](CONTRIBUTING.md) · [Приёмка сборки](docs/backend/assembly-run.md) · [Развёртывание на VPS](docs/backend/vps-deploy.md) |
 

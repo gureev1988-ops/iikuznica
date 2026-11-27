@@ -27,12 +27,15 @@ class Backend:
         hackathon = settings.hackathon
         assembly = settings.profile == "assembly"
         self.assembly = None
+        self.model_profile = None
         indexer = None
         if assembly:
             from backend.assembly.engine import A1Engine
+            from backend.assembly.model_profile import load_model_profile
             from backend.assembly.search import RevisionIndexer
             from backend.assembly.web import Assembly
 
+            self.model_profile = load_model_profile()
             self.assembly = Assembly(settings)
             self.engine = A1Engine(self.dsn)
             indexer = RevisionIndexer(self.dsn)

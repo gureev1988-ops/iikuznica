@@ -3,11 +3,14 @@
 import json
 import os
 import re
+from time import monotonic
+from urllib.parse import urlsplit
 
 from eval.decider.policy import GEMMA
 from eval.openrouter import make_request
 from eval.search_core.core import model_settings
-from .models import json_reply
+from .model_profile import load_model_profile
+from .models import LATENCY_LOG, json_reply
 from .transport import UpstreamFailure, complete
 
 
@@ -143,7 +146,8 @@ def judge(conn, question, answer, conditions, *, use_model=True):
     )
     if not use_model:
         return {**evidence("unconfirmed", "Назначена проверка действующего регламента."), "pending": True}
-    if not os.getenv("OPENROUTER_API_KEY"):
+    profile = load_model_profile()
+    if not profile.is_local and not os.getenv("OPENROUTER_API_KEY"):
         return {**evidence("unconfirmed", "Судья недоступен. Повторите проверку."), "unavailable": True}
     case = dict(
         question=json.dumps(
@@ -154,36 +158,46 @@ def judge(conn, question, answer, conditions, *, use_model=True):
             for i, r in enumerate(rows)
         ],
     )
+    started = monotonic()
     try:
         body = model_settings(make_request(case, GEMMA, prompt), GEMMA, "deepinfra/fp8", 1000)
         value = json_reply(complete("quality", body, "faq_review", timeout=6))
-        outcome = value.get("outcome")
-        reason = value.get("reason")
-        if isinstance(reason, str) and reason.strip():
-            if outcome in ("conflict", "consistent"):
-                primary = verified_claim(value, rows, answer)
-                if primary:
-                    primary["outcome"] = outcome
-                    if outcome == "conflict":
-                        extra = value.get("additional_conflicts", [])
-                        if isinstance(extra, list):
-                            findings = [verified_claim(item, rows, answer) for item in extra]
-                            if all(findings):
-                                seen = {(primary["fragment_id"], primary["claim"])}
-                                primary["additional_conflicts"] = []
-                                for finding in findings:
-                                    key = (finding["fragment_id"], finding["claim"])
-                                    if key not in seen:
-                                        primary["additional_conflicts"].append(finding)
-                                        seen.add(key)
-                                return primary
-                    else:
-                        return primary
-            if outcome in ("unconfirmed", "no_source"):
-                return evidence(outcome, reason[:1200])
+        result = judge_evidence(value, rows, answer)
     except (KeyError, ValueError, TypeError, UpstreamFailure):
-        pass
+        result = None
+    host = urlsplit(profile.target("gemma").url).netloc if profile.is_local else "openrouter.ai"
+    LATENCY_LOG.info("stage=faq_review role=gemma profile=%s host=%s state=%s elapsed_s=%.3f",
+                     profile.name, host, result["outcome"] if result else "unavailable", monotonic() - started)
+    if result:
+        return result
     return {
         **evidence("unconfirmed", "Судья не вернул подтверждаемого результата. Повторите проверку."),
         "unavailable": True,
     }
+
+
+def judge_evidence(value, rows, answer):
+    outcome = value.get("outcome")
+    reason = value.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        if outcome in ("conflict", "consistent"):
+            primary = verified_claim(value, rows, answer)
+            if primary:
+                primary["outcome"] = outcome
+                if outcome == "conflict":
+                    extra = value.get("additional_conflicts", [])
+                    if isinstance(extra, list):
+                        findings = [verified_claim(item, rows, answer) for item in extra]
+                        if all(findings):
+                            seen = {(primary["fragment_id"], primary["claim"])}
+                            primary["additional_conflicts"] = []
+                            for finding in findings:
+                                key = (finding["fragment_id"], finding["claim"])
+                                if key not in seen:
+                                    primary["additional_conflicts"].append(finding)
+                                    seen.add(key)
+                            return primary
+                else:
+                    return primary
+        if outcome in ("unconfirmed", "no_source"):
+            return evidence(outcome, reason[:1200])

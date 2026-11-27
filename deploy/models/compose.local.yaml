@@ -1,0 +1,30 @@
+# Merge with the root compose.yaml when connecting assembly to internal model endpoints.
+x-internal-models: &internal-models
+  environment:
+    II_MODEL_PROFILE: local
+    II_LOCAL_GEMMA_URL: ${II_LOCAL_GEMMA_URL:?Set the internal Gemma Chat Completions URL}
+    II_LOCAL_GEMMA_MODEL: ${II_LOCAL_GEMMA_MODEL:?Set the Gemma model ID served at that URL}
+    II_LOCAL_GEMMA_TOKEN: ${II_LOCAL_GEMMA_TOKEN:-}
+    II_LOCAL_QWEN_URL: ${II_LOCAL_QWEN_URL:?Set the internal Qwen Chat Completions URL}
+    II_LOCAL_QWEN_MODEL: ${II_LOCAL_QWEN_MODEL:?Set the Qwen model ID served at that URL}
+    II_LOCAL_QWEN_TOKEN: ${II_LOCAL_QWEN_TOKEN:-}
+    II_LOCAL_DECIDER_URL: ${II_LOCAL_DECIDER_URL:?Set the native internal Decisions URL}
+    II_LOCAL_DECIDER_MODEL: ${II_LOCAL_DECIDER_MODEL:?Set the Decider model ID served at that URL}
+    II_LOCAL_DECIDER_TOKEN: ${II_LOCAL_DECIDER_TOKEN:-}
+    SSL_CERT_FILE: ${II_LOCAL_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}
+    OPENROUTER_API_KEY: ""
+    II_GEMMA_RESERVE_PROVIDER: ""
+    II_QWEN_RESERVE_PROVIDER: ""
+  volumes:
+    - type: bind
+      source: ${II_MINILM_HOST_DIR:?Set the absolute path to the prepared MiniLM directory}
+      target: /models
+      read_only: true
+      bind:
+        create_host_path: false
+
+services:
+  init: *internal-models
+  api: *internal-models
+  interactive: *internal-models
+  background: *internal-models
