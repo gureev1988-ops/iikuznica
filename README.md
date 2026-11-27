@@ -2,7 +2,7 @@
 
 «Демо DION» отвечает на вопросы о пресейле и проектной деятельности по четырём учебным регламентам. В браузере можно открыть процитированный пункт нужной редакции, ответить на уточнение и передать вопрос в Отдел качества. Работа гостя и эксперта Отдела качества, доступ к учебной почте и приёмка каждого экрана описаны в спецификации выпуска.
 
-[Спецификация экранов, API и приёмки](docs/architecture/product-release.md) · [Утверждённые макеты v29 и исходные ТЗ](docs/design/README.md) · [План пилота Softline](docs/pilot-softline.md)
+[Спецификация экранов, API и приёмки](docs/architecture/product-release.md) · [Утверждённые макеты v29 и исходные ТЗ](docs/design/README.md) · [План пилота в Softline](docs/pilot-softline.md) · [Локальные модели в пилоте](docs/pilot-softline.md#локальные-модели-в-контуре-softline)
 
 ## Запуск
 
@@ -31,4 +31,5 @@ curl --cacert local-ca.pem https://localhost:4443/healthz
 - [Спецификация сборки](docs/architecture/assembly-v1.md)
 - [Бриф и спецификация поиска](docs/IIkuznitsa_Sprint_Brief.md)
 - [Приоритет регламента](docs/architecture/faq-regulation-priority.md)
+- [Как подключить ещё один источник](docs/backend/run.md#как-подключить-ещё-один-источник)
 - [Команды технической проверки](docs/backend/assembly-run.md)

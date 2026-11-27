@@ -130,6 +130,8 @@ class Citation:
     fragment_id: UUID
     quote: str
     claim: str | None = None
+    # Exact name in the quotation whose published link the application should resolve.
+    linked_document: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

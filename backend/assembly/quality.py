@@ -30,7 +30,7 @@ CARD_SELECT = f"""
         f.updated_at,(SELECT min(created_at) FROM source_revisions WHERE source_id=f.document_id) AS created_at,
         (SELECT count(*) FROM assembly_faq_uses u WHERE u.faq_id=f.id) +
           CASE WHEN seed.faq_id IS NULL THEN 0 ELSE 5 END AS uses,
-        ck.outcome,ck.reason,ck.quote,ck.catalog,
+        ck.outcome,ck.reason,ck.quote,ck.catalog,ck.retry_after,ck.pending_message_id,
         proof.id AS proof_id,proof.anchor,reg.id AS regulation_id,reg.title,reg.source_id
     FROM faq_entries f JOIN mail_requests r ON r.id=f.request_id
     JOIN source_fragments fr ON fr.id=f.current_fragment_id
@@ -188,10 +188,13 @@ def save_check(conn, row, result, pinned, *, bump=True):
         return
     conn.execute(
         """
-        INSERT INTO assembly_quality_checks(faq_id,faq_revision_id,outcome,fragment_id,quote,reason,catalog)
-        VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(faq_id) DO UPDATE SET
+        INSERT INTO assembly_quality_checks(faq_id,faq_revision_id,outcome,fragment_id,quote,reason,catalog,retry_after)
+        VALUES (%s,%s,%s,%s,%s,%s,%s, CASE WHEN %s THEN now()+interval '5 minutes' WHEN %s THEN now() END)
+        ON CONFLICT(faq_id) DO UPDATE SET
             faq_revision_id=excluded.faq_revision_id,outcome=excluded.outcome,fragment_id=excluded.fragment_id,
-            quote=excluded.quote,reason=excluded.reason,catalog=excluded.catalog,retry_after=NULL""",
+            quote=excluded.quote,reason=excluded.reason,catalog=excluded.catalog,retry_after=excluded.retry_after,
+            pending_message_id=CASE WHEN assembly_quality_checks.faq_revision_id=excluded.faq_revision_id
+                AND excluded.outcome IN ('unconfirmed','no_source') THEN assembly_quality_checks.pending_message_id END""",
         (
             row["id"],
             row["current_revision_id"],
@@ -200,8 +203,13 @@ def save_check(conn, row, result, pinned, *, bump=True):
             result["quote"],
             result["reason"],
             pinned,
+            bool(result.get("unavailable")),
+            bool(result.get("pending")),
         ),
     )
+    if row["pending_message_id"] and result["outcome"] in ("consistent", "conflict"):
+        from backend.mailfaq.service import complete_mail_review
+        complete_mail_review(conn, row, result)
     conn.execute("DELETE FROM assembly_quality_conflict_fragments WHERE faq_id=%s", (row["id"],))
     if result["outcome"] == "conflict":
         facts = [result, *result.get("additional_conflicts", [])]
@@ -250,7 +258,7 @@ def review_after_mail(conn, faq_id, *, prepared=None):
         result = prepared["result"]
     else:
         result = judge(conn, row["question"], row["answer"], row["conditions"], use_model=False)
-    save_check(conn, row, result, [] if result.get("pending") else pinned, bump=False)
+    save_check(conn, row, result, pinned, bump=False)
     remember(conn, row, "Отдел качества", "published")
     return result
 
@@ -411,7 +419,8 @@ def run_checks(conn, command_id):
     rows = conn.execute(CARD_SELECT + " AND f.status='active' ORDER BY f.id", SCOPE).fetchall()
     reviews = []
     for row in rows:
-        if row["outcome"] in ("conflict", "consistent", "no_source") and row["catalog"] == pinned:
+        if (row["outcome"] in ("conflict", "consistent", "no_source")
+                and row["catalog"] == pinned and row["retry_after"] is None):
             cached = serialize(conn, row)
             result = {**cached["evidence"], "additional_conflicts": cached["additional_conflicts"]}
         else:
@@ -508,7 +517,7 @@ def reconcile_reports(assembly):
 
 
 def recheck_revision(assembly):
-    """Reconsider one old ruling after the regulation catalog changes; never block chat on inference."""
+    """Review a changed catalog or retry a temporary failure without blocking chat."""
     with connect(assembly.dsn) as conn:
         if not conn.execute("SELECT pg_try_advisory_xact_lock(31018) AS acquired").fetchone()["acquired"]:
             return False
@@ -516,8 +525,8 @@ def recheck_revision(assembly):
         row = conn.execute(
             CARD_SELECT
             + """
-            AND f.status='active' AND (ck.catalog IS DISTINCT FROM %s::uuid[])
-            AND (ck.retry_after IS NULL OR ck.retry_after < now())
+            AND f.status='active' AND (ck.retry_after <= now()
+                OR (ck.retry_after IS NULL AND ck.catalog IS DISTINCT FROM %s::uuid[]))
             AND (ck.faq_id IS NOT NULL OR seed.faq_id IS NULL)
             ORDER BY f.updated_at LIMIT 1""",
             (*SCOPE, pinned),
@@ -527,7 +536,9 @@ def recheck_revision(assembly):
         result = judge(conn, row["question"], row["answer"], row["conditions"])
         lock_source_catalog(conn, write=True)
         current = get_card(conn, row["id"])
-        if current["version"] != row["version"] or catalog(conn) != pinned:
+        if (current["version"] != row["version"] or current["current_revision_id"] != row["current_revision_id"]
+                or current["retry_after"] != row["retry_after"] or current["catalog"] != row["catalog"]
+                or catalog(conn) != pinned):
             return False
         remember(conn, current, "Отдел качества", "published")
         save_check(conn, current, result, pinned)

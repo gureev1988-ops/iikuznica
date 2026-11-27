@@ -2246,6 +2246,11 @@ export interface components {
             /** Quote */
             quote: string;
             /**
+             * Related Url
+             * @description HTTPS link to a related document verified in this cited revision.
+             */
+            related_url?: string | null;
+            /**
              * Revision Id
              * Format: uuid
              */

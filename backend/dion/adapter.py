@@ -355,18 +355,23 @@ class DionAdapter:
 
         fields = {"text": text}
         implicit = None
-        if target is None and not command.startswith("/") and not QUESTION.search(text):
+        if target is None and not command.startswith("/"):
             actions = self.dialogue.open_actions(conn, actor, conversation_id)
             sent = {r["clarification_id"] for r in conn.execute("""
                 SELECT clarification_id FROM dion_outbox WHERE conversation_id=%s
                 AND clarification_id IS NOT NULL AND confirmed_message_id IS NOT NULL
                 """, (conversation_id,))}
             opened = [item for item in actions["clarifications"] if item["id"] in sent]
-            relevant = [item for item in opened if text.isdecimal() or match_options(text, item["options"])]
+            relevant = [item for item in opened
+                        if text.isdecimal() or match_options(text, item["options"], implicit=True)]
             if relevant and len(opened) > 1:
                 self._notice(conn, actor, conversation_id, row, "Ответьте на нужное сообщение с уточнением.")
                 return None, None
-            if len(opened) == 1 and (relevant or not text.endswith("?")):
+            # Only a matching answer can implicitly select a list. With a semantic
+            # interpreter the dialogue service can also recognize a free reply or
+            # start a separate case, without consuming the previous clarification.
+            semantic = getattr(self.dialogue.engine, "interpret_choice", None)
+            if len(opened) == 1 and (relevant or (semantic and not QUESTION.search(text))):
                 implicit = opened[0]["id"]
         if command == "/answer" or replying_to_clarification or implicit:
             clarification_id = target["clarification_id"] if target else implicit
@@ -622,8 +627,12 @@ class DionAdapter:
             ]
             for url in dict.fromkeys(links[:10]):
                 footer.append(f"{self.public_base_url or ''}{url}")
-
         suffix = _clip("\n\n" + "\n".join(footer), 3000) if footer else ""
+        for url in dict.fromkeys(ref.get("related_url") for ref in footnote_refs or ()):
+            if url and url.startswith("https://"):
+                line = f"\nСвязанный документ: {url}"
+                if _html_length(suffix) + _html_length(line) <= 3000:
+                    suffix += line
         return {
             "text": _clip(text, MAX_TEXT_LENGTH - _html_length(suffix)) + suffix,
             "source_refs": footnote_refs,

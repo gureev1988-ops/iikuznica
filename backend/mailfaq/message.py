@@ -61,6 +61,7 @@ class ParsedMail:
     pending: tuple[str, ...] = ()
     reason: str | None = None
     correction: bool = False
+    work_status: tuple[str, ...] = ()
 
     def record(self) -> dict:
         return asdict(self)

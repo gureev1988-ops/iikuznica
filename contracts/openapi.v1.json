@@ -3279,6 +3279,18 @@
             "title": "Quote",
             "type": "string"
           },
+          "related_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "HTTPS link to a related document verified in this cited revision.",
+            "title": "Related Url"
+          },
           "revision_id": {
             "format": "uuid",
             "title": "Revision Id",

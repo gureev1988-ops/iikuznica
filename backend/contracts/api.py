@@ -40,6 +40,7 @@ class SourceReference(BaseModel):
     quote: str
     url: str
     claim: str | None = None
+    related_url: str | None = Field(None, description="HTTPS link to a related document verified in this cited revision.")
 
 
 class MessageView(BaseModel):

@@ -226,7 +226,7 @@ def _has_access(conn, request: dict) -> bool:
 def _note(
     conn, request: dict, inbound_id: UUID, kind: str, text: str, refs: list[dict] | None = None,
     *, notify: bool = True,
-) -> None:
+) -> UUID | None:
     if not _has_access(conn, request):
         return
     refs = refs or []
@@ -256,6 +256,7 @@ def _note(
             text=text, source_refs=refs,
             mail_request_id=request["id"] if kind in {"counter_question", "partial"} else None,
         )
+    return message_id
 
 
 def _correlate(conn, parsed: ParsedMail, recipient: str | None) -> tuple[UUID | None, str]:
@@ -307,6 +308,66 @@ def _reconcile_reply(conn, parsed: ParsedMail, request_id: UUID) -> None:
         )
 
 
+def reviewed_resolution(conn, request, text, faq_ref, review, event_key, *, offer_conflict=True):
+    """Compose the same verified message for immediate and deferred mail checks."""
+    refs = [review["ref"], faq_ref]
+    if review["outcome"] == "consistent":
+        return request, text + "\n\nДействующий регламент [1] · Разъяснение Отдела качества [2]", refs
+    answer = faq_ref["quote"]
+    extra = text.removeprefix("Разъяснение Отдела качества\n" + answer)
+    message = (f"Действующий регламент: {review['ref']['quote']} [1]\n\n"
+               f"Разъяснение Отдела качества: {answer} [2]\n\n"
+               "Руководствуйтесь регламентом.")
+    if not offer_conflict:
+        return request, message + extra, refs
+    message += " Передать расхождение в Отдел качества?" + extra
+    # A verified conflict gets its own offer. Consent to the first letter is already spent.
+    turn = conn.execute("""
+        INSERT INTO turns(conversation_id,case_id,request_id,question,status,request,result)
+        VALUES (%s,%s,%s,%s,'completed',%s,%s) RETURNING id
+        """, (request["conversation_id"], request["case_id"], f"mail-conflict:{event_key}",
+              request["question"], Jsonb({"channel": "guest"}), Jsonb({
+                  "action": "answer", "text": message, "sources": refs}))).fetchone()
+    superseded = conn.execute("""UPDATE offers SET status='superseded',updated_at=now()
+        WHERE case_id=%s AND status='open' RETURNING id,turn_id,case_id,version,status,text""",
+                              (request["case_id"],)).fetchall()
+    from backend.dialog.service import _public_action
+    for old in superseded:
+        append_event(conn, request["conversation_id"], old["case_id"], old["turn_id"],
+                     "offer.superseded", {"offer": _public_action(old)})
+    conn.execute("""INSERT INTO offers(turn_id,case_id,text,payload) VALUES (%s,%s,%s,%s)""",
+                 (turn["id"], request["case_id"], message, Jsonb({
+                     "conditions": request["conditions"], "question": request["question"]})))
+    return dict(request, turn_id=turn["id"]), message, refs
+
+
+def complete_mail_review(conn, row, review):
+    message = conn.execute("""
+        SELECT m.id, m.text, m.source_refs,
+            EXISTS(SELECT 1 FROM turns WHERE case_id=m.case_id AND created_at>m.created_at)
+            OR EXISTS(SELECT 1 FROM offers WHERE case_id=m.case_id AND status='open')
+            OR EXISTS(SELECT 1 FROM clarifications WHERE case_id=m.case_id AND status='open') AS newer_action
+        FROM messages m JOIN mail_requests r
+          ON r.conversation_id=m.conversation_id AND r.case_id=m.case_id
+        WHERE m.id=%s AND r.id=%s AND m.role='assistant'
+          AND r.actor_id=(SELECT owner_id FROM conversations WHERE id=r.conversation_id)
+        """, (row["pending_message_id"], row["request_id"])).fetchone()
+    if not message:
+        return
+    refs = message["source_refs"]
+    if len(refs) != 1 or refs[0].get("revision_id") != str(row["current_revision_id"]):
+        return
+    request = conn.execute("SELECT * FROM mail_requests WHERE id=%s", (row["request_id"],)).fetchone()
+    # A late verdict can annotate an old message. It must not redirect the next reply in an ongoing case.
+    updated, text, refs = reviewed_resolution(conn, request, message["text"], refs[0], review, message["id"],
+                                              offer_conflict=not message["newer_action"])
+    conn.execute("UPDATE messages SET text=%s, source_refs=%s, turn_id=%s WHERE id=%s",
+                 (text, Jsonb(refs), updated["turn_id"], message["id"]))
+    append_event(conn, updated["conversation_id"], updated["case_id"], updated["turn_id"], "mail.review",
+                 {"request_id": str(request["id"]), "message_id": str(message["id"]),
+                  "text": text, "source_refs": refs})
+
+
 def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail, *, hackathon: bool = False, norm_review=None) -> None:
     conn.execute(
         "UPDATE mail_inbound SET state = 'processed', request_id = %s, reason = NULL WHERE id = %s",
@@ -315,7 +376,8 @@ def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail, *,
     _reconcile_reply(conn, parsed, request["id"])
     kind = parsed.kind
     if kind == "status":
-        _note(conn, request, inbound_id, kind, "Отдел качества · ход работы\n" + parsed.public_text)
+        status_text = "\n".join(parsed.work_status) or parsed.public_text
+        _note(conn, request, inbound_id, kind, "Отдел качества · ход работы\n" + status_text)
         return
     if kind == "automatic":
         _note(conn, request, inbound_id, kind, "Получен автоматический ответ.", notify=False)
@@ -412,6 +474,7 @@ def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail, *,
     ).fetchone()
 
     refs = []
+    deferred_faq = None
     if kind == "partial" and request["channel"] == "guest":
         message = "Частичный ответ Отдела качества\n" + parsed.public_text
         if pending:
@@ -429,34 +492,21 @@ def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail, *,
             if updated["channel"] == "guest":
                 from backend.assembly.quality import review_after_mail
                 review = review_after_mail(conn, match.faq_id, prepared=norm_review)
-                if review.get("outcome") == "conflict" and review.get("ref"):
-                    refs.insert(0, review["ref"])
-                    message = (f"Действующий регламент: {review['ref']['quote']} [1]\n\n"
-                               f"Разъяснение Отдела качества: {match.text} [2]\n\n"
-                               "Руководствуйтесь регламентом. Передать расхождение в Отдел качества?")
-                    # A verified conflict gets its own offer. Consent to the first letter is already spent.
-                    turn = conn.execute("""
-                        INSERT INTO turns(conversation_id,case_id,request_id,question,status,request,result)
-                        VALUES (%s,%s,%s,%s,'completed',%s,%s) RETURNING id
-                        """, (updated["conversation_id"], updated["case_id"], f"mail-conflict:{inbound_id}",
-                              updated["question"], Jsonb({"channel": "guest"}), Jsonb({
-                                  "action": "answer", "text": message, "sources": refs}))).fetchone()
-                    superseded = conn.execute("""UPDATE offers SET status='superseded',updated_at=now()
-                        WHERE case_id=%s AND status='open' RETURNING id,turn_id,case_id,version,status,text""",
-                                              (updated["case_id"],)).fetchall()
-                    from backend.dialog.service import _public_action
-                    for old in superseded:
-                        append_event(conn, updated["conversation_id"], old["case_id"], old["turn_id"],
-                                     "offer.superseded", {"offer": _public_action(old)})
-                    conn.execute("""INSERT INTO offers(turn_id,case_id,text,payload) VALUES (%s,%s,%s,%s)""",
-                                 (turn["id"], updated["case_id"], message, Jsonb({
-                                     "conditions": updated["conditions"], "question": updated["question"]})))
-                    updated = dict(updated, turn_id=turn["id"])
+                if review["outcome"] in ("conflict", "consistent") and review["ref"]:
+                    updated, message, refs = reviewed_resolution(conn, updated, message, refs[0], review, inbound_id)
+                elif review["outcome"] in ("unconfirmed", "no_source"):
+                    deferred_faq = match
             elif match.conflict_revision_id:
                 message += "\n\nОфициальное разъяснение расходится с текущей редакцией документа."
         if pending:
             message += "\n\nОжидается уточнение:\n" + "\n".join(pending)
-    _note(conn, updated, inbound_id, "resolution" if kind == "substantive" else kind, message, refs)
+    if parsed.work_status:
+        message += "\n\nХод работы:\n" + "\n".join(parsed.work_status)
+    message_id = _note(conn, updated, inbound_id, "resolution" if kind == "substantive" else kind, message, refs)
+    if deferred_faq and message_id:
+        conn.execute("""UPDATE assembly_quality_checks SET pending_message_id=%s
+                     WHERE faq_id=%s AND faq_revision_id=%s""",
+                     (message_id, deferred_faq.faq_id, deferred_faq.revision_id))
 
 
 def _schedule_interpretation(conn, inbound_id, request_id):

@@ -50,22 +50,29 @@ def verified_reply(parsed, decision, body, previous):
         answer = [qualified_excerpt(q, body) for q in excerpts("answer", body)]
         pending = excerpts("pending", body)
         status = excerpts("status", body)
-        retain = excerpts("retain", "\n\n".join(previous))
+        retain = []
+        prior_parts = {part.strip() for note in previous for part in note.split("\n\n") if part.strip()}
+        for quote in excerpts("retain", "\n\n".join(previous)):
+            # Restore the complete previously verified part, including conditions the model omitted.
+            for piece in quote.split("\n\n"):
+                matches = [part for part in prior_parts if piece.strip() and piece.strip() in part]
+                if len(matches) != 1:
+                    raise ValueError("Ambiguous retained excerpt")
+                retain.append(matches[0])
         complete = kind in {"substantive", "correction"}
         if (kind not in {"status", "counter_question", "partial", "substantive", "correction"}
+                or any(part in claim for part in (*pending, *status) for claim in answer)
                 or (complete and (pending or not answer))
                 or (kind == "partial" and not (answer and (pending or status)))
                 or (kind == "counter_question" and (not pending or answer))
                 or (kind == "status" and (not status or answer or pending))):
             raise ValueError("Unresolved reply")
     except (KeyError, ValueError, TypeError):
-        return replace(parsed, kind="unrecognized", reason="reply_requires_review", public_text="", prompt="", pending=())
-    if kind == "status":
-        return replace(parsed, kind=kind, public_text="\n".join(status), prompt="", pending=())
+        return replace(parsed, kind="unrecognized", reason="reply_requires_review", public_text="",
+                       prompt="", pending=(), work_status=())
     public_text = "\n\n".join(dict.fromkeys([*(retain if complete else []), *answer]))
-    return replace(parsed, kind=kind, public_text=public_text, prompt="",
-                   pending=tuple(dict.fromkeys([*pending, *(status if kind == "partial" else [])])),
-                   correction=kind == "correction", reason=None)
+    return replace(parsed, kind=kind, public_text=public_text, prompt="", work_status=tuple(status),
+                   pending=tuple(pending), correction=kind == "correction", reason=None)
 
 
 def interpret(dsn, job, request, raw, parsed, chain):

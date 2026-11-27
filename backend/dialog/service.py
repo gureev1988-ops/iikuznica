@@ -19,6 +19,7 @@ from backend.contracts.engine import (
     SourceSnapshot,
 )
 from backend.db import append_event, connect, lock_source_catalog
+from backend.documents.links import related_document_url
 from .clarifications import QUESTION, UNKNOWN, match_options, numbered, offer_decision
 
 
@@ -334,7 +335,8 @@ class DialogueService:
         route = None
         if (text and not text.isdecimal() and getattr(self.engine, "interpret_choice", None)
                 and not any(text.strip().casefold() == o["text"].casefold() for o in row["options"])
-                and (not matches or len(matches) > 1 or UNKNOWN.search(text) or len(text.split()) > 4)):
+                and (actor.channel == "dion" or not matches or len(matches) > 1
+                     or UNKNOWN.search(text) or len(text.split()) > 4)):
             from backend.contracts.engine import EngineUnavailable
             try:
                 route, option_id, additions = self.engine.interpret_choice(
@@ -358,7 +360,7 @@ class DialogueService:
             hint = (f"Выберите номер от 1 до {len(row['options'])}." if not matches
                     else "Подходят несколько вариантов. Уточните выбор.")
             raise DialogueError(422, f"clarification_choice_{issue}", message=numbered(hint, row["options"]))
-        if matches is None and text and QUESTION.search(text) and not getattr(self.engine, "interpret_choice", None):
+        if matches is None and text and (QUESTION.search(text) or text.endswith("?")) and route is None:
             # Preserve the open list in its original case when the employee changes the subject.
             return None, text, text, None
         if body.option_id is not None or matches:
@@ -373,7 +375,7 @@ class DialogueService:
             conditions.update(selected)
             condition_sources.update(dict.fromkeys(selected, message_sources))
         else:
-            value = "не знаю" if UNKNOWN.search(text) or route == "unknown" else text
+            value = "не знаю" if route == "unknown" or (route is None and UNKNOWN.search(text)) else text
             conditions[key] = value
             condition_sources.pop(key, None)
         for fact, literal in additions.items():
@@ -702,7 +704,12 @@ class DialogueService:
                 fragment = snapshot.get((citation.document_id, citation.revision_id, citation.fragment_id))
                 if fragment is None or not citation.quote.strip() or citation.quote not in fragment.text:
                     raise InvalidAnswer("Evidence does not match the allowed source snapshot")
-                refs.append(_source_ref(fragment, citation.quote, citation.claim))
+                ref = _source_ref(fragment, citation.quote, citation.claim)
+                if citation.linked_document and fragment.kind == "document":
+                    related = related_document_url(conn, fragment, citation.quote, citation.linked_document)
+                    if related:
+                        ref["related_url"] = related
+                refs.append(ref)
             if not self._refs_visible(conn, actor, refs, current=True):
                 raise EvidenceChanged("Evidence changed during the turn")
             return refs

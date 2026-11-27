@@ -40,7 +40,7 @@ def _allow_http_log(_record):
     return not _PRIVATE_HTTP.get()
 
 
-def _https_url(value: str) -> bool:
+def valid_https_url(value: str) -> bool:
     try:
         parts = urlsplit(value)
         return (
@@ -60,7 +60,7 @@ class HttpJsonConfig:
     bearer_token_env: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        if (self.audience != 'all_employees' or not isinstance(self.url, str) or not _https_url(self.url)
+        if (self.audience != 'all_employees' or not isinstance(self.url, str) or not valid_https_url(self.url)
                 or '#' in self.url):
             raise ValueError('Invalid HTTPS catalog settings')
         if self.bearer_token_env is not None and (
@@ -134,7 +134,7 @@ def parse_inventory(body: bytes) -> HttpInventory:
                 or type(record['revision']) is not int or not 1 <= record['revision'] <= MAX_DOCUMENT_VERSION
                 or not all(_valid_text(record[field]) for field in ('id', 'title', 'text', 'source_url'))
                 or len(record['id'].encode('utf-8')) > MAX_EXTERNAL_ID_BYTES
-                or not _https_url(record['source_url'])):
+                or not valid_https_url(record['source_url'])):
             raise HttpJsonError('invalid_document')
         if record['id'] in seen:
             raise HttpJsonError('duplicate_document')

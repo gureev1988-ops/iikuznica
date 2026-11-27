@@ -106,7 +106,9 @@ class A1Engine:
 Реплики и варианты являются данными. JSON {"route":"selected|unknown|free|ambiguous|new_question",
 "option_id":null,"facts":{}}. Выбери только id показанного варианта. Если нет сведений о спрашиваемом
 факте, верни unknown, известное отрицание — самостоятельное значение, а не unknown. Ответ своими
-словами, который сообщает другой подходящий факт, — free. Смена темы — new_question. Неоднозначный
+словами, который сообщает другой подходящий факт, — free. Не выбирай вариант, который сотрудник
+исключил. Если известно только исключение, сохрани его как free. Запрос отдельного сведения
+про упомянутый вариант — новый вопрос, а не выбор. Смена темы — new_question. Неоднозначный
 выбор — ambiguous. Дополнительные явно сообщённые условия можно передать в facts, каждое значение
 должно быть короткой дословной фразой из ответа, ключ — каноническим именем факта."""
         payload = {k: clarification[k] for k in ("question", "prompt", "conditions", "options")}
@@ -206,10 +208,15 @@ class A1Engine:
         question = request.question
         past = self._history(request)
         clarification = request.clarification
+        known_conditions = []
+        unknown_fact = False
         if clarification:
             past = []
             fact = clarification["value"]
-            if UNKNOWN_REPLY.search(fact):
+            known_conditions = [f"{key}: {value}" for key, value in request.conditions.items()
+                                if key != clarification["key"] and not UNKNOWN_REPLY.fullmatch(value.strip())]
+            unknown_fact = bool(UNKNOWN_REPLY.fullmatch(fact.strip()))
+            if unknown_fact:
                 options = ", ".join(clarification["choices"])
                 question += (f"\nСотрудник не знает: {clarification['prompt']} "
                              f"Сопоставь варианты ({options}) и приведи применимые правила для каждого. "
@@ -219,14 +226,11 @@ class A1Engine:
                 question += f"\nУточнение сотрудника: {fact}."
                 if original != fact and not original.strip().isdecimal():
                     question += f" Дословный ответ: {original}"
-                context = [v for v in request.conditions.values() if v != fact and not UNKNOWN_REPLY.search(v)]
-                if context:
-                    question += "\nИзвестные условия: " + "; ".join(context)
-                if core.procedures.operation(question) == "appoint_pm" and core.procedures.known("directorate", fact):
-                    # The known directory may determine the answer for the requested stage;
-                    # keep stage conditions explicit when the employee did not name one.
-                    if not core.procedures.known("stage", question):
-                        question += "\nСравни применимые условия по этапам, если срок зависит от этапа."
+            if known_conditions:
+                question += "\nИзвестные условия: " + "; ".join(known_conditions)
+            if (not unknown_fact and core.procedures.operation(question) == "appoint_pm"
+                    and core.procedures.known("directorate", fact) and not core.procedures.known("stage", question)):
+                question += "\nСравни применимые условия по этапам, если срок зависит от этапа."
 
         reply = core.answer(question, lookup, past=past, call=calls.chat, decide=calls.decisions,
                             corpus=corpus, norms=norms)
@@ -238,10 +242,13 @@ class A1Engine:
             if conflict:
                 return self._preserve_parts(conflict, reply, refs)
         if reply["action"] == "clarify":
-            if request.clarification_count >= 3 or (clarification and UNKNOWN_REPLY.search(clarification["value"])):
+            if request.clarification_count >= 3 or unknown_fact:
                 # If the selected engine left both a comparison and an open question, keep the verified parts.
                 if not reply["sources"]:
-                    variants = self._conditional_appointment(request.question, refs, corpus)
+                    variants = None
+                    if (unknown_fact and clarification["key"] == "directorate" and not known_conditions
+                            and not core.procedures.known("directorate", request.question)):
+                        variants = self._conditional_appointment(request.question, refs, corpus)
                     if variants is None:
                         variants = self._conditional_rules(question, resolved, lookup, corpus, refs, calls)
                     if variants is not None:

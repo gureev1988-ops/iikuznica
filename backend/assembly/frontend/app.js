@@ -128,6 +128,13 @@ function renderText(node, text, refs = []) {
   }
   refs.forEach((ref, i) => {
     if (!mentioned.has(i)) node.append(" ", sourceLink(ref, `[${i + 1}] ${ref.kind === "faq" ? "Разъяснение" : "Открыть пункт"}`));
+    if (ref.related_url?.startsWith("https://")) {
+      const external = el("a", "Связанный документ");
+      external.href = ref.related_url;
+      external.target = "_blank";
+      external.rel = "noopener noreferrer";
+      node.append(" ", external);
+    }
   });
 }
 
@@ -442,7 +449,16 @@ function activate(nextView, options) {
 }
 
 for (const nav of document.querySelectorAll("#product-nav [data-view]")) {
-  nav.onclick = () => activate(nav.dataset.view);
+  nav.onclick = () => {
+    activate(nav.dataset.view);
+    if (nav.dataset.view === "admin") {
+      window.history.replaceState(window.history.state, "", "#tech-pilot");
+      document.querySelector(".tech-menu").scrollLeft = 0;
+      $("tech-pilot").scrollIntoView({block: "start"});
+    } else if (location.hash.startsWith("#tech-")) {
+      window.history.replaceState(window.history.state, "", location.pathname + location.search);
+    }
+  };
 }
 function techAnchor() {
   if (!/^#tech-[a-z]+$/.test(location.hash)) return;

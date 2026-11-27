@@ -372,6 +372,61 @@ def test_quality_readonly_workspace(guest, width):
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
 
+@pytest.mark.parametrize("width", [1440, 390])
+def test_tech_pilot_navigation_and_approved_text(guest, width):
+    page = guest()
+    page.set_viewport_size({"width": width, "height": 880})
+    tech_tab = page.get_by_role("button", name="Тех.раздел", exact=True)
+    tech_tab.click()
+    menu = page.locator(".tech-menu a")
+    sections = page.locator(".tech-block")
+    ids = ["tech-pilot", "tech-routing", "tech-faq", "tech-integrations", "tech-models", "tech-scale", "tech-architecture"]
+    assert menu.evaluate_all("(links) => links.map(link => link.hash.slice(1))") == ids
+    assert sections.evaluate_all("(blocks) => blocks.map(block => block.id)") == ids
+    playwright.expect(menu.first).to_have_text("План пилота")
+    playwright.expect(menu.first).to_be_in_viewport()
+    title = page.locator("#tech-pilot-title")
+    playwright.expect(title).to_be_in_viewport()
+
+    # Compare every heading and list item, including the local-model section, with the approved document.
+    plan = (Path(__file__).resolve().parents[2] / "docs/pilot-softline.md").read_text(encoding="utf-8")
+    lines = [re.sub(r"^(?:#+|-) ", "", line).replace("**", "") for line in plan.splitlines() if line.strip()]
+    assert page.locator("#tech-pilot h3, #tech-pilot h4, #tech-pilot li").all_text_contents() == lines
+    roles = re.findall(r"^- \*\*(.*?)\*\*", plan, re.MULTILINE)
+    assert page.locator("#tech-pilot li > strong:first-child").all_text_contents() == roles
+    playwright.expect(page.locator(".tech-pilot-risk")).to_contain_text("Главный риск")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+    menu.last.click()
+    playwright.expect(page.locator("#tech-architecture-title")).to_be_in_viewport()
+    menu.first.click()
+    playwright.expect(page).to_have_url(re.compile(r"#tech-pilot$"))
+    playwright.expect(title).to_be_in_viewport()
+    menu.last.click()
+    page.get_by_role("button", name="Демо чат DION", exact=True).click()
+    tech_tab.click()
+    playwright.expect(menu.first).to_be_in_viewport()
+    playwright.expect(title).to_be_in_viewport()
+    page.reload()
+    playwright.expect(title).to_be_in_viewport()
+
+
+def test_quality_card_empty_states(guest):
+    page = guest()
+    cards = []
+    page.route("**/v1/browser/quality/cards", lambda route: route.fulfill(json=cards))
+    page.get_by_role("button", name="Отдел качества", exact=True).click()
+    playwright.expect(page.get_by_text("Разъяснений пока нет.", exact=True)).to_be_visible()
+
+    cards.append({"id": str(uuid4()), "question": "Тестовое разъяснение", "status": "active", "uses": 0})
+    page.get_by_role("button", name="Разъяснения отдела", exact=True).click()
+    playwright.expect(page.locator(".faq-row-button")).to_contain_text("Тестовое разъяснение")
+    page.locator("#faq-filter").select_option("withdrawn")
+    playwright.expect(page.get_by_text("Карточек с таким статусом нет.", exact=True)).to_be_visible()
+    page.locator("#faq-filter").select_option("all")
+    playwright.expect(page.locator(".faq-row-button")).to_be_visible()
+
+
 def test_dion_draft_guide_and_ime(guest):
     page = guest()
     draft = page.get_by_role("textbox", name="Сообщение")
@@ -387,7 +442,7 @@ def test_dion_draft_guide_and_ime(guest):
     draft.dispatch_event("keydown", {"key": "Enter", "isComposing": True})
     playwright.expect(draft).to_have_value(example + "\n")
     page.get_by_role("button", name="Тех.раздел", exact=True).click()
-    playwright.expect(page.locator(".tech-block")).to_have_count(6)
+    playwright.expect(page.locator("#tech-pilot-title")).to_be_in_viewport()
     page.get_by_role("link", name="Модели и ресурсы").click()
     playwright.expect(page.locator("#tech-models")).to_be_in_viewport()
     page.get_by_role("button", name="Демо чат DION", exact=True).click()
