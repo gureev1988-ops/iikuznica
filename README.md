@@ -5,3 +5,4 @@
 - [Бриф спринта](docs/IIkuznitsa_Sprint_Brief.md)
 - [Спецификация поиска и интеграции](docs/IIkuznitsa_Kickoff_Spec.md)
 - [Короткая проверка допуска к действию](eval/search_core/README.md)
+- [Актуальные экраны и права демостенда](docs/design/README.md)
