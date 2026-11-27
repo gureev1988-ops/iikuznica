@@ -1,8 +1,16 @@
-# Backend API v1
+# Контракт API v1
 
-Use `openapi.v1.json` for the HTTP operations and `openapi.v1.d.ts` for the corresponding TypeScript request and response types. The `EventView` type describes the JSON in the SSE `data` field. Resume a stream with the last received event ID. After an HTTP 410 or an SSE `reset` event, read the conversation snapshot and resume at its cursor. The reset event carries `EventCursorExpired` data.
+[Схема OpenAPI](openapi.v1.json) описывает HTTP-методы, параметры и ответы. [Объявления TypeScript](openapi.v1.d.ts) содержат типы запросов, ответов и событий для клиентов.
 
-Regenerate from the repository root after registering the API routers.
+## Поток событий диалога
+
+Клиент подписывается на `GET /v1/conversations/{conversation_id}/events`. В обычном событии SSE поле `data` содержит JSON типа `EventView`. При переподключении передайте в заголовке `Last-Event-ID` идентификатор последнего полученного события этого диалога.
+
+Если сервер вернул HTTP 410 или прислал событие `reset` с данными типа `EventCursorExpired`, запросите историю через `GET /v1/conversations/{conversation_id}/messages`. Возобновите подписку с параметром `after`, равным `cursor` из ответа с историей.
+
+## Обновление схемы и типов
+
+После изменения публичных маршрутов FastAPI или их моделей выполните команды из корня репозитория, активировав [Python-окружение проекта](../CONTRIBUTING.md#бэкенд-и-api).
 
 ```sh
 python -m backend.contracts.export
@@ -10,15 +18,15 @@ npm ci --prefix contracts
 npm run generate --prefix contracts
 ```
 
-Verify that the artifacts match the application and that the declarations compile.
+Команды ниже сверяют файлы с приложением и проверяют объявления компилятором TypeScript.
 
 ```sh
 python -m backend.contracts.export --check
 npm run check --prefix contracts
 ```
 
-## AnswerEngine v1
+## Интерфейс AnswerEngine v1
 
-The application supplies a read-only source snapshot and a request-scoped model attempt recorder on `AnswerRequest`. An engine that calls a model provider uses `request.attempts.call(invoke, role=..., model=..., route=...)` around each physical request. Put the wrapper inside retries and use it for judge calls as well. An optional `trace_id` can correlate related calls.
+В `AnswerRequest` движок получает снимок разрешённых фрагментов и регистратор обращений к модели. Каждый запрос провайдеру, включая повторы и вызовы модели для оценки ответа, выполняйте через `request.attempts.call(invoke, role=..., model=..., route=...)`. Связанные вызовы можно объединить общим `trace_id`.
 
-Return a `ModelAttemptResult` from the callback to record reported token counts, cost, actual model, and actual route. Raise `ModelAttemptFailure` to preserve the same metadata on a technical failure. An unreported cost stays unknown. The synthetic engines work entirely in memory and generate zero physical model attempts.
+Верните из `invoke` объект `ModelAttemptResult` с фактическими моделью, маршрутом, числом токенов и стоимостью, которые сообщил провайдер. При технической ошибке передайте эти данные в `ModelAttemptFailure`. Неизвестная стоимость остаётся `None`. Синтетические движки работают в памяти без обращений к провайдеру. [Интерфейс и типы движка](../backend/contracts/engine.py)
