@@ -46,10 +46,10 @@
       document.getElementById('version').textContent = view.context;
       document.getElementById('response').textContent = view.text;
       document.getElementById('review-note').textContent = view.note;
-      const citations = view.sources.map(entry => {
+      const citations = view.sources.map((entry, index) => {
         const box = document.createElement('details');
         const label = document.createElement('summary');
-        label.textContent = entry.label;
+        label.textContent = '[' + (index + 1) + '] ' + entry.label;
         const version = document.createElement('p');
         version.className = 'ref-version';
         version.textContent = entry.title + ' · ' + entry.meta;

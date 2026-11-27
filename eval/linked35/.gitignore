@@ -1,4 +1,0 @@
-__pycache__/
-results/.run.lock
-results/**/*.tmp
-results/*.tmp
