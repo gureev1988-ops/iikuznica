@@ -12,10 +12,16 @@ LABEL = re.compile(
 )
 NUMBERED = re.compile(r"\b(?:проект\w*|сделк\w*|договор\w*|контракт\w*)\s*(?:[№#]\s*|\s+)(\d[\w/-]*)\b", re.I)
 ENTITY_VALUE = re.compile(
-    r"\b(?:проект\w*|сделк\w*|контракт\w*|клиент\w*|договор\w*)\b"
-    r'\s*(?:с\s+кодом|№|#)?\s*(?:[«"“]([^»"”]{1,100})[»"”]|([\w/-]+))',
+    r"\b(?:проект\w*|сделк\w*|контракт\w*|клиент\w*|договор\w*|смет\w*)\b"
+    r'\s*(?:с\s+кодом|№|#)?\s*(?:[«"“]([^»"”\n]+)[»"”]|([\w/-]+))',
     re.I,
 )
+PROJECT_NOUN = re.compile(r"проект(?:а|у|ом|е)?\b", re.I)
+PROJECT_NAME = re.compile(
+    r"(?:(?:тестов\w+|учебн\w+)\s+проект(?:а|у|ом|е)?\s+)?([a-z][a-z0-9]*(?:[-_/][a-z0-9]+)*)",
+    re.I,
+)
+DOCUMENT_NOUN = re.compile(r"(договор|смет)(?:а|у|е|ом|ы|ой)?\b", re.I)
 LOCAL_SCOPE = re.compile(
     r"\b(?:эт(?:от|ого|ому|ом|ой|у)|указанн\w+|данн\w+|конкретн\w+)\s+"
     r"(?:(?:тестов\w+|учебн\w+)\s+)?(?:проект\w*|сделк\w*|контракт\w*|клиент\w*|договор\w*)\b",
@@ -28,9 +34,18 @@ def normalized(text):
     return value.translate(str.maketrans({"‑": "-", "‐": "-", "–": "-", "ё": "е"}))
 
 
+def project_name(match):
+    if PROJECT_NOUN.match(match[0]):
+        name = PROJECT_NAME.fullmatch(match[1] or match[2])
+        if name:
+            return name[1]
+    return None
+
+
 def identifiers(text):
     text = normalized(text)
     literals = {m[1] for pattern in (LABEL, NUMBERED) for m in pattern.finditer(text)}
+    literals.update(name for match in ENTITY_VALUE.finditer(text) if (name := project_name(match)))
     for word in WORD.findall(text):
         if re.search(r"(?:[a-zа-я]\d|\d[a-zа-я]|[a-zа-я]-\d|\d-[a-zа-я]{2})", word):
             literals.add(word)
@@ -43,11 +58,24 @@ def answer_entities(answer):
     """In a factual answer ordinary numbers can be findings rather than identifiers."""
     return " ".join(match[0] for match in ENTITY_VALUE.finditer(answer)
                     if match[1] or any(character.isdigit() for character in match[2])
-                    or match[2][:1].isupper())
+                    or match[2][:1].isupper() or project_name(match))
 
 
 def quoted_entities(text):
     return {normalized(match[1]) for match in ENTITY_VALUE.finditer(text) if match[1]}
+
+
+def document_titles(text):
+    titles = set()
+    for match in ENTITY_VALUE.finditer(normalized(text)):
+        kind = DOCUMENT_NOUN.match(match[0])
+        if kind and match[1]:
+            titles.add((kind[1], match[1]))
+    return titles
+
+
+def contains(value, passage):
+    return re.search(r"(?<!\w)" + re.escape(value) + r"(?!\w)", normalized(passage)) is not None
 
 
 def compatible_ids(original, incoming, conditions):
@@ -56,14 +84,24 @@ def compatible_ids(original, incoming, conditions):
     A rewritten search query is excluded: it can drop or even invent an identifier.
     """
     expected = identifiers(original)
+    expected_titles = document_titles(original)
+    if not expected and not expected_titles and not quoted_entities(original):
+        return True
+    # For a case-specific consultation, a named contract or estimate identifies
+    # a separate scope within the project. General rules still go to the judge.
+    asked_titles = document_titles(incoming)
+    if asked_titles - expected_titles:
+        return False
+    evidence = (incoming, *(str(value) for value in conditions.values()))
+    for _, title in expected_titles - asked_titles:
+        if not any(contains(title, text) for text in evidence):
+            return False
     if not expected:
         return True
-    incoming_tokens = set(WORD.findall(normalized(incoming)))
     explicit = identifiers(incoming)
     if explicit - expected:
         return False
-    actual_tokens = incoming_tokens | {token for value in conditions.values()
-                                      for token in WORD.findall(normalized(str(value)))}
+    actual_tokens = {token for text in evidence for token in WORD.findall(normalized(text))}
     return expected <= actual_tokens
 
 
@@ -76,8 +114,6 @@ def grounded_entity(match, original, incoming, same_name):
     source, asked = normalized(source.strip()), normalized(asked.strip())
     if not source or not asked or len(source) > 150 or len(asked) > 150:
         return False
-    def contains(value, passage):
-        return re.search(r"(?<!\w)" + re.escape(value) + r"(?!\w)", normalized(passage)) is not None
     names = quoted_entities(original)
     if (not contains(source, original) or not contains(asked, incoming)
             or (names and source not in names)):

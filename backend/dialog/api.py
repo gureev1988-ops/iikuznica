@@ -45,7 +45,7 @@ def _event_cursor(last_event_id: str | None, after: int | None) -> int:
     raise DialogueError(422, "invalid_event_cursor")
 
 
-def create_router(service: DialogueService, get_actor) -> APIRouter:
+def create_router(service: DialogueService, get_actor, *, present=lambda value: value) -> APIRouter:
     router = APIRouter(prefix="/v1", tags=["dialogue"])
 
     def execute(method, *args):
@@ -70,11 +70,11 @@ def create_router(service: DialogueService, get_actor) -> APIRouter:
         responses=dialogue_error_responses(401, 403, 404, 422),
     )
     def history(conversation_id: UUID, actor: Actor = Depends(get_actor)):
-        return http(service.history, actor, conversation_id)
+        return present(http(service.history, actor, conversation_id))
 
     @router.get("/turns/{turn_id}", response_model=TurnView, responses=dialogue_error_responses(401, 403, 404, 422))
     def get_turn(turn_id: UUID, actor: Actor = Depends(get_actor)):
-        return http(service.get_turn, actor, turn_id)
+        return present(http(service.get_turn, actor, turn_id))
 
     @router.post(
         "/turns/{turn_id}/retry", status_code=202, response_model=AcceptedMessage,
@@ -106,7 +106,7 @@ def create_router(service: DialogueService, get_actor) -> APIRouter:
         responses=dialogue_error_responses(401, 403, 404, 422),
     )
     def get_source(revision_id: UUID, fragment_id: UUID, actor: Actor = Depends(get_actor)):
-        return asdict(http(service.get_source, actor, revision_id, fragment_id))
+        return present(asdict(http(service.get_source, actor, revision_id, fragment_id)))
 
     @router.get(
         "/conversations/{conversation_id}/events",
@@ -136,7 +136,7 @@ def create_router(service: DialogueService, get_actor) -> APIRouter:
                 if await request.is_disconnected():
                     return
                 for row in rows:
-                    event = EventView.model_validate(row)
+                    event = EventView.model_validate(present(row))
                     cursor = event.cursor
                     yield event.encode_sse()
                 if rows:

@@ -26,7 +26,8 @@ from backend.mailfaq.transport import ImapInbox, MailConfig, Outbound, SmtpTrans
 from backend.runtime import PermanentJobFailure, enqueue, reconcile_delivery, require_lease, send_once
 
 from .smtp_gateway import AUTHSERV, BOT, DOMAIN, QUALITY
-from .quality import DEMO_SCOPE, SCOPE, REPORT_JOB, build_router, deliver_report, reconcile_reports, report_terminal
+from .demo_project import display_example, display_report_text, display_text
+from .quality import DEMO_SCOPE, SCOPE, REPORT_JOB, REPORT_SUBJECT, build_router, deliver_report, reconcile_reports, report_terminal
 
 GUEST_COOKIE = "__Host-ii-guest"
 JUDGE_COOKIE = "__Host-ii-mail"
@@ -196,9 +197,11 @@ class Assembly:
                 continue
             mail = BytesParser(policy=policy.default).parsebytes(item.raw)
             body = mail.get_body(preferencelist=("plain",))
-            messages.append(dict(message_id=str(mail["Message-ID"]), subject=str(mail["Subject"]),
-                                 sender=str(mail["From"]), cc=str(mail.get("Cc", "")),
-                                 text=body.get_content() if body is not None else ""))
+            subject = str(mail["Subject"])
+            text = body.get_content() if body is not None else ""
+            text = display_report_text(text.replace("\r\n", "\n")) if subject == REPORT_SUBJECT else display_text(text)
+            messages.append(dict(message_id=str(mail["Message-ID"]), subject=subject,
+                                 sender=str(mail["From"]), cc=str(mail.get("Cc", "")), text=text))
         return messages
 
     @property
@@ -422,7 +425,7 @@ class Assembly:
             for f in fragments:
                 source = dict(_source_ref(f, f.text), title=f.title, anchor=f.anchor, version=f.version)
                 if f.kind == "faq":
-                    faq.append(source)
+                    faq.append(display_example(source))
                 else:
                     documents.setdefault(str(f.document_id), []).append(source)
             return {"documents": list(documents.values()), "faq": faq}

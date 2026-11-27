@@ -15,6 +15,7 @@ from eval.search_core import core
 from registry import compile_records
 
 from . import faq_scope
+from .demo_project import asks_about_demo_project, display_text, legacy_faq_tag
 from .fast_answers import DIRECTORATE_OPTIONS, VerifiedAnswer, VerifiedAnswers, faq_candidate, potential_faq
 from .models import GEMMA, LATENCY_LOG, QWEN, ModelCalls, json_reply
 from .local_steps import record, record_steps
@@ -491,14 +492,25 @@ class A1Engine:
         normalized_question = core.procedures.normalized(question)
         by_id = {}
         scopes = {}
+        demo_project = asks_about_demo_project(request.question, request.conditions)
         for row in rows:
             if not faq_candidate(row, constraints, normalized_question, request.conditions):
                 continue
             # The published card can have an edited question or a shortened mail subject.
             # The employee's original case still defines the scope of its consultation.
+            answer = fragments[row["current_fragment_id"]].text
+            original = row["original_question"]
+            employee = row["employee_question"]
+            if demo_project and legacy_faq_tag(row["question_key"], answer, original, employee):
+                # Compare the renamed example in the same form the employee sees.
+                # Retain the original fragment for validating the eventual citation.
+                row["question_key"] = display_text(row["question_key"])
+                original = display_text(original)
+                employee = display_text(employee)
+                answer = display_text(answer)
+            row["candidate_answer"] = answer
             origin = "\n".join(dict.fromkeys(text.strip(" .!?").casefold() for text in (
-                row["employee_question"], row["original_question"], row["question_key"],
-                faq_scope.answer_entities(fragments[row["current_fragment_id"]].text),
+                employee, original, row["question_key"], faq_scope.answer_entities(answer),
             ) if text))
             if not faq_scope.compatible_ids(origin, request.question, request.conditions):
                 continue
@@ -514,7 +526,7 @@ class A1Engine:
         for index, key in enumerate(ordered, start=1):
             row = by_id[key]
             source = dict(id=index, question=row["question_key"], conditions=json.loads(row["conditions_key"]),
-                          answer=fragments[row["current_fragment_id"]].text)
+                          answer=row["candidate_answer"])
             if scopes[key] != row["question_key"]:
                 source["original"] = scopes[key]
             if ids := faq_scope.identifiers(scopes[key]):

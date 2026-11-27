@@ -14,18 +14,20 @@ from backend.mailfaq.message import TOKEN, clean_public_text
 from backend.mailfaq.transport import Outbound, SmtpTransport
 from backend.runtime import enqueue, reconcile_delivery, require_lease, send_once
 
+from .demo_project import display_case_text, display_report_text, display_text, legacy_faq_tag
 from .quality_checks import evidence, judge
 from .quality_views import MailThread, QualityCard, QualityReport, ThreadHeader
 from .smtp_gateway import BOT, DOMAIN, QUALITY
 
 REPORT_JOB = "assembly.quality.report"
+REPORT_SUBJECT = "Служебный отчёт о проверке конфликтов"
 # Browser access is granted for this isolated mail channel only. Operator and DION records are separate.
 DEMO_SCOPE = """r.channel='guest' AND r.actor_id LIKE 'guest:%%' AND r.sender=%s AND r.recipient=%s
                  AND r.actor_email = 'guest-' || replace(substring(r.actor_id from 7),'-','') || '@assembly.test'"""
 SCOPE = (BOT, QUALITY)
 CARD_SELECT = f"""
     SELECT f.id,f.request_id,f.version,f.status AS stored_status,
-        coalesce(f.display_question,r.question) AS question,r.conditions,
+        coalesce(f.display_question,r.question) AS question,r.question AS original_question,r.conditions,
         f.current_revision_id,f.current_fragment_id,f.document_id,fr.text AS answer,
         f.updated_at,(SELECT min(created_at) FROM source_revisions WHERE source_id=f.document_id) AS created_at,
         (SELECT count(*) FROM assembly_faq_uses u WHERE u.faq_id=f.id) +
@@ -87,7 +89,7 @@ def saved_conflicts(conn, row):
     ]
 
 
-def serialize(conn, row):
+def serialize(conn, row, *, public=True):
     value = {
         key: row[key]
         for key in ("id", "request_id", "version", "question", "answer", "created_at", "updated_at", "uses")
@@ -141,6 +143,16 @@ def serialize(conn, row):
                 actor="Архив Отдела качества",
             )
         )
+    if public:
+        tag = legacy_faq_tag(row["question"], row["answer"], row["original_question"])
+        for entry in [value, *value["history"]]:
+            for field in ("question", "answer"):
+                entry[field] = display_text(entry[field])
+        for item in [value["evidence"], *value["additional_conflicts"]]:
+            if item:
+                for field in ("reason", "claim"):
+                    if field in item:
+                        item[field] = display_case_text(item[field], tag)
     return value
 
 
@@ -305,8 +317,10 @@ def change_card(conn, faq_id, body, action, actor):
 def thread_rows(conn, id_=None):
     return conn.execute(
         f"""
-        SELECT r.id,r.case_number,r.question,r.actor_email,r.sender,r.recipient,r.state,r.updated_at
-        FROM mail_requests r WHERE {DEMO_SCOPE} AND (%s::uuid IS NULL OR r.id=%s)
+        SELECT r.id,r.case_number,r.question,r.actor_email,r.sender,r.recipient,r.state,r.updated_at,
+               f.display_question,fr.text AS answer
+        FROM mail_requests r LEFT JOIN faq_entries f ON f.request_id=r.id
+        LEFT JOIN source_fragments fr ON fr.id=f.current_fragment_id WHERE {DEMO_SCOPE} AND (%s::uuid IS NULL OR r.id=%s)
         AND EXISTS (SELECT 1 FROM mail_outbound o WHERE o.request_id=r.id AND o.state='sent')
         ORDER BY r.updated_at DESC,r.id""",
         (*SCOPE, id_, id_),
@@ -315,6 +329,13 @@ def thread_rows(conn, id_=None):
 
 def read_threads(conn, rows):
     by_id = {r["id"]: r for r in rows}
+    tags = {r["id"]: legacy_faq_tag(r["question"], r["answer"] or "", r["display_question"]) for r in rows}
+
+    def mail_text(item, text):
+        text = TOKEN.sub("", text).strip()
+        tag = tags[item["request_id"]]
+        return display_case_text(text, tag) if tag else display_text(text)
+
     messages = defaultdict(list)
     reply_ids = {}
     ids = list(by_id)
@@ -333,7 +354,7 @@ def read_threads(conn, rows):
                 to=QUALITY,
                 cc=row["actor_email"],
                 subject=f"Обращение ОК{row['case_number']}",
-                text=TOKEN.sub("", item["body"]).strip(),
+                text=mail_text(item, item["body"]),
                 at=item["created_at"],
             )
         )
@@ -358,7 +379,7 @@ def read_threads(conn, rows):
                 to=str(msg.get("To", "")),
                 cc=str(msg.get("Cc", "")),
                 subject=TOKEN.sub("", str(msg.get("Subject", ""))).strip(),
-                text=TOKEN.sub("", content).strip(),
+                text=mail_text(item, content),
                 at=item["created_at"],
                 processing=item["state"] if item["state"] in ("interpreting", "review") else None,
             )
@@ -387,13 +408,14 @@ def read_threads(conn, rows):
 
 
 def report_thread(row):
+    text = display_report_text(row["text"])
     msg = dict(
         message_id=f"<quality-report-{row['id']}@{DOMAIN}>",
         sender=BOT,
         to=QUALITY,
         cc="",
         subject=row["subject"],
-        text=row["text"],
+        text=text,
         at=row["created_at"],
     )
     return dict(
@@ -401,7 +423,7 @@ def report_thread(row):
         subject=row["subject"],
         updated_at=row["created_at"],
         sender=BOT,
-        preview=row["text"][:150],
+        preview=text[:150],
         open=False,
         service=True,
         messages=[msg],
@@ -421,7 +443,7 @@ def run_checks(conn, command_id):
     for row in rows:
         if (row["outcome"] in ("conflict", "consistent", "no_source")
                 and row["catalog"] == pinned and row["retry_after"] is None):
-            cached = serialize(conn, row)
+            cached = serialize(conn, row, public=False)
             result = {**cached["evidence"], "additional_conflicts": cached["additional_conflicts"]}
         else:
             result = judge(conn, row["question"], row["answer"], row["conditions"])
@@ -440,20 +462,22 @@ def run_checks(conn, command_id):
             remember(conn, current, "Судья", "review")
         labels = {"active": "Действует", "review": "Требует пересмотра"}
         status = labels[state] if state == previous else f"{labels[previous]} → {labels[state]}"
-        line = f"{row['question']}\n{status}. {result['reason']}\nРазъяснение: {row['answer']}"
+        tag = legacy_faq_tag(row["question"], row["answer"], row["original_question"])
+        reason = display_case_text(result["reason"], tag)
+        line = f"{display_text(row['question'])}\n{status}. {reason}\nРазъяснение: {display_text(row['answer'])}"
         if result["ref"]:
             line += f"\n{result['title']}, п. {result['anchor']}: {result['quote']}"
         for fact in result.get("additional_conflicts", []):
             line += (
-                f"\n{fact['claim']} — {fact['title']}, п. {fact['anchor']}: {fact['quote']}. {fact['reason']}"
+                f"\n{display_case_text(fact['claim'], tag)} — {fact['title']}, п. {fact['anchor']}: "
+                f"{fact['quote']}. {display_case_text(fact['reason'], tag)}"
             )
         lines.append(line)
-    subject = "Служебный отчёт о проверке конфликтов"
     text = "\n\n".join(lines) if lines else "Нет действующих разъяснений для проверки."
     report = conn.execute(
         """INSERT INTO assembly_quality_reports(id,subject,text)
         VALUES (%s,%s,%s) RETURNING *""",
-        (command_id, subject, text),
+        (command_id, REPORT_SUBJECT, text),
     ).fetchone()
     enqueue(
         conn,
@@ -574,7 +598,8 @@ def build_router(assembly):
     @router.post("/checks", response_model=QualityReport)
     def check(body: Check, _=Depends(browser)):
         with connect(assembly.dsn) as conn:
-            return run_checks(conn, body.command_id)
+            report = run_checks(conn, body.command_id)
+            return {**report, "text": display_report_text(report["text"])}
 
     def change(id_, body, action, actor):
         try:
