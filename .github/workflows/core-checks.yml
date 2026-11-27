@@ -2,6 +2,12 @@ name: Core checks
 on:
   pull_request:
     paths:
+      - 'backend/**'
+      - 'contracts/**'
+      - 'tests/**'
+      - 'deploy/**'
+      - 'compose.yaml'
+      - 'requirements-*.txt'
       - 'eval/**'
       - 'docs/**'
       - 'corpus/**'
@@ -29,3 +35,37 @@ jobs:
         run: |
           node --test demo/faq-revisions/model.test.cjs
           node eval/faq-priority/evaluate.cjs
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16-bookworm
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install PostgreSQL client and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r requirements-assembly.txt pytest
+      - name: Run PostgreSQL integration and acceptance
+        run: .venv/bin/python -m pytest -q tests/backend tests/acceptance
+      - name: Check API and TypeScript contracts
+        run: |
+          .venv/bin/python -m backend.contracts.export --check
+          npm ci --prefix contracts
+          npm run check --prefix contracts

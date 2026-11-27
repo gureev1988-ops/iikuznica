@@ -1,0 +1,12 @@
+**
+!requirements-backend.txt
+!requirements-assembly.txt
+!backend/
+!backend/**
+!corpus/
+!corpus/**
+!eval/
+!eval/**
+**/__pycache__/
+**/node_modules/
+**/.venv/

@@ -1,0 +1,28 @@
+# Поставка базовой обвязки v0.3.1
+
+Исходная база — main fa16dbfe. Спецификация зафиксирована в PR № 11 на 0491533a. Этот PR остаётся открытым. PR № 6 разрабатывает поисковый кандидат в eval/scope; подключение выполняется через AnswerEngine v1. В main уже есть испытательный корпус, демо версий FAQ, замеры сверки с вики и решение о публикации разъяснений до постмодерации. Промышленная обвязка использует последнее решение из eval/faq-reconciliation/README.md. Все новые тестовые данные синтетические.
+
+## Владельцы и проверки
+
+Имена веток состоят из префикса backend/v031- и имени пакета. Каждый пакет ведётся в отдельной рабочей копии. База итогового PR — main. Цель пакетных PR — интеграционная ветка backend/v031. Она последовательно получает проверенные зависимости. При разборе отдельного PR брать указанный в его описании SHA интеграционной базы.
+
+|Пакет и владелец|Разрешённые области|Зависимости|Результат|Проверка из корня|
+|---|---|---|---|---|
+|foundation, Sol 6.2 High|backend/contracts*, backend/db*, backend/migrations, contracts, общая фикстура БД|main|Единый владелец всех общих контрактов и миграций. PostgreSQL, AnswerEngine v1, OpenAPI, типы TypeScript, фикстуры движков и SSE|python -m pytest tests/backend/test_contracts.py; tsc --noEmit по клиентскому контракту|
+|runtime, Sol 6.2 High|backend/runtime и test_runtime.py|foundation|Аренда с токеном, регламент повторов, учёт физических попыток и расходов, диагностика|python -m pytest tests/backend/test_runtime.py|
+|documents, Sol 6.2 High|backend/documents и test_documents.py|foundation|Confluence REST, пакетный источник, неизменяемые версии, активация, курсор и сверка доступности|python -m pytest tests/backend/test_documents.py|
+|mailfaq, Sol 6.2 High|backend/mailfaq и test_mailfaq.py|foundation, runtime, версии документов|SMTP/IMAP, доверенный ответ и привязка, FAQ и постмодерация, доставка в исходную ленту|python -m pytest tests/backend/test_mailfaq.py|
+|dialog, Sol 6.2 High|backend/dialog и test_dialog.py|foundation, runtime, документы, почта/FAQ|HTTP v1, события SSE с курсором, согласие, повторы, права и выдача с актуальным основанием|python -m pytest tests/backend/test_dialog.py|
+|dion, Sol 6.2 High|backend/dion и test_dion.py|foundation, runtime, dialog|Личная лента, long polling, однократная маршрутизация, подтверждение и обратная доставка|python -m pytest tests/backend/test_dion.py|
+|dion-audit, тот же владелец миграций Sol 6.2 High|backend/migrations/014_dion_dispatch_audit.sql и test_dion_migration.py|foundation, runtime; до финальной версии DION|Точная попытка доставки, её содержимое и состояние доступны после очистки SSE. Миграция переносит сохранившиеся квитанции|python -m pytest tests/backend/test_dion_migration.py|
+|acceptance, координатор|точки запуска, конфигурация, tests/acceptance, эксплуатационная документация|все шесть пакетов|Сборка API и двух воркеров, первый сквозной тест, нагрузка, восстановление, отчёт|python -m pytest tests/backend tests/acceptance|
+|demo-catalog, тот же владелец миграций Sol 6.2 High|backend/migrations/015_document_demo_access_cutoffs.sql, проверка обновления схемы|foundation, первая версия #22|После перезапуска запоздалая версия не переоткрывает регламент. Хранятся идентификатор и номер закрытой версии|python -m pytest tests/backend/test_dion_migration.py tests/backend/test_contracts.py|
+|hackathon, Sol 6.2 High и координатор|конфигурация, сборка, доступ к общим документам и управлению FAQ, имитатор почты, тесты, инструкция запуска|acceptance|Локальный стенд, единый корпус регламентов и один администратор качества|python -m pytest tests/backend tests/acceptance; npm run check --prefix contracts|
+
+Модули адаптеров и их тесты можно писать параллельно по согласованным портам. Миграции проверяются на PostgreSQL. Первым сквозным прогоном служит путь от неизвестного вопроса через согласие и почту до ответа в исходном чате и немедленной выдачи FAQ другому сотруднику. Далее проходят проверки отказов, повторов, расхождения с вики, нагрузки и восстановления.
+
+Правила выдачи, обязательной проверки FAQ из почты и действий Отдела качества уточнены 27 ноября. [Приоритет регламента и приёмка FAQ](faq-regulation-priority.md).
+
+Перед сдачей координатор сверяет результат с новым main; два независимых ревьюера Astra 6.2 Max рассматривают интегрированный результат и исправления. Для хакатона адаптеры Confluence, SMTP/IMAP и DION подготовлены и заглушены. Демонстрация проходит на локальном PostgreSQL с имитаторами. Все сотрудники читают общий корпус регламентов. Службу качества представляет один администратор: корпоративный адрес `quality@softline.ru`, учебный адрес `quality@softline.test`.
+
+Интеграционный PR — #12. Пакеты объединяются после независимого ревью в порядке #13 (основа), #14 (очереди), #16 (документы), #17 (почта и FAQ), #20 (диалоги), #21 (миграция журнала DION), #15 (DION), #19 (сборка и приёмка), #22 (профиль хакатона с миграцией из #23). Открытый параллельный PR #18 расширяет эксперименты поискового ядра поверх #6.

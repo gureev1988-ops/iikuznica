@@ -1,0 +1,4 @@
+{$II_CADDY_ADDRESS:https://localhost} {
+    {$II_CADDY_TLS:tls internal}
+    reverse_proxy api:8000
+}

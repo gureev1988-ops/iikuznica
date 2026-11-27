@@ -4,6 +4,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import time
 from urllib import error, request
 
@@ -23,7 +24,7 @@ def make_request(case, model, system):
             "temperature": 0, "max_tokens": 1536, "stream": True, "stream_options": {"include_usage": True}}
 
 
-def complete(case_id, body, dataset_id):
+def complete(case_id, body, dataset_id, *, timeout=150):
     started = time.monotonic()
     row = {"id": case_id, "model": body["model"], "dataset": dataset_id, "request_hash": fingerprint(body),
            "utc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "ok": False, "http": None,
@@ -35,12 +36,14 @@ def complete(case_id, body, dataset_id):
         headers["Authorization"] = "Bearer " + key
     req = request.Request(ENDPOINT, data=json.dumps(body, ensure_ascii=False).encode(), headers=headers)
     try:
-        with request.urlopen(req, timeout=150) as response:
+        with request.urlopen(req, timeout=timeout) as response:
             row["http"] = response.status
             if "text/event-stream" not in response.headers.get("Content-Type", "").lower():
                 raise ValueError("Expected a streamed response")
             done = False
             for line in response:
+                if time.monotonic() - started >= timeout:
+                    raise TimeoutError("Model deadline exceeded")
                 if not line.startswith(b"data:"):
                     continue
                 frame = line[5:].strip()

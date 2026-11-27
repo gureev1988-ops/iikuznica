@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 .venv/
 node_modules/
+.pytest_cache/
+/.ii-local/
+
+/.env
+/local-ca.pem

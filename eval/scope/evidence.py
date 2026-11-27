@@ -42,13 +42,18 @@ def alternatives(sources, pool, corpus):
     return list(ordered.values())
 
 
-def options(sources):
-    norms = REGISTRY()
+def options(sources, norms=None):
+    reference_mode = norms is None
+    norms = REGISTRY() if reference_mode else norms
     enriched = []
     allowed = {}
     for source in sources:
         items = []
-        for row in norms[reference(source)]:
+        rows = norms.get(reference(source), ())
+        if not rows and not reference_mode:
+            rows = [dict(source, id=f"{source['doc']}:{source['ref']}:0",
+                         quote=source["text"], statement=source["text"])]
+        for row in rows:
             if row["quote"] != source["text"]:
                 raise ValueError("Registry and original differ")
             allowed[row["id"]] = row
@@ -77,8 +82,8 @@ def render(selection, allowed):
             "sources": [{"doc": doc, "ref": ref} for doc, ref in refs]}
 
 
-def generate(question, sources, instruction, *, call=complete, model=GEMMA, observe=None):
-    enriched, allowed = options(sources)
+def generate(question, sources, instruction, *, call=complete, model=GEMMA, observe=None, norms=None, order=None):
+    enriched, allowed = options(sources, norms)
     # The vetted fork can supply a first draft. The ordinary judge still reviews the
     # full question and originals. On a repair, allow the model to reconsider it.
     if not instruction and procedures.supply_handoff(question) and all(k in allowed for k in SUPPLY_HANDOFF_CLAIMS):
@@ -97,6 +102,8 @@ def generate(question, sources, instruction, *, call=complete, model=GEMMA, obse
         selection = json.loads(raw)
         if selection.get("action") == "answer" and isinstance(selection.get("ids"), list):
             selection["ids"] = procedures.complete_ids(selection["ids"], allowed, question)
+        if order is not None:
+            selection = order(question, selection)
         rendered = render(selection, allowed)
         if observe:
             observe(selection)

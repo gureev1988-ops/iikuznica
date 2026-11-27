@@ -11,6 +11,7 @@ import onnxruntime as ort
 from tokenizers import Tokenizer
 
 CONDITION = re.compile(r"^\d+(?:\.\d+)*\.\s*(?:в случа[ея]|при условии|при привлечении|за исключением|исключени|если|однако|дополнительно)", re.I)
+TOKENIZER_SHA256 = "62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb75626"
 WEIGHTS_SHA256 = "1825907d6c1a9001ff78124780bbde20a614a8c3df3b63409cf3c72c6fe5c8b4"
 
 
@@ -60,20 +61,15 @@ def score_pairs(session, tokenizer, question, sources):
     return scores.tolist()
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pool", type=Path, required=True)
-    parser.add_argument("--model-dir", type=Path, required=True)
-    parser.add_argument("--out", type=Path, required=True)
-    args = parser.parse_args()
-    weights = args.model_dir / "model_qint8_arm64.onnx"
+def load_model(model_dir):
+    weights = model_dir / "model_qint8_arm64.onnx"
     with weights.open("rb") as stream:
         if hashlib.file_digest(stream, "sha256").hexdigest() != WEIGHTS_SHA256:
-            parser.error("The checkpoint differs from the pinned INT8 export")
-    tokenizer_path = args.model_dir / "tokenizer.json"
+            raise ValueError("The checkpoint differs from the pinned INT8 export")
+    tokenizer_path = model_dir / "tokenizer.json"
     with tokenizer_path.open("rb") as stream:
-        if hashlib.file_digest(stream, "sha256").hexdigest() != "62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb75626":
-            parser.error("The tokenizer differs from the pinned revision")
+        if hashlib.file_digest(stream, "sha256").hexdigest() != TOKENIZER_SHA256:
+            raise ValueError("The tokenizer differs from the pinned revision")
     tokenizer = Tokenizer.from_file(str(tokenizer_path))
     tokenizer.no_padding()
     tokenizer.enable_truncation(max_length=512, strategy="only_second")
@@ -81,6 +77,16 @@ def main():
     options.intra_op_num_threads = 4
     options.inter_op_num_threads = 1
     session = ort.InferenceSession(str(weights), options, providers=["CPUExecutionProvider"])
+    return session, tokenizer
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pool", type=Path, required=True)
+    parser.add_argument("--model-dir", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args()
+    session, tokenizer = load_model(args.model_dir)
     outputs = []
     for line in args.pool.read_text().splitlines():
         case = json.loads(line)

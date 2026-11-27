@@ -121,7 +121,7 @@ def focus_repeated_review(body, draft, sources):
 
 def answer(question, search, previous_question="", generate_answer=generate, judge=decide,
            add_sources=None, instruction=None, procedure_mode=False, history=(), faq=None, faq_scope=None,
-           workflow=False, experiment=None):
+           workflow=False, experiment=None, corpus=None, norms=None):
     question = question.strip()
     if not question:
         raise ValueError("Введи вопрос")
@@ -154,12 +154,12 @@ def answer(question, search, previous_question="", generate_answer=generate, jud
                     clarification["message"] = ("Чтобы выбрать применимый регламент, сначала уточни для себя: "
                                                  + clarification["message"][0].lower() + clarification["message"][1:-1] + ".")
                 return clarification
-    corpus = full_corpus()
+    corpus = full_corpus() if corpus is None else corpus
     matched_facts = procedures.fact_sources(fact, question, corpus) if fact else []
     if fact and procedures.specific_project_gap(fact, question, matched_facts):
         return procedures.gap_message(fact)
     seeds, pool = search(question)
-    sources = linked([corpus[tuple(key)] for key in seeds], corpus, index())
+    sources = linked([corpus[tuple(key)] for key in seeds], corpus, index() if norms is None else norms)
     if add_sources is not None:
         sources = add_sources(sources, pool, corpus)
     if procedure_mode:
