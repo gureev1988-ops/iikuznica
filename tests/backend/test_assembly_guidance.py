@@ -36,7 +36,8 @@ def test_log_separates_the_latest_personal_turn_and_preserves_unknown_charges(ds
         assert view.incomplete and view.total_cost_usd is None
         assert [(s.local, s.cost_usd) for s in view.steps] == [(True, 0), (False, None)]
         conn.execute("""
-            INSERT INTO turns(conversation_id,case_id,request_id,question) VALUES (%s,%s,'q2','Новый вопрос')
+            INSERT INTO turns(conversation_id,case_id,request_id,question,created_at)
+            VALUES (%s,%s,'q2','Новый вопрос',clock_timestamp())
         """, (chat, case))
         latest = latest_log(conn, session)
         assert latest.turn_id != turn and latest.steps == []
