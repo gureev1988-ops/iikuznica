@@ -60,7 +60,7 @@ class ApprovedFAQ:
 def _has_quality_offer(reply):
     return reply.get("offer_quality_request") is True and (
         reply.get("action") == "escalate" or
-        (reply.get("action") == "answer" and bool(reply.get("discrepancy")))
+        (reply.get("action") == "answer" and (reply.get("discrepancy") or reply.get("coverage_gap")))
     )
 
 
@@ -80,6 +80,7 @@ def confirm_request(reply, question, request_id, *, confirmed, register, part_in
             selected_offer = part_index
     elif reply.get("resolved_question"):
         question = reply["resolved_question"]
+    question = reply.get("escalation_question") or question
     if not _has_quality_offer(reply):
         return None
     if not request_id or not question.strip():

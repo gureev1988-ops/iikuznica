@@ -3,10 +3,12 @@ import argparse
 import json
 import os
 from pathlib import Path
+from unittest.mock import Mock
 import unittest
 
 import core
 import permission
+from quality import confirm_request
 
 # Fresh working cases from the approved corpus. No closed-set inputs or keys.
 CASES = (
@@ -71,6 +73,17 @@ class PermissionChecks(unittest.TestCase):
         self.assertEqual(result["requests"][1]["result"]["action"], "escalate")
         self.assertIn("Допустимо ли оплатить", result["escalation_question"])
         self.assertEqual(result["sources"], self.draft["sources"])
+
+    def test_quality_gets_the_missing_question_with_or_without_verified_parts(self):
+        for assessment in (self.review, lambda *_: {"covered": False, "keep": []}):
+            with self.subTest(assessment=assessment):
+                result = self.check(self.draft, lambda _: self.draft, assessment)
+                register = Mock()
+                confirm_request(result, self.question, "request-1", confirmed=False, register=register)
+                register.assert_not_called()
+                confirm_request(result, self.question, "request-1", confirmed=True, register=register)
+                register.assert_called_once_with("request-1", result["escalation_question"])
+                self.assertNotIn("Сопоставь даты", result["escalation_question"])
 
     def test_foreign_or_invented_quote_cannot_open_gate(self):
         result = self.check(self.full, lambda _: self.full, lambda state, _: dict(
