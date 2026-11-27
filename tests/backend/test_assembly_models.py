@@ -7,7 +7,7 @@ from urllib.error import HTTPError
 
 import pytest
 
-from backend.assembly.models import DECIDER, GEMMA, ModelCalls
+from backend.assembly.models import DECIDER, GEMMA, ModelCalls, decisions_valid
 from backend.contracts.engine import ModelAttemptFailure
 
 
@@ -65,3 +65,13 @@ def test_failed_chat_is_technical_and_retries_bounded(monkeypatch, code):
     with pytest.raises(ModelAttemptFailure, match=f"HTTP {code}"):
         ModelCalls(request).chat("test", {"model": GEMMA}, "answer")
     assert len(seen) == (1 if code == 401 else 2)
+
+
+def test_decisions_reject_missing_and_corrupt_fields():
+    questions = {"check": {"type": "noul"}, "route": {"type": "choice", "criteria": {"answer": "", "hold": ""}}}
+    valid = {"check": {"type":"noul", "noul": .5}, "route": {"type":"choice", "choice":"answer",
+             "confidence": .75, "probabilities": {"answer": .875, "hold": .125}}}
+    assert decisions_valid(valid, questions)
+    assert not decisions_valid({"check": valid["check"]}, questions)
+    assert not decisions_valid(dict(valid, check={"type":"noul", "noul": float("nan")}), questions)
+    assert not decisions_valid(dict(valid, route=dict(valid["route"], choice="publish")), questions)

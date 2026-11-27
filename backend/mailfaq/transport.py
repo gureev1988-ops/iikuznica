@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from email import policy
 from email.message import EmailMessage
+from email.parser import BytesParser
 from email.utils import formatdate
 import imaplib
 import os
@@ -249,6 +250,20 @@ class ImapInbox:
                 raise OSError("IMAP UID search failed")
             uids = sorted((int(value) for value in data[0].split()), reverse=True)
             return tuple(self._read(client, uid) for uid in uids[:limit])
+
+    def contains(self, message_id):
+        with self.open() as client:
+            status, _ = client.select(self.config.mailbox, readonly=True)
+            if status != "OK":
+                raise OSError("IMAP mailbox selection failed")
+            status, data = client.uid("SEARCH", None, "HEADER", "Message-ID", message_id)
+            if status != "OK" or not data or data[0] is None:
+                raise OSError("IMAP Message-ID search failed")
+            for uid in data[0].split():
+                item = self._read(client, int(uid))
+                if not item.error and str(BytesParser(policy=policy.default).parsebytes(item.raw)["Message-ID"]) == message_id:
+                    return True
+            return False
 
     def _read(self, client, uid: int) -> Receipt:
         status, data = client.uid("FETCH", str(uid), "(UID RFC822.SIZE)")

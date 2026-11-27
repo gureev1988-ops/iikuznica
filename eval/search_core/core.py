@@ -118,5 +118,5 @@ def answer(question, search, *, past=(), publications=(), scope=None, call=model
         return permission.check_reply(query, initial, corpus, review, retry)
 
     result = dialogue_state.answer(question, lookup, past=past, model=QWEN, planner=plan,
-                                   judge=lambda body: evidence.judge(body, call=decide), respond=respond, corpus=corpus)
+                                   judge=lambda body: evidence.judge(body, call=decide), respond=respond, corpus=corpus, norms=norms)
     return RegulationFirstFAQ(publications, scope=scope, corpus=corpus).merge(question, result)

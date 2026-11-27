@@ -2,6 +2,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 import json
+import math
 import os
 import time
 from urllib.error import HTTPError
@@ -42,8 +43,8 @@ class ModelCalls:
                 code = getattr(exc, "code", None)
                 raise ModelAttemptFailure(f"Decisions failed (HTTP {code})") from None
             reply = result["response"]
-            if not isinstance(reply.get("answers"), dict):
-                raise ModelAttemptFailure("Decisions returned no answers", **self.usage(reply, "decisions"))
+            if not decisions_valid(reply.get("answers"), body["questions"]):
+                raise ModelAttemptFailure("Decisions returned a malformed answer", **self.usage(reply, "decisions"))
             return ModelAttemptResult(result, **self.usage(reply, "decisions"))
 
         return self.call(invoke, "judge", DECIDER, "openrouter/decisions/perplexity")
@@ -76,6 +77,27 @@ class ModelCalls:
                     raise
                 time.sleep(0.75)
 
+
+def probability(value):
+    return type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1
+
+
+def decisions_valid(answers, questions):
+    if not isinstance(answers, dict):
+        return False
+    for key, question in questions.items():
+        value = answers.get(key)
+        if not isinstance(value, dict) or value.get("type") != question["type"]:
+            return False
+        if value["type"] == "noul" and not probability(value.get("noul")):
+            return False
+        if value["type"] == "choice":
+            scores = value.get("probabilities")
+            if (not isinstance(scores, dict) or value.get("choice") not in question["criteria"]
+                    or not probability(value.get("confidence"))
+                    or any(not probability(scores.get(option)) for option in question["criteria"])):
+                return False
+    return True
 
 def json_reply(row):
     raw = row["text"].strip()

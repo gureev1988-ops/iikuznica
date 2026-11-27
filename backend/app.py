@@ -149,6 +149,8 @@ class Backend:
             operations["document-schedule"] = self.documents.schedule_due
         if self.mail_config.mode != "disabled":
             operations["mail"] = lambda: self.observe("mail", self.mail.poll_inbox)
+        if self.assembly:
+            operations["mail-receipts"] = lambda: self.assembly.reconcile_mail(self.mail)
         if self.dion:
             operations["dion"] = lambda: self.observe("dion", lambda: self.dion.poll_once(timeout=10))
             operations["dion-route"] = self.dion.route_once

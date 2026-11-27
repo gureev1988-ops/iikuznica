@@ -22,7 +22,7 @@ from backend.dialog import Actor
 from backend.documents import list_fragments
 from backend.mailfaq.message import MESSAGE_ID
 from backend.mailfaq.transport import ImapInbox, MailConfig, Outbound, SmtpTransport
-from backend.runtime import PermanentJobFailure, enqueue, require_lease, send_once
+from backend.runtime import PermanentJobFailure, enqueue, reconcile_delivery, require_lease, send_once
 
 from .smtp_gateway import AUTHSERV, BOT, DOMAIN, QUALITY
 
@@ -212,6 +212,33 @@ class Assembly:
             require_lease(conn, job)
             conn.execute("UPDATE assembly_mail_replies SET state = %s, updated_at = now() WHERE command_id = %s",
                          (state, command_id))
+
+    def reconcile_mail(self, service):
+        with connect(self.dsn) as conn:
+            unknown = conn.execute("""
+                SELECT o.id, o.attempt_id, o.message_id
+                FROM mail_outbound o JOIN mail_requests r ON r.id = o.request_id
+                WHERE o.state = 'delivery_unknown' AND r.recipient = %s
+                ORDER BY o.updated_at LIMIT 20
+                """, (QUALITY,)).fetchall()
+            replies = conn.execute("""
+                SELECT a.command_id, a.message_id, d.id AS attempt_id FROM assembly_mail_replies a
+                JOIN delivery_attempts d ON d.effect_key = 'judge:' || a.command_id::text AND d.channel = 'smtp'
+                WHERE a.state = 'uncertain' AND d.state = 'delivery_unknown'
+                ORDER BY a.updated_at LIMIT 20
+                """).fetchall()
+        for item in unknown:
+            if self.inbox.contains(item["message_id"]):
+                service.reconcile_outbound(item["id"], item["attempt_id"], "sent", detail="IMAP Message-ID receipt")
+        for item in replies:
+            if self.bot_inbox.contains(item["message_id"]):
+                with connect(self.dsn) as conn:
+                    reconcile_delivery(self.dsn, conn=conn, attempt_id=item["attempt_id"], state="sent",
+                                       provider_id=item["message_id"], detail="IMAP Message-ID receipt")
+                    conn.execute("""
+                        UPDATE assembly_mail_replies SET state='sent', updated_at=now() WHERE command_id=%s
+                        """, (item["command_id"],))
+        return False
 
     def mount(self, app, backend):
         frontend = Path(__file__).with_name("frontend")

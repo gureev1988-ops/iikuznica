@@ -48,7 +48,7 @@ def requested_fields(question):
     return ("handoff",)
 
 
-def verified_parts(question, search, corpus, faq, faq_scope):
+def verified_parts(question, search, corpus, faq, faq_scope, *, norms=None):
     fields = requested_fields(question)
     if not fields:
         return None
@@ -57,7 +57,7 @@ def verified_parts(question, search, corpus, faq, faq_scope):
     p = corpus.get(HANDOFF)
     if not p or HANDOFF not in returned or SOURCE_LINE not in [re.sub(r"^[a-zа-я][.)]\s*", "", s.strip()) for s in p["text"].splitlines()]:
         return None
-    claims = evidence.REGISTRY().get(HANDOFF, [])
+    claims = (evidence.REGISTRY() if norms is None else norms).get(HANDOFF, [])
     applicable = {r["id"]: r for r in claims if r["quote"] == p["text"]}
     if not all(key in applicable for key in evidence.SUPPLY_HANDOFF_CLAIMS):
         return None
