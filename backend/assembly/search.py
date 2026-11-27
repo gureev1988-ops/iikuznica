@@ -1,10 +1,14 @@
 """Stock PostgreSQL BM25 and the pinned A1 MiniLM reranker."""
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
+from concurrent.futures import Future
 from contextvars import ContextVar
 from functools import cached_property, lru_cache
+from hashlib import sha256
+import json
 import logging
 import re
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 
 from backend.assembly.local_steps import local_step
@@ -15,6 +19,7 @@ from psycopg.types.json import Jsonb
 WORDS = re.compile(r"[\w-]+")
 SEARCH_TURN = ContextVar("assembly_search_turn", default=None)
 LATENCY_LOG = logging.getLogger("backend.assembly.latency")
+RANKING_CACHE_SIZE = 128
 DIRECTORATES = {
     "DB": r"дбрцт|департамент[а-я]* бизнес-решений",
     "IB": r"(?<![а-яё])(?:иб|диб)(?![а-яё])|информационн[а-я]* безопасност",
@@ -101,10 +106,42 @@ class Search:
     def __init__(self, dsn, model_dir):
         self.dsn = dsn
         self.model_dir = Path(model_dir)
+        self._rankings = OrderedDict()
+        self._ranking_lock = Lock()
 
     @cached_property
     def model(self):
         return load_model(self.model_dir)
+
+    def rank(self, question, pool):
+        if not pool:
+            return ()
+        # Only the exact model inputs are reusable. The caller still builds the
+        # pool from its own current authorized snapshot and verifies citations.
+        inputs = [(p["title"], p["section"], p["text"]) for p in pool]
+        key = sha256(json.dumps((question, inputs), ensure_ascii=False).encode("utf-8")).digest()
+        with self._ranking_lock:
+            existing = self._rankings.get(key)
+            if existing is None:
+                future = self._rankings[key] = Future()
+                if len(self._rankings) > RANKING_CACHE_SIZE:
+                    self._rankings.popitem(last=False)
+            else:
+                self._rankings.move_to_end(key)
+        if existing is not None:
+            with local_step("Повторное использование оценок MiniLM"):
+                return existing.result()
+        try:
+            with local_step("Ранжирование · MiniLM"):
+                scores = tuple(score_pairs(*self.model, question, pool))
+        except BaseException as error:
+            with self._ranking_lock:
+                if self._rankings.get(key) is future:
+                    del self._rankings[key]
+            future.set_exception(error)
+            raise
+        future.set_result(scores)
+        return scores
 
     def snapshot(self, fragments):
         started = perf_counter()
@@ -149,8 +186,7 @@ class Search:
         def lookup(question):
             pool = lexical_pool(question)
             started = perf_counter()
-            with local_step("Ранжирование · MiniLM"):
-                scores = score_pairs(*self.model, question, pool)
+            scores = self.rank(question, pool)
             LATENCY_LOG.info("turn=%s stage=search rerank_s=%.3f candidates=%s",
                              SEARCH_TURN.get(), perf_counter() - started, len(pool))
             neural = sorted(range(2, len(scores)), key=lambda i: -scores[i])

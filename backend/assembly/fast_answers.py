@@ -8,11 +8,11 @@ import re
 from threading import Lock
 from uuid import uuid5
 
-from backend.contracts.engine import Action, AnswerResult, Citation
+from backend.contracts.engine import Action, AnswerResult, Citation, ClarificationOption
 from backend.db import connect
 from .faq_scope import compatible_ids
 from eval.retrieval.extract import TITLES
-from eval.scope.procedures import directories, normalized
+from eval.scope.procedures import clarify, directories, normalized
 
 
 # Each pair pins an original DOCX and its complete sequence of extracted clauses
@@ -44,6 +44,7 @@ DB_TRAINING_REVISION = (
 DOC_BY_TITLE = {title: doc for doc, title in TITLES.items()}
 POLICY_VERSION = 3
 CACHE_SIZE = 64
+DIRECTORATE_OPTIONS = ("ДБРЦТ", "Дирекция ИБ", "Техническая дирекция")
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +106,8 @@ _PACKAGE_TKP = (
     r"можно ли (?:ss|tss) (?:выдать|предоставить|направить) заказчику официальное ткп "
     r"без согласования с (?:па|пресейл[- ]архитектором)"
 )
+_KICKOFF = r"установочн(?:ую встречу|ое совещание)"
+_INVITE = r"кого (?:(?:обязательно|нужно|надо|следует) )?(?:позвать|пригласить)"
 
 
 _DB_ESTIMATE_RULES = {
@@ -165,6 +168,13 @@ _DB_APPOINTMENT = _appointment(_DB)
 
 
 RULES = (
+    Rule(
+        re.compile(rf"(?:{_INVITE} на {_KICKOFF}|(?:(?:мне|нам) )?(?:нужно|надо|предстоит) "
+                   rf"(?:провести|организовать) {_KICKOFF}[.!] {_INVITE})"),
+        clarify(["directorate"])["message"],
+        (),
+        action="clarify",
+    ),
     Rule(
         re.compile(rf"(?:{_appointment(_IB, complete_data=True).pattern}|"
                    rf"{_IB_PREFIX}{_APPOINT} {_ASSIGN} {_PM} {_INIT}|"
@@ -532,6 +542,8 @@ class VerifiedAnswers:
                            escalation_question=request.question)
         if result.action == "escalate":
             return replace(result, resolved_question=request.question, escalation_question=request.question)
+        if result.action == "clarify":
+            return replace(result, resolved_question=request.question)
         with self._lock:
             self._cache[key] = result
             self._cache.move_to_end(key)
@@ -540,6 +552,11 @@ class VerifiedAnswers:
         return replace(result, resolved_question=request.question)
 
     def _verify(self, rule, refs):
+        if rule.action == "clarify":
+            choices = tuple(ClarificationOption(str(i), label, {"directorate": label})
+                            for i, label in enumerate(DIRECTORATE_OPTIONS, 1))
+            return VerifiedAnswer("clarify", rule.text, options=(*choices, ClarificationOption(
+                "unknown", "Не знаю", {"directorate": "не знаю"})), clarification_key="directorate", allow_faq=False)
         by_id = {entry["id"]: entry for entry in self.records()}
         citations = []
         for claim_id, quote in rule.evidence:

@@ -25,6 +25,7 @@ ESTIMATES = "Каковы рекомендуемые сроки выдачи б�
 PACKAGE_TKP = ("Можно ли SS направить заказчику официальное ТКП без согласования с пресейл-архитектором "
                "при продаже пакетного предложения на пресейле в Дирекции ИБ?")
 EARLY_START = "При каких условиях можно приступить к работам до подписания договора на проекте ДБРЦТ?"
+KICKOFF = "Кого нужно пригласить на установочную встречу?"
 
 
 @pytest.fixture
@@ -98,6 +99,17 @@ def test_early_start_has_both_branches_and_full_followup(engine, revisions):
     assert "владельцу бюджета, АМ, SS и директору направления" in result.text
 
 
+def test_kickoff_asks_for_the_directorate_only_on_audited_sources(engine, revisions):
+    fragments = revisions[1]
+    result = answer(engine, KICKOFF, fragments)
+    assert isinstance(result, VerifiedAnswer) and result.action == "clarify"
+    assert result.clarification_key == "directorate" and not result.citations
+    assert [option.text for option in result.options] == ["ДБРЦТ", "Дирекция ИБ", "Техническая дирекция", "Не знаю"]
+    assert answer(engine, KICKOFF, fragments[1:]) is None
+    assert answer(engine, KICKOFF + " И какие собрать документы?", fragments) is None
+    assert answer(engine, "Кого пригласить на установочную встречу в Дирекции ИБ?", fragments) is None
+
+
 @pytest.mark.parametrize("question", [
     ESTIMATES.replace("в ДБРЦТ", ""),
     ESTIMATES.replace("в ДБРЦТ", "в прежней редакции регламента ДБРЦТ"),
@@ -163,3 +175,11 @@ def test_current_rules_publish_with_real_training_revision_and_seed(dsn, tmp_pat
             offers = conn.execute("SELECT payload->>'question' AS target FROM offers WHERE turn_id=%s",
                                   (turn.turn_id,)).fetchall()
             assert offers == ([{"target": question}] if question == ESTIMATES else [])
+
+    with connect(dsn) as conn:
+        turn = service.admit(conn, actor, uuid4(), MessageRequest(text=KICKOFF, client_message_id=str(uuid4())))
+    service.answer_job(claim(dsn, "interactive"))
+    with connect(dsn) as conn:
+        result = service.get_turn(conn, actor, turn.turn_id)
+        assert result["status"] == "completed" and result["result"]["action"] == "clarify"
+        assert len(result["clarifications"]) == 1 and result["offers"] == []
