@@ -22,7 +22,7 @@ docker compose exec -T https cat /data/caddy/pki/authorities/local/root.crt > lo
 curl --cacert local-ca.pem https://localhost:4443/healthz
 ```
 
-Стартовый контейнер применяет миграции, проверяет MiniLM и импортирует оригиналы. API и два воркера ждут окончания импорта. Состояние PostgreSQL, оригиналы, почта и веса хранятся в именованных томах. Учётные данные тестового ящика и браузерного входа создаются в локальном `.env`. Выдавайте судьям только `II_JUDGE_LOGIN` и `II_JUDGE_PASSWORD` по закрытому каналу.
+Стартовый контейнер применяет миграции, проверяет MiniLM и импортирует оригиналы. API и два воркера ждут окончания импорта. Состояние PostgreSQL, оригиналы, почта и веса хранятся в именованных томах.
 
 Для внешнего HTTPS укажите `II_PUBLIC_URL=https://ваш-домен`, `II_CADDY_ADDRESS=ваш-домен`, `II_CADDY_TLS=tls ваше-почтовое-имя`, `II_LISTEN_IP=0.0.0.0`, `II_HTTPS_PORT=443`. DNS должен вести на узел стенда, а порт 443 — быть доступен для HTTPS и ACME. SMTP и IMAP находятся в отдельной внутренней сети Compose.
 
@@ -33,3 +33,17 @@ curl --cacert local-ca.pem https://localhost:4443/healthz
 - [Приоритет регламента](docs/architecture/faq-regulation-priority.md)
 - [Как подключить ещё один источник](docs/backend/run.md#как-подключить-ещё-один-источник)
 - [Команды технической проверки](docs/backend/assembly-run.md)
+
+## Доступ к демостенду и смена пароля
+
+Сотрудник открывает «Демо DION» в гостевой сессии. Для ответа от имени Отдела качества в тестовом ящике предусмотрен вход эксперта. В стандартной конфигурации демостенда логин `admin` и пароль `admin`.
+
+При самостоятельном запуске после `./deploy/init-env.sh` задайте в `.env` параметры `II_DEMO_EXPERT_LOGIN` и `II_DEMO_EXPERT_PASSWORD`. Для закрытого контура отключите демовход значениями `II_DEMO_EXPERT_LOGIN=` и `II_DEMO_EXPERT_PASSWORD=`. Служебный вход использует `II_JUDGE_LOGIN` и `II_JUDGE_PASSWORD`, которые создаёт скрипт инициализации. Служебный пароль должен содержать минимум 16 символов.
+
+Чтобы применить новые значения на работающем стенде, пересоздайте сервисы приложения.
+
+```sh
+docker compose up -d --no-deps --force-recreate api interactive background
+```
+
+В схеме с автодеплоем на VPS задайте параметры в `shared/production.env` и повторно примените выпуск по [инструкции VPS](docs/backend/vps-deploy.md#первичная-настройка).

@@ -16,7 +16,9 @@ install -D -m 700 /opt/iikuznica/repo/deploy/vps/check-main.sh /opt/iikuznica/bi
 /opt/iikuznica/repo/deploy/vps/configure.sh /opt/iikuznica demo.example.org < /path/to/openrouter-token
 ```
 
-Скрипт создаёт `shared/production.env` с правами 0600, записывает домен и генерирует пароли PostgreSQL, учебного SMTP/IMAP и судьи. Логин и пароль судьи из этого файла передавайте закрытым каналом. Ключ OpenRouter хранится на сервере. При его ротации обновите только `OPENROUTER_API_KEY` в этом файле. Команда `II_FORCE_DEPLOY=1 /opt/iikuznica/bin/check-main`, выполненная пользователем деплоя, повторно применит текущий зелёный выпуск.
+Скрипт создаёт `shared/production.env` с правами 0600, записывает домен и генерирует пароли PostgreSQL, тестового SMTP/IMAP и служебного входа. Служебные данные `II_JUDGE_LOGIN` и `II_JUDGE_PASSWORD` передавайте закрытым каналом. Пара эксперта `II_DEMO_EXPERT_LOGIN` и `II_DEMO_EXPERT_PASSWORD` настраивается в том же файле. Отключение демовхода описано в [README](../../README.md#доступ-к-демостенду-и-смена-пароля).
+
+Ключ OpenRouter хранится на сервере. При ротации обновите `OPENROUTER_API_KEY` в этом файле. После изменения параметров из-под пользователя деплоя повторно примените текущий зелёный выпуск командой `II_FORCE_DEPLOY=1 /opt/iikuznica/bin/check-main`.
 
 ## Автоматическое обновление
 
