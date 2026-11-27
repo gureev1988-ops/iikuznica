@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 40
     env:
       EXPECTED_REVISION: ${{ github.event.workflow_run.head_sha || github.sha }}
+      II_STAND_URL: https://corpdoc.single-tech.ru
     steps:
       - name: Check latest main revision
         id: release
@@ -52,9 +53,9 @@ jobs:
           .venv/bin/pip install pytest playwright
           .venv/bin/python -m playwright install --with-deps chromium
       - name: Check the published revision and guest chat
+        id: published
         if: steps.release.outputs.current == 'true'
         env:
-          II_STAND_URL: https://45.8.146.122
           GH_TOKEN: ${{ github.token }}
         run: |
           current=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
@@ -62,17 +63,42 @@ jobs:
             echo "Superseded during setup (main is $current)"
             exit 0
           fi
+          echo "current=true" >> "$GITHUB_OUTPUT"
           args=(--url "$II_STAND_URL" --sha "$EXPECTED_REVISION" --wait 1200 --browser --roundtrip)
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             args+=(--answers)
           fi
           .venv/bin/python deploy/qa/release_smoke.py "${args[@]}"
+      - name: Check whether the verified revision is still current
+        id: remaining
+        if: "!cancelled() && steps.published.outputs.current == 'true'"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [[ "$current" == "$EXPECTED_REVISION" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Superseded during domain verification (main is $current)"
+          fi
+      - name: Check the previous IP and guest session
+        if: steps.remaining.outputs.current == 'true'
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from deploy.qa.release_smoke import Stand, check, exact_revision
+
+          stand = Stand("https://45.8.146.122", ca=None)
+          exact_revision(stand, os.environ["EXPECTED_REVISION"], 0)
+          stand.session()
+          check(bool(stand.conversation), "Previous IP did not open a guest session")
+          PY
       - name: Check one synthetic mail round trip
         if: >-
-          !cancelled() && steps.release.outputs.current == 'true' &&
+          !cancelled() && steps.remaining.outputs.current == 'true' &&
           github.event_name == 'workflow_dispatch' && inputs.exercise_mail
         env:
           II_SMOKE_EXPERT_LOGIN: ${{ secrets.II_SMOKE_EXPERT_LOGIN }}
           II_SMOKE_EXPERT_PASSWORD: ${{ secrets.II_SMOKE_EXPERT_PASSWORD }}
         run: |
-          .venv/bin/python deploy/qa/release_smoke.py --url https://45.8.146.122 --sha "$EXPECTED_REVISION" --mail
+          .venv/bin/python deploy/qa/release_smoke.py --url "$II_STAND_URL" --sha "$EXPECTED_REVISION" --mail
