@@ -189,12 +189,24 @@ def test_conflict_review_compares_the_same_action_and_survives_provider_outage()
     def unavailable(*args):
         raise EngineUnavailable("offline")
     calls = SimpleNamespace(chat=unavailable)
-    result = A1Engine(None, search=object())._regulation_conflict(
+    engine = A1Engine(None, search=object())
+    result = engine._regulation_conflict(
         question, calls, lookup, entries, refs, [entries["n", "1"]])
     assert result.action == "escalate" and len(result.citations) == 2
     assert "Не удалось подтвердить" in result.text
     assert {c.fragment_id for c in result.citations} == {first.fragment_id, second.fragment_id}
     assert not competition(question, {("n","1"):entries["n","1"], ("k","3"):entries["k","3"]}, set())
+
+    # An uncited result must still go through normal ranking if the lexical pool
+    # contains a possible conflict. Only a pool without pairs skips inference.
+    lookup.lexical_pool = lambda text: list(entries.values())
+    assert engine._regulation_conflict(question, calls, lookup, entries, refs, []) == result
+
+    def no_rerank(text):
+        raise AssertionError("The lexical pool already rules out a conflict")
+
+    no_rerank.lexical_pool = lambda text: [entries["n", "1"], entries["k", "3"]]
+    assert engine._regulation_conflict(question, calls, no_rerank, entries, refs, []) is None
 
 
 def test_compound_document_request_keeps_the_independent_question():

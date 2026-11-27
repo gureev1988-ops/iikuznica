@@ -1,7 +1,7 @@
 """Stock PostgreSQL BM25 and the pinned A1 MiniLM reranker."""
 from collections import defaultdict
 from contextvars import ContextVar
-from functools import cached_property
+from functools import cached_property, lru_cache
 import logging
 import re
 from pathlib import Path
@@ -132,7 +132,8 @@ class Search:
         eligible = {refs[key].fragment_id: key for key, p in corpus.items() if p["text"] != p["section"]}
         LATENCY_LOG.info("turn=%s stage=search_snapshot elapsed_s=%.3f", SEARCH_TURN.get(), perf_counter() - started)
 
-        def lookup(question):
+        @lru_cache(maxsize=32)
+        def lexical_pool(question):
             docs = [doc for doc, pattern in DIRECTORATES.items() if re.search(pattern, question, re.I)]
             if "IB" in docs:
                 docs.append("PRE")
@@ -141,12 +142,17 @@ class Search:
             with local_step("Поиск A1 · PostgreSQL"), connect(self.dsn) as conn:
                 rows = conn.execute(BM25, (list(eligible), encode(question, glossary),
                                           encode(expanded, glossary), docs, docs)).fetchall()
-            pool = [corpus[eligible[r["fragment_id"]]] for r in rows]
-            bm25_done = perf_counter()
+            LATENCY_LOG.info("turn=%s stage=search bm25_s=%.3f candidates=%s",
+                             SEARCH_TURN.get(), perf_counter() - started, len(rows))
+            return [corpus[eligible[row["fragment_id"]]] for row in rows]
+
+        def lookup(question):
+            pool = lexical_pool(question)
+            started = perf_counter()
             with local_step("Ранжирование · MiniLM"):
                 scores = score_pairs(*self.model, question, pool)
-            LATENCY_LOG.info("turn=%s stage=search bm25_s=%.3f rerank_s=%.3f candidates=%s",
-                             SEARCH_TURN.get(), bm25_done - started, perf_counter() - bm25_done, len(pool))
+            LATENCY_LOG.info("turn=%s stage=search rerank_s=%.3f candidates=%s",
+                             SEARCH_TURN.get(), perf_counter() - started, len(pool))
             neural = sorted(range(2, len(scores)), key=lambda i: -scores[i])
             ranking = list(range(min(2, len(pool)))) + neural[:3]
             ranking = include_condition(ranking, pool)
@@ -154,6 +160,7 @@ class Search:
                 dict(p, logit=score) for p, score in zip(pool, scores)
             ]
 
+        lookup.lexical_pool = lexical_pool
         return corpus, lookup, refs, originals
 
 
