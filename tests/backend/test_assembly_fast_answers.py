@@ -222,7 +222,7 @@ def test_publication_rechecks_faq_and_source_access(dsn, tmp_path, monkeypatch, 
     with connect(dsn) as conn:
         turn = conn.execute("SELECT status, result FROM turns WHERE id = %s", (first.turn_id,)).fetchone()
         assert turn["status"] == "completed" and "1 рабочего дня" in turn["result"]["text"]
-        assert len(turn["result"]["sources"]) == 2
+        assert len(turn["result"]["sources"]) == 3
         assert conn.execute("SELECT count(*) AS n FROM model_calls").fetchone()["n"] == 0
 
     original_answer = assembly.answer
