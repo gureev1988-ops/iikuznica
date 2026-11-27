@@ -234,6 +234,12 @@ def live_mail(employee, expert, reader):
         messages = employee.json(f"/v1/conversations/{employee.conversation}/messages")["messages"]
         return any(tag in m["text"] and "18 процентов" in m["text"] and m["role"] != "user" for m in messages)
     wait_for(delivered_reply, 150, "expert response in original chat")
+    closed = expert.json("/v1/browser/quality/threads/" + thread["id"])
+    replies = [message for message in closed["messages"] if
+               message["message_id"] == f"<judge-{command['command_id']}@assembly.test>"]
+    check(not closed["open"] and len(replies) == 1, "Expected one expert reply in the closed training case")
+    check(replies[0]["sender"] == "quality@assembly.test" and replies[0]["to"] == "bot@assembly.test"
+          and replies[0]["cc"] == original["cc"], "Unexpected recipient or copy address in expert reply")
     repeated, _ = reader.answer(question)
     check("18" in repeated["result"]["text"] and any(ref["kind"] == "faq" for ref in repeated["result"]["sources"]),
           "Independent guest did not receive the synthetic FAQ")

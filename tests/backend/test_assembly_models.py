@@ -177,7 +177,8 @@ class EvidenceStream(httpx.AsyncByteStream):
     ("Кто согласует?", "evidence-core", 0.01, 0.18, False),
     ("Какая маржа по проекту?", "faq-applicability", 0.01, 0.18, True),
     ("Какая маржа по проекту?", "faq-applicability", 0.18, 0, False),
-    ("Кто согласует? Когда подписывает?", "permission-review", 0.01, 0.18, False),
+    ("Кто согласует? Когда подписывает?", "permission-review", 0.01, 0.18, True),
+    ("Кто согласует?", "permission-review", 0.01, 0.18, False),
 ])
 def test_started_evidence_and_faq_comparison_can_use_bounded_read_time(
     upstream, monkeypatch, question, stage, first, tail, valid,

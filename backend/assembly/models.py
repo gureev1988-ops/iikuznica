@@ -45,7 +45,7 @@ class ModelCalls:
         def invoke(timeout, provider):
             payload = model_settings(body, model, provider, min(body.get("max_tokens", 1536), 8192))
             stream_timeout = None
-            compound = stage == "evidence-core" and re.search(
+            compound = stage in {"evidence-core", "permission-review"} and re.search(
                 r"\?\s+[^?\s][^?]*\?", getattr(self.request, "question", "")
             )
             if model == GEMMA and (compound or stage == "faq-applicability"):
