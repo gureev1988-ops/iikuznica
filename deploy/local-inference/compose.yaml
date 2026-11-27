@@ -1,0 +1,116 @@
+name: ii-local-inference
+
+x-gpu-service: &gpu-service
+  platform: linux/amd64
+  gpus: all
+  pull_policy: never
+  restart: unless-stopped
+  networks: [inference]
+
+services:
+  gemma:
+    <<: *gpu-service
+    image: "${II_LLAMA_IMAGE_REPOSITORY:-ghcr.io/ggml-org/llama.cpp}@sha256:c94503b4e7839fcacebc7fd04b7cef66376dc15a38e50e221e73871241a12982"
+    command:
+      - --model
+      - /models/gemma/gemma-4-26B_q4_0-it.gguf
+      - --alias
+      - google/gemma-4-26b-a4b-it
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --n-gpu-layers
+      - "999"
+      - --parallel
+      - "1"
+      - --ctx-size
+      - "${II_GEMMA_CONTEXT:-16384}"
+      - --jinja
+      - --reasoning
+      - "off"
+    environment:
+      CUDA_VISIBLE_DEVICES: "${II_GEMMA_GPUS:?Set the GPU list for Gemma}"
+      LLAMA_API_KEY: "${II_GEMMA_API_KEY:?Set the internal Gemma service credential}"
+      HF_HUB_OFFLINE: "1"
+    volumes:
+      - type: bind
+        source: "${II_WEIGHTS_DIR:?Set the absolute directory of verified local weights}/gemma"
+        target: /models/gemma
+        read_only: true
+        bind: {create_host_path: false}
+
+  qwen:
+    <<: *gpu-service
+    image: "${II_VLLM_IMAGE_REPOSITORY:-vllm/vllm-openai}@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1"
+    command:
+      - /models/qwen
+      - --served-model-name
+      - qwen/qwen3.5-122b-a10b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --language-model-only
+      - --quantization
+      - moe_wna16
+      - --reasoning-parser
+      - qwen3
+      - --default-chat-template-kwargs
+      - '{"enable_thinking":false}'
+      - --tensor-parallel-size
+      - "${II_QWEN_TP:?Set the number of GPUs assigned to Qwen}"
+      - --gpu-memory-utilization
+      - "${II_QWEN_GPU_MEMORY_FRACTION:?Set the VRAM fraction per Qwen GPU}"
+      - --max-model-len
+      - "${II_QWEN_CONTEXT:-16384}"
+      - --max-num-seqs
+      - "1"
+    environment:
+      CUDA_VISIBLE_DEVICES: "${II_QWEN_GPUS:?Set the GPU list for Qwen}"
+      VLLM_API_KEY: "${II_QWEN_API_KEY:?Set the internal Qwen service credential}"
+      VLLM_NO_USAGE_STATS: "1"
+      HF_HUB_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    shm_size: 4gb
+    volumes:
+      - type: bind
+        source: "${II_WEIGHTS_DIR:?Set the absolute directory of verified local weights}/qwen"
+        target: /models/qwen
+        read_only: true
+        bind: {create_host_path: false}
+
+  decider:
+    <<: *gpu-service
+    image: "${II_DECIDER_IMAGE_REPOSITORY:?Set the internal Decider image repository}@sha256:${II_DECIDER_IMAGE_SHA256:?Set the digest of the built Decider image}"
+    environment:
+      CUDA_VISIBLE_DEVICES: "${II_DECIDER_GPUS:?Set the GPU list for Decider}"
+      II_DECIDER_API_KEY: "${II_DECIDER_API_KEY:?Set the internal Decider service credential}"
+    volumes:
+      - type: bind
+        source: "${II_WEIGHTS_DIR:?Set the absolute directory of verified local weights}/decider"
+        target: /models/decider
+        read_only: true
+        bind: {create_host_path: false}
+
+  ingress:
+    platform: linux/amd64
+    image: "${II_HAPROXY_IMAGE_REPOSITORY:-haproxy}@sha256:7816a9801a6846b912bc37e48529808e2fa87c3c47992441940f68e393ebcfeb"
+    pull_policy: never
+    restart: unless-stopped
+    networks: [inference, ingress]
+    volumes:
+      - type: bind
+        source: ./haproxy.cfg
+        target: /usr/local/etc/haproxy/haproxy.cfg
+        read_only: true
+        bind: {create_host_path: false}
+    ports:
+      - "${II_MODEL_BIND_IP:-127.0.0.1}:18081:18081"
+      - "${II_MODEL_BIND_IP:-127.0.0.1}:18082:18082"
+      - "${II_MODEL_BIND_IP:-127.0.0.1}:18083:18083"
+
+networks:
+  inference:
+    internal: true
+  ingress: {}

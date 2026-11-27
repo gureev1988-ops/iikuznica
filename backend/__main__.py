@@ -28,7 +28,7 @@ def worker(backend, queue, once):
     workers = (backend.settings.interactive_concurrency if queue == "interactive"
                else backend.settings.background_concurrency)
     tasks = [(queue, lambda: backend.run_job(queue), backend.settings.poll_interval)] * workers
-    if queue == "interactive" and backend.settings.profile == "assembly":
+    if queue == "interactive" and backend.settings.profile == "assembly" and not backend.model_profile.is_local:
         from backend.assembly.pricing import refresh
         tasks.append(("model-pricing", refresh, 900))
     if queue == "background":
@@ -112,14 +112,16 @@ def main():
         return
     if args.mode == "assembly-init":
         from backend.assembly.artifacts import install
+        from backend.assembly.model_profile import load_model_profile
         from backend.assembly.corpus import seed
         from backend.assembly.quality_seed import seed_quality
         from backend.assembly.search import load_model
         from pathlib import Path
 
+        profile = load_model_profile()
         migrate(settings.dsn)
         model_dir = Path(os.getenv("II_MODEL_DIR", ".ii-local/models"))
-        install(model_dir)
+        install(model_dir, profile)
         load_model(model_dir)  # Fail init if the pinned export cannot load on this CPU.
         directory = os.getenv("II_ORIGINALS", ".ii-local/originals")
         seed(settings.dsn, directory, args.version)
@@ -133,17 +135,19 @@ def main():
     from backend.app import Backend, create_app
     services = Backend(settings)
     try:
+        if settings.profile == "assembly" and args.mode in {"api", "interactive", "background"}:
+            latency = logging.getLogger("backend.assembly.latency")
+            latency.setLevel(logging.INFO)
+            if not latency.handlers:
+                latency.addHandler(logging.StreamHandler())
+            latency.propagate = False
         if args.mode == "api":
             import uvicorn
             uvicorn.run(create_app(services=services), host=args.host, port=args.port)
         elif args.mode in {"interactive", "background"}:
             if args.mode == "interactive" and settings.profile == "assembly":
-                if not os.getenv("OPENROUTER_API_KEY"):
+                if not services.model_profile.is_local and not os.getenv("OPENROUTER_API_KEY"):
                     raise SystemExit("OPENROUTER_API_KEY is required for the assembly worker")
-                latency = logging.getLogger("backend.assembly.latency")
-                latency.setLevel(logging.INFO)
-                latency.addHandler(logging.StreamHandler())
-                latency.propagate = False
                 _ = services.engine.search.model
             worker(services, args.mode, args.once)
         else:

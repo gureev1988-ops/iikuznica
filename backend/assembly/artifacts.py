@@ -1,4 +1,4 @@
-"""Fetch and verify the exact published MiniLM checkpoint."""
+"""Verify the pinned MiniLM checkpoint, downloading only in the demo profile."""
 from hashlib import file_digest
 import os
 from pathlib import Path
@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile
 from urllib.request import urlopen
 
 from eval.rerank.rerank import TOKENIZER_SHA256, WEIGHTS_SHA256
+from .model_profile import load_model_profile
 
 MODEL_REVISION = "1427fd652930e4ba29e8149678df786c240d8825"
 MODEL_URL = ("https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1/resolve/"
@@ -22,13 +23,18 @@ def checksum(path):
         return file_digest(f, "sha256").hexdigest()
 
 
-def install(directory):
+def install(directory, profile=None):
+    if profile is None:
+        profile = load_model_profile()
     directory = Path(directory)
-    directory.mkdir(exist_ok=True, parents=True)
+    if not profile.is_local:
+        directory.mkdir(exist_ok=True, parents=True)
     for relative, expected in FILES:
         target = directory / Path(relative).name
-        if target.exists() and checksum(target) == expected:
+        if target.is_file() and checksum(target) == expected:
             continue
+        if profile.is_local:
+            raise ValueError(f"Local MiniLM file missing or checksum mismatch: {target.name}")
         with NamedTemporaryFile(dir=directory, delete=False) as output:
             temporary = Path(output.name)
         try:
