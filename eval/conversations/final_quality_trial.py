@@ -96,7 +96,7 @@ def pairs(by_arm, cases):
     return list(result.values())
 
 
-def main(panel, candidate, *, arms=("candidate",), description, check=None):
+def main(panel, candidate, *, arms=("candidate",), description, check=None, panel_only_arms=()):
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--suite", choices=("panel", "working42", "working50"), default="panel")
     parser.add_argument("--arm", choices=("all", "control", *arms), default="all")
@@ -110,6 +110,8 @@ def main(panel, candidate, *, arms=("candidate",), description, check=None):
     args = parser.parse_args()
     if (args.suite == "working50") != (args.working50 is not None):
         parser.error("--working50 requires --suite working50, and vice versa")
+    if args.suite != "panel" and (args.arm in panel_only_arms or (args.arm == "all" and panel_only_arms)):
+        parser.error("An oracle arm can only be run on its annotated panel. Select a non-oracle --arm.")
     if args.independent_calls and args.reuse:
         parser.error("--independent-calls and --reuse are mutually exclusive")
     if not args.check and (not args.out or not args.model_dir):

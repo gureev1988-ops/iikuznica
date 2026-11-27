@@ -28,10 +28,13 @@ PERSONAL = re.compile(r"\b(?:мне|себе|мо[йю])\b", re.I)
 CONNECTOR = re.compile(r"(?:(?:и|а|заодно|также|ещ[её])(?:\s+(?:и|а|заодно|также|ещ[её]))*)?", re.I)
 
 
-def should_try(question, reply):
+def can_recover(question, reply):
     return (reply["action"] in {"clarify", "escalate", "out_of_scope"} and not reply.get("requests")
-            and not full_procedure(question)
-            and bool(COMPOUND.search(question.rstrip("?"))))
+            and not full_procedure(question))
+
+
+def should_try(question, reply):
+    return can_recover(question, reply) and bool(COMPOUND.search(question.rstrip("?")))
 
 
 def parse_plan(question, raw):
@@ -90,13 +93,21 @@ def candidate(arm, question, past, row, trial):
     except (KeyError, TypeError, ValueError) as exc:
         trial.events.append({"stage": "F1-plan-rejected", "reason": str(exc)})
         return None
+    return recover_parts(context, parts, past, trial, plan=raw)
+
+
+def part_query(context, part):
+    shared = " ".join(context[j] for j in sorted(part["context"]))
+    subject = part.get("subject")
+    context_text = f"Контекст — {subject['quote']}. " if subject else ""
+    return f"{shared} {context_text}{part['text']}".strip()
+
+
+def recover_parts(context, parts, past, trial, *, plan, stage="F1-parts", unscoped=()):
     results = []
-    for part in parts:
+    for i, part in enumerate(parts):
         text = part["text"]
-        shared = " ".join(context[j] for j in sorted(part["context"]))
-        subject = part.get("subject")
-        context_text = f"Контекст — {subject['quote']}. " if subject else ""
-        query = f"{shared} {context_text}{text}".strip()
+        query = part_query(context, part)
         if part["depends_on"]:
             prereq = " ".join(parts[j]["text"] for j in part["depends_on"])
             reply = {"action": "clarify", "message": f"Сначала нужно уточнить условие из предыдущей части. {prereq}",
@@ -104,12 +115,16 @@ def candidate(arm, question, past, row, trial):
         else:
             # A fragment with no own scope can still refer to an earlier project.
             # A standalone first-person personal request gets a chance to route without it.
-            child_past = past if part["history"] or (not directories(query) and not PERSONAL.search(text)) else ()
+            child_past = past if i not in unscoped and (
+                part["history"] or (not directories(query) and not PERSONAL.search(text))) else ()
             sub = experiment.control.run_turn(trial.calls.out, trial.calls.cid, query, child_past,
                                                trial.lookup, "C", diagnose=True, observer=trial)
             reply = sub["response"]
+        if i in unscoped and reply["action"] != "out_of_scope":
+            trial.events.append({"stage": stage + "-rejected", "reason": "The unscoped part was not personal"})
+            return None
         results.append({"text": text, "query": query, "result": reply})
-    trial.events.append({"stage": "F1-parts", "plan": raw, "actions": [p["result"]["action"] for p in results]})
+    trial.events.append({"stage": stage, "plan": plan, "actions": [p["result"]["action"] for p in results]})
     if not any(part["result"]["action"] == "answer" for part in results):
         return None
     return conversation.assemble(results)
