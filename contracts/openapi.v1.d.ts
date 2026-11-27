@@ -187,6 +187,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/ops/documents/{source_key}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Check Connection */
+        post: operations["check_connection_v1_ops_documents__source_key__check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/ops/documents/{source_key}/sync": {
         parameters: {
             query?: never;
@@ -198,6 +215,23 @@ export interface paths {
         put?: never;
         /** Request Sync */
         post: operations["request_sync_v1_ops_documents__source_key__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/ops/documents/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Connections */
+        get: operations["connections_v1_ops_documents_connections_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -547,6 +581,62 @@ export interface components {
         CommandValidationError: {
             /** Detail */
             detail: components["schemas"]["DialogueErrorDetail"] | components["schemas"]["ValidationIssue"][];
+        };
+        /** ConnectionCheck */
+        ConnectionCheck: {
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /** Error Code */
+            error_code: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ConnectionList */
+        ConnectionList: {
+            /** Connections */
+            connections: components["schemas"]["ConnectionStatus"][];
+        };
+        /** ConnectionRun */
+        ConnectionRun: {
+            /** Error Code */
+            error_code: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Status */
+            status: string;
+        };
+        /** ConnectionStatus */
+        ConnectionStatus: {
+            /** Active Documents */
+            active_documents: number;
+            /** Enabled */
+            enabled: boolean;
+            /** Interval Seconds */
+            interval_seconds: number | null;
+            /** Last Check At */
+            last_check_at: string | null;
+            /** Last Check Error Code */
+            last_check_error_code: string | null;
+            /** Last Check Ok */
+            last_check_ok: boolean | null;
+            last_run: components["schemas"]["ConnectionRun"] | null;
+            /** Last Success At */
+            last_success_at: string | null;
+            /** Next Due At */
+            next_due_at: string | null;
+            /** Source Key */
+            source_key: string;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "http_json" | "confluence" | "batch";
         };
         /** CoverFaqBody */
         CoverFaqBody: {
@@ -2009,6 +2099,37 @@ export interface operations {
             };
         };
     };
+    check_connection_v1_ops_documents__source_key__check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionCheck"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     request_sync_v1_ops_documents__source_key__sync_post: {
         parameters: {
             query?: never;
@@ -2036,6 +2157,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    connections_v1_ops_documents_connections_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionList"];
                 };
             };
         };

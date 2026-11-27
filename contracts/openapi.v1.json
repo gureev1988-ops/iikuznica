@@ -142,6 +142,203 @@
         "title": "CommandValidationError",
         "type": "object"
       },
+      "ConnectionCheck": {
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "checked_at",
+          "error_code"
+        ],
+        "title": "ConnectionCheck",
+        "type": "object"
+      },
+      "ConnectionList": {
+        "properties": {
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionStatus"
+            },
+            "title": "Connections",
+            "type": "array"
+          }
+        },
+        "required": [
+          "connections"
+        ],
+        "title": "ConnectionList",
+        "type": "object"
+      },
+      "ConnectionRun": {
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "error_code"
+        ],
+        "title": "ConnectionRun",
+        "type": "object"
+      },
+      "ConnectionStatus": {
+        "properties": {
+          "active_documents": {
+            "title": "Active Documents",
+            "type": "integer"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "interval_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Seconds"
+          },
+          "last_check_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Check At"
+          },
+          "last_check_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Check Error Code"
+          },
+          "last_check_ok": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Check Ok"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "next_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Due At"
+          },
+          "source_key": {
+            "title": "Source Key",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "http_json",
+              "confluence",
+              "batch"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_key",
+          "type",
+          "enabled",
+          "interval_seconds",
+          "next_due_at",
+          "last_check_at",
+          "last_check_ok",
+          "last_check_error_code",
+          "last_success_at",
+          "last_run",
+          "active_documents"
+        ],
+        "title": "ConnectionStatus",
+        "type": "object"
+      },
       "CoverFaqBody": {
         "properties": {
           "revision_id": {
@@ -3207,6 +3404,32 @@
         ]
       }
     },
+    "/v1/ops/documents/connections": {
+      "get": {
+        "operationId": "connections_v1_ops_documents_connections_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Connections",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
     "/v1/ops/documents/sync/{run_id}": {
       "get": {
         "operationId": "sync_result_v1_ops_documents_sync__run_id__get",
@@ -3250,6 +3473,53 @@
           }
         ],
         "summary": "Sync Result",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/v1/ops/documents/{source_key}/check": {
+      "post": {
+        "operationId": "check_connection_v1_ops_documents__source_key__check_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_key",
+            "required": true,
+            "schema": {
+              "title": "Source Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionCheck"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Check Connection",
         "tags": [
           "documents"
         ]

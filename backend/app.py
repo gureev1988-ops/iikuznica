@@ -5,13 +5,13 @@ from functools import partial
 import os
 
 from fastapi import Depends, FastAPI, HTTPException
-from pydantic import TypeAdapter
 
 from backend.config import INTEGRATED_QUALITY_EMAIL, Settings
 from backend.contracts.engine import build_engine
 from backend.db import connect
 from backend.dialog import DialogueService, create_router
-from backend.documents import BatchSource, ConfluenceConfig, ConfluenceSource, DocumentSync, PageSnapshot, make_router
+from backend.documents import DocumentSync, make_router
+from backend.documents.connections import configure_sources
 from backend.dion import DionAdapter, DionClient, DionConfig, dion_operations_router, queue_reply
 from backend.local_mail import LocalMailbox
 from backend.mailfaq import MailConfig, MailService, build_router, reconcile_document_revision
@@ -43,18 +43,12 @@ class Backend:
         self.dialog = DialogueService(dsn=self.dsn, engine=self.engine, mail_config=self.mail_config,
                                      max_pending=settings.max_pending, queue_reply=queue_reply,
                                      resolve_actor=self.resolve_actor, hackathon=hackathon)
+        connection_config = None
         if hackathon or sources is None:
-            sources = {}
-            batch = settings.integrations.get("batch")
-            if batch is not None:
-                pages = TypeAdapter(list[PageSnapshot]).validate_python(batch)
-                sources["batch"] = BatchSource(pages)
-            if not hackathon and (conf := settings.integrations.get("confluence")):
-                connector = ConfluenceSource(ConfluenceConfig(**conf))
-                sources["confluence"] = connector
-                self.closeables.append(connector)
+            sources, connection_config = configure_sources(settings)
+            self.closeables.extend(source for source in sources.values() if hasattr(source, "close"))
         self.documents = DocumentSync(
-            self.dsn, sources, public_only=hackathon,
+            self.dsn, sources, public_only=hackathon, connection_config=connection_config,
             on_revision_change=partial(reconcile_document_revision, hackathon=True) if hackathon else None,
         )
         self.dion = None
@@ -101,9 +95,14 @@ class Backend:
         return {"mode": mode, **(row or {"state": "not_checked"})}
 
     def document_job(self, job):
-        return self.observe("documents", lambda: self.documents.handle_job(job))
+        return self.observe(self.document_health_name, lambda: self.documents.handle_job(job))
+
+    @property
+    def document_health_name(self):
+        return "documents:hackathon" if self.settings.hackathon else "documents"
 
     def run_job(self, queue):
+        source_keys = None
         if queue == "interactive":
             handlers = {"answer_turn": self.dialog.answer_job}
             terminal = {"answer_turn": self.dialog.terminal_outcome}
@@ -116,10 +115,19 @@ class Backend:
                 handlers.update(self.dion.handlers)
             terminal = {"documents.sync": self.documents.terminal_job}
             limit = self.settings.background_concurrency
-        return run_once(self.dsn, queue, handlers, max_running=limit, terminal_handlers=terminal, active_kinds=handlers.keys())
+            source_keys = self.document_source_keys(enabled_only=True)
+        return run_once(self.dsn, queue, handlers, max_running=limit, terminal_handlers=terminal,
+                        active_kinds=handlers.keys(), document_source_keys=source_keys)
+
+    def document_source_keys(self, *, enabled_only=False):
+        connections = self.documents.connections
+        return [key for key, config in connections.config.items()
+                if connections.visible(key) and (config.enabled or not enabled_only)]
 
     def polling(self):
         operations = {"recovery": lambda: any(recover_journal(self.dsn))}
+        if not self.settings.hackathon:
+            operations["document-schedule"] = self.documents.schedule_due
         if self.mail_config.mode != "disabled":
             operations["mail"] = lambda: self.observe("mail", self.mail.poll_inbox)
         if self.dion:
@@ -152,12 +160,14 @@ def create_app(settings: Settings | None = None, *, services: Backend | None = N
     app.include_router(build_router(backend.dsn, get_actor, service=backend.mail, is_quality=backend.settings.is_quality))
     app.include_router(make_router(backend.documents, require_ops))
     app.include_router(dion_operations_router(backend.dsn, require_ops))
+    source_types = {config.kind for config in backend.documents.connections.config.values() if config.enabled}
     modes = {
         "mail": backend.mail_config.mode,
         "dion": "network" if backend.dion else "disabled",
-        "documents": "network" if "confluence" in backend.documents.sources else
-                     "batch" if "batch" in backend.documents.sources else "disabled",
+        "documents": "network" if source_types & {"confluence", "http_json"} else
+                     "batch" if "batch" in source_types else "disabled",
     }
     probes = {name: (lambda n=name, m=mode: backend.health(n, m)) for name, mode in modes.items()}
-    app.include_router(operations_router(backend.dsn, require_ops, probes))
+    probes["documents"] = lambda: backend.health(backend.document_health_name, modes["documents"])
+    app.include_router(operations_router(backend.dsn, require_ops, probes, document_source_keys=backend.document_source_keys()))
     return app

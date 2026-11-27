@@ -12,7 +12,9 @@ from .catalog import (
     SnapshotError, activate_revision, deactivate_page, is_local_public_page, record_demo_access_cutoff,
     restrict_current_access, stage_revision,
 )
+from .connections import ConnectionConfig, DocumentConnections, check_source_key, source_type
 from .confluence import ConfluenceError
+from .http_json import HttpJsonError, HttpJsonSource, prepare_inventory
 from .ports import DocumentSource, PageProbe, PageSnapshot, PageStatus, RevisionIndexer
 
 
@@ -53,64 +55,71 @@ def _session_lock(conn, source_key: str) -> None:
         raise SyncBusy('A synchronization is already running for this source')
 
 
-def _check_source_key(source_key: str) -> None:
-    if not source_key or len(source_key) > 100 or any(char not in '._-' and not char.isalnum() for char in source_key):
-        raise ValueError('Invalid document source key')
-
-
 class DocumentSync:
     def __init__(
         self, dsn: str | None, sources: Mapping[str, DocumentSource], *, indexer: RevisionIndexer | None = None,
         on_revision_change: Callable | None = None, public_only: bool = False,
+        connection_config: Mapping[str, ConnectionConfig] | None = None,
     ):
         for source_key in sources:
-            _check_source_key(source_key)
+            check_source_key(source_key)
         self.dsn = dsn
         self.sources = dict(sources)
+        if connection_config is None:
+            connection_config = {key: ConnectionConfig(source_type(source)) for key, source in sources.items()}
+        self.connections = DocumentConnections(
+            dsn, self.sources, connection_config, profile='hackathon' if public_only else 'integrated',
+        )
         self.public_only = public_only
         self.indexer = indexer
         self.on_revision_change = on_revision_change or _reconcile_faq
 
     def request_sync(self, source_key: str) -> UUID:
         """Create or resume an inventory run and queue it in one transaction."""
+        self.connections.ensure_enabled(source_key)
+        with connect(self.dsn) as conn:
+            return self._request_sync(conn, source_key)
+
+    def schedule_due(self) -> int:
+        return self.connections.schedule_due(self._request_sync)
+
+    @staticmethod
+    def _request_sync(conn, source_key: str, *, wait: bool = True) -> UUID | None:
         from backend.runtime import enqueue
 
-        if source_key not in self.sources:
-            raise KeyError(source_key)
-        with connect(self.dsn) as conn:
+        lock = 'pg_advisory_xact_lock' if wait else 'pg_try_advisory_xact_lock'
+        locked = conn.execute(
+            f'SELECT {lock}(hashtext(current_schema()), hashtext(%s)) AS locked',
+            (f'documents:request:{source_key}',),
+        ).fetchone()['locked']
+        if not wait and not locked:
+            return None
+        run = conn.execute(
+            "SELECT id FROM document_sync_runs WHERE source_key = %s AND status <> 'completed' FOR UPDATE",
+            (source_key,),
+        ).fetchone()
+        if run is None:
+            run_id = uuid4()
             conn.execute(
-                'SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext(%s))',
-                (f'documents:request:{source_key}',),
+                "INSERT INTO document_sync_runs (id, source_key, status) VALUES (%s, %s, 'queued')",
+                (run_id, source_key),
             )
-            run = conn.execute(
-                "SELECT id FROM document_sync_runs WHERE source_key = %s AND status <> 'completed'",
-                (source_key,),
+        else:
+            run_id = run['id']
+            job = conn.execute(
+                """
+                SELECT id FROM jobs WHERE queue = 'background' AND kind = %s AND payload ->> 'run_id' = %s
+                    AND state IN ('queued', 'running') LIMIT 1
+                """,
+                (SYNC_JOB_KIND, str(run_id)),
             ).fetchone()
-            if run is None:
-                run_id = uuid4()
-                conn.execute(
-                    "INSERT INTO document_sync_runs (id, source_key, status) VALUES (%s, %s, 'queued')",
-                    (run_id, source_key),
-                )
-            else:
-                run_id = run['id']
-                job = conn.execute(
-                    """
-                    SELECT id FROM jobs WHERE queue = 'background' AND kind = %s AND payload ->> 'run_id' = %s
-                        AND state IN ('queued', 'running') LIMIT 1
-                    """,
-                    (SYNC_JOB_KIND, str(run_id)),
-                ).fetchone()
-                if job is not None:
-                    return run_id
-                conn.execute(
-                    """
-                    UPDATE document_sync_runs SET status = 'queued', error = NULL, finished_at = NULL
-                    WHERE id = %s AND status <> 'completed'
-                    """,
-                    (run_id,),
-                )
-            enqueue(conn, queue='background', kind=SYNC_JOB_KIND, key=str(uuid4()), payload={'run_id': str(run_id)})
+            if job is not None:
+                return run_id
+            conn.execute(
+                "UPDATE document_sync_runs SET status = 'queued', error = NULL, finished_at = NULL WHERE id = %s",
+                (run_id,),
+            )
+        enqueue(conn, queue='background', kind=SYNC_JOB_KIND, key=str(uuid4()), payload={'run_id': str(run_id)})
         return run_id
 
     def result(self, run_id: UUID) -> SyncResult | None:
@@ -126,7 +135,7 @@ class DocumentSync:
                 """,
                 (run_id,),
             ).fetchone()
-        if run is None or (self.public_only and run['source_key'] not in self.sources):
+        if run is None or not self.connections.visible(run['source_key']):
             return None
         run['counts'] = {status.value: (run['counts'] or {}).get(status.value, 0) for status in PageStatus}
         return SyncResult(**run)
@@ -160,6 +169,7 @@ class DocumentSync:
                 source_key = run['source_key']
                 _session_lock(conn, source_key)
                 try:
+                    self.connections.ensure_enabled(source_key)
                     with conn.transaction():
                         if check_lease:
                             check_lease(conn)
@@ -172,9 +182,12 @@ class DocumentSync:
                             (run_id,),
                         ).fetchone()
                     if run is not None:
-                        self._scan(conn, run, self.sources[source_key], check_lease, renew)
+                        source = self.sources[source_key]
+                        if isinstance(source, HttpJsonSource):
+                            source = prepare_inventory(conn, run_id, source_key, source, check_lease)
+                        self._scan(conn, run, source, check_lease, renew)
                 except Exception as exc:
-                    error = str(exc) if isinstance(exc, (ConfluenceError, SnapshotError)) else type(exc).__name__
+                    error = str(exc) if isinstance(exc, (ConfluenceError, HttpJsonError, SnapshotError)) else type(exc).__name__
                     with conn.transaction():
                         if check_lease:
                             check_lease(conn)
@@ -253,6 +266,7 @@ class DocumentSync:
                 "UPDATE document_sync_runs SET status = 'completed', finished_at = clock_timestamp() WHERE id = %s",
                 (run_id,),
             )
+            conn.execute('DELETE FROM document_run_snapshots WHERE run_id = %s', (run_id,))
 
     def _record_page(self, conn, source_key, run_id, external_id, probe, offset, check_lease, renew) -> None:
         snapshot = probe.snapshot
@@ -329,7 +343,7 @@ class DocumentSync:
         self, source_key: str, snapshots: Iterable[PageSnapshot], *, activate: bool = True,
     ) -> tuple[UUID, ...]:
         """Import versions incrementally without treating absent pages as removals."""
-        _check_source_key(source_key)
+        check_source_key(source_key)
         imported = []
         with connect(self.dsn) as conn:
             conn.autocommit = True

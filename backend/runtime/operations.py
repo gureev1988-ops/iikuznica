@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 
 from backend.db import connect
+from .jobs import DOCUMENT_JOB_SCOPE
 
 
 class Liveness(BaseModel):
@@ -148,6 +149,7 @@ def operations_router(
     dsn: str | None,
     authorize_ops: Callable,
     integrations: Mapping[str, Callable[[], object]] | None = None,
+    *, document_source_keys: list[str] | None = None,
 ) -> APIRouter:
     deps = [Depends(authorize_ops)]
     router = APIRouter()
@@ -184,15 +186,16 @@ def operations_router(
     ) -> dict:
         with connect(dsn) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT id, queue, kind, state, attempt, max_attempts, last_error,
                     created_at, available_at, deadline_at, first_started_at, finished_at,
                     extract(epoch FROM first_started_at - created_at) AS queue_wait_seconds
                 FROM jobs WHERE (%(queue)s::text IS NULL OR queue = %(queue)s)
                     AND (%(state)s::text IS NULL OR state = %(state)s)
+                    {DOCUMENT_JOB_SCOPE}
                 ORDER BY created_at DESC, id LIMIT %(limit)s
                 """,
-                {"queue": queue, "state": state, "limit": limit},
+                {"queue": queue, "state": state, "limit": limit, "document_source_keys": document_source_keys},
             ).fetchall()
         return {"jobs": rows}
 

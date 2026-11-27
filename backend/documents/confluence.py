@@ -143,9 +143,23 @@ class ConfluenceSource:
                 raise ValueError
         except (TypeError, ValueError):
             raise ConfluenceError('Invalid Confluence cursor') from None
+        pages, next_link = self._listing(space, start, self.config.page_size)
+        if next_link:
+            return PageBatch(pages, json.dumps([space, self._next_start(next_link, start)]))
+        index = self.config.spaces.index(space) + 1
+        next_cursor = json.dumps([self.config.spaces[index], 0]) if index < len(self.config.spaces) else None
+        return PageBatch(pages, next_cursor)
+
+    def check_connection(self) -> None:
+        for space in self.config.spaces:
+            _, next_link = self._listing(space, 0, 1)
+            if next_link:
+                self._next_start(next_link, 0)
+
+    def _listing(self, space: str, start: int, limit: int) -> tuple[tuple[PageReference, ...], str | None]:
         payload = self._data(self._request(self._CONTENT, {
             'spaceKey': space, 'type': 'page', 'status': 'current', 'start': start,
-            'limit': self.config.page_size,
+            'limit': limit,
         }))
         try:
             results = payload['results']
@@ -158,11 +172,7 @@ class ConfluenceSource:
                 raise TypeError
         except (KeyError, TypeError):
             raise ConfluenceError('Invalid Confluence listing response') from None
-        if next_link:
-            return PageBatch(pages, json.dumps([space, self._next_start(next_link, start)]))
-        index = self.config.spaces.index(space) + 1
-        next_cursor = json.dumps([self.config.spaces[index], 0]) if index < len(self.config.spaces) else None
-        return PageBatch(pages, next_cursor)
+        return pages, next_link
 
     def _page(self, external_id: str, *, status: str, version: int | None = None) -> httpx.Response:
         params = {'status': status, 'expand': self._EXPAND, 'version': version} if version else {

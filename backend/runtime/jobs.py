@@ -53,6 +53,13 @@ class Job:
 Handler = Callable[[Job], None]
 TerminalHandler = Callable[[Connection, Job, str], None]
 
+DOCUMENT_JOB_SCOPE = """
+    AND (%(document_source_keys)s::text[] IS NULL OR jobs.kind <> 'documents.sync' OR EXISTS (
+        SELECT 1 FROM document_sync_runs r WHERE r.id = (jobs.payload ->> 'run_id')::uuid
+            AND r.source_key = ANY(%(document_source_keys)s::text[])
+    ))
+"""
+
 
 def _lock_queue(conn: Connection, queue: str) -> None:
     # The lock serializes admission counting and claim capacity checks in this queue.
@@ -150,20 +157,22 @@ def recover_jobs(
     base_retry_seconds: float = 1,
     terminal_handlers: Mapping[str, TerminalHandler] | None = None,
     batch_size: int = 100,
+    document_source_keys: Collection[str] | None = None,
 ) -> int:
     """Retry expired leases and publish terminal outcomes for overdue jobs."""
     with connect(dsn) as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT jobs.*, clock_timestamp() AS observed_at FROM jobs
-            WHERE queue = %s AND (
+            WHERE queue = %(queue)s AND (
                 (state = 'running' AND lease_expires_at <= clock_timestamp()) OR
                 (state = 'queued' AND deadline_at <= clock_timestamp())
             )
-            ORDER BY coalesce(lease_expires_at, deadline_at), id LIMIT %s
+            {DOCUMENT_JOB_SCOPE}
+            ORDER BY coalesce(lease_expires_at, deadline_at), id LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED
             """,
-            (queue, batch_size),
+            {'queue': queue, 'limit': batch_size, 'document_source_keys': document_source_keys},
         ).fetchall()
         for row in rows:
             now = row.pop("observed_at")
@@ -188,6 +197,7 @@ def claim(
     max_running: int | None = None,
     lease_seconds: float = 30,
     active_kinds: Collection[str] | None = None,
+    document_source_keys: Collection[str] | None = None,
 ) -> Job | None:
     """Claim ready work with a fresh token, optionally restricted to active kinds."""
     if lease_seconds <= 0:
@@ -205,12 +215,13 @@ def claim(
             if count >= max_running:
                 return None
         row = conn.execute(
-            """
+            f"""
             WITH next_job AS (
                 SELECT id FROM jobs WHERE queue = %(queue)s AND state = 'queued'
                     AND available_at <= clock_timestamp()
                     AND (deadline_at IS NULL OR deadline_at > clock_timestamp())
                     AND (%(kinds)s::text[] IS NULL OR kind = ANY(%(kinds)s))
+                    {DOCUMENT_JOB_SCOPE}
                 ORDER BY available_at, created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
             )
             UPDATE jobs SET state = 'running', attempt = attempt + 1, lease_token = %(token)s,
@@ -223,6 +234,7 @@ def claim(
                 "kinds": list(active_kinds) if active_kinds is not None else None,
                 "token": uuid4(),
                 "duration": timedelta(seconds=lease_seconds),
+                "document_source_keys": document_source_keys,
             },
         ).fetchone()
         return Job(**row) if row else None
@@ -297,6 +309,7 @@ def run_once(
     base_retry_seconds: float = 1,
     terminal_handlers: Mapping[str, TerminalHandler] | None = None,
     active_kinds: Collection[str] | None = None,
+    document_source_keys: Collection[str] | None = None,
 ) -> Job | None:
     """Recover expired work in the queue, then claim and run one eligible job.
 
@@ -305,10 +318,12 @@ def run_once(
     """
     from .journal import recover_journal
 
-    recover_jobs(dsn, queue, base_retry_seconds=base_retry_seconds, terminal_handlers=terminal_handlers)
+    recover_jobs(dsn, queue, base_retry_seconds=base_retry_seconds, terminal_handlers=terminal_handlers,
+                 document_source_keys=document_source_keys)
     recover_journal(dsn)
     job = claim(
         dsn, queue, max_running=max_running, lease_seconds=lease_seconds, active_kinds=active_kinds,
+        document_source_keys=document_source_keys,
     )
     if job is None:
         return None

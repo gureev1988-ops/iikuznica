@@ -110,6 +110,20 @@ class BatchSource:
         end = start + self._batch_size
         return PageBatch(self._pages[start:end], str(end) if end < len(self._pages) else None)
 
+    def check_connection(self) -> None:
+        from .fragments import extract_fragments
+
+        for page in self._pages:
+            if type(page.version) is not int or not 1 <= page.version <= 2**63 - 1:
+                raise ValueError('Invalid batch document version')
+            for value in (page.external_id, page.title, page.storage_html, page.space_key, page.upstream_url,
+                          *(page.acl_actor_ids or ())):
+                if value is not None:
+                    if not isinstance(value, str) or '\x00' in value:
+                        raise ValueError('Invalid batch document text')
+                    value.encode('utf-8')
+            extract_fragments(page.storage_html)
+
     def probe(self, external_id: str) -> PageProbe:
         page = self._by_id.get(external_id)
         if page is None:
