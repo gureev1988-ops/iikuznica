@@ -45,7 +45,7 @@ services:
     networks: [mail]
   smtp:
     <<: *app
-    entrypoint: [python, -m, backend.assembly.test_smtp]
+    entrypoint: [python, -m, backend.assembly.smtp_gateway]
     command: []
     environment:
       II_BOT_PASSWORD: ${II_BOT_PASSWORD:?Run deploy/init-env.sh}

@@ -210,11 +210,19 @@ def test_04_late_reply_after_closed_tab(guest, run_tag):
     context = employee.context
     employee.close()
     login(judge)
-    reply(judge, run_tag, "Для указанного тестового проекта минимальный порог маржинальности составляет 18 процентов.")
+    command = reply(judge, run_tag, "Для указанного тестового проекта минимальный порог маржинальности составляет 18 процентов.")
     employee = context.new_page()
     open_chat(employee)
     playwright.expect(employee.locator("#dion-messages").get_by_text("18 процентов", exact=False)).to_be_visible(timeout=45_000)
-    assert "Ответ Отдела качества" not in judge.locator("#dion-messages").text_content()
+    assert "18 процентов" not in judge.locator("#dion-messages").text_content()
+    if command_line := os.getenv("II_BROWSER_COMPOSE"):
+        compose = shlex.split(command_line)
+        env = dict(line.split("=", 1) for line in Path(".env").read_text().splitlines() if "=" in line)
+        variables = dict(os.environ, II_QA_REPLY_ID=command, II_IMAP_OPERATOR_PASSWORD=env["II_IMAP_OPERATOR_PASSWORD"])
+        subprocess.run([*compose, "exec", "-T", "-e", "II_QA_REPLY_ID", "-e", "II_IMAP_OPERATOR_PASSWORD",
+                        "background", "python", "-"], input=Path("deploy/qa/mail.py").read_bytes(),
+                       env=variables, check=True)
+        playwright.expect(employee.locator("#dion-messages").get_by_text("18 процентов", exact=False)).to_have_count(1)
 
 
 def test_05_paraphrased_faq_and_scope(guest, run_tag):
@@ -274,6 +282,19 @@ def test_08_reload_and_idempotent_admit(guest):
     turn = result(page, data)
     assert turn["result"] and turn["result"]["sources"], turn
     source(page, turn, point="2.7")
+    if command_line := os.getenv("II_BROWSER_COMPOSE"):
+        compose = shlex.split(command_line)
+        old_refs = turn["result"]["sources"]
+        before = page.request.get(URL + old_refs[0]["url"]).json()
+        subprocess.run([*compose, "run", "--rm", "--no-deps", "init", "assembly-init",
+                        "--version", str(before["version"] + 1)], check=True)
+        assert page.request.get(URL + old_refs[0]["url"]).json() == before
+        source(page, turn, point="2.7")
+        new_turn = answer(page, DIRECT, new=True)
+        assert new_turn["result"] and new_turn["result"]["sources"]
+        after = page.request.get(URL + new_turn["result"]["sources"][0]["url"]).json()
+        assert after["version"] == before["version"] + 1 and after["revision_id"] != before["revision_id"]
+        source(page, new_turn, point="2.7")
 
 
 @pytest.mark.skipif(not os.getenv("II_BROWSER_COMPOSE"), reason="Set II_BROWSER_COMPOSE for failure injection on dedicated QA Compose")

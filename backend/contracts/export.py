@@ -11,11 +11,17 @@ def openapi_document() -> dict:
     # The full application is composed alongside the routers in the package branches.
     from backend.app import Backend, create_app
     from backend.config import Settings
+    from backend.assembly.web import Assembly
     from backend.mailfaq import MailConfig
 
     backend = Backend(Settings(database_url="postgresql://localhost/unused"), mail_config=MailConfig(mode="disabled"))
     try:
-        return create_app(services=backend).openapi()
+        app = create_app(services=backend)
+        cert_profile = backend.settings.model_copy(update={"public_base_url": "https://example.test"})
+        placeholders = dict.fromkeys(("II_JUDGE_LOGIN", "II_JUDGE_PASSWORD", "II_BOT_PASSWORD",
+                                      "II_QUALITY_PASSWORD"), "schema-fixture-only")
+        Assembly(cert_profile, credentials=placeholders).mount(app, backend)
+        return app.openapi()
     finally:
         backend.close()
 

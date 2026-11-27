@@ -24,7 +24,7 @@ from backend.mailfaq.message import MESSAGE_ID
 from backend.mailfaq.transport import ImapInbox, MailConfig, Outbound, SmtpTransport
 from backend.runtime import PermanentJobFailure, enqueue, require_lease, send_once
 
-from .test_smtp import AUTHSERV, BOT, DOMAIN, QUALITY
+from .smtp_gateway import AUTHSERV, BOT, DOMAIN, QUALITY
 
 GUEST_COOKIE = "__Host-ii-guest"
 JUDGE_COOKIE = "__Host-ii-mail"
@@ -36,6 +36,29 @@ REPLY_KIND = "assembly.mail.reply"
 class Login(BaseModel):
     login: str = Field(max_length=200)
     password: str = Field(max_length=1024)
+
+
+class BrowserSession(BaseModel):
+    conversation_id: UUID
+    mail: bool
+
+
+class MailAccess(BaseModel):
+    mail: bool
+
+
+class InboxMessage(BaseModel):
+    message_id: str
+    subject: str
+    sender: str
+    cc: str
+    text: str
+
+
+class ReplyState(BaseModel):
+    state: str
+    command_id: UUID | None = None
+    message_id: str | None = None
 
 
 class Reply(BaseModel):
@@ -58,17 +81,18 @@ def set_cookie(response, name, token, max_age):
 
 
 class Assembly:
-    def __init__(self, settings):
+    def __init__(self, settings, *, credentials=None):
         self.settings = settings
         self.dsn = settings.dsn
         base = urlsplit(settings.public_base_url)
         if base.scheme != "https" or not base.hostname or base.path not in ("", "/"):
             raise ValueError("The assembly browser origin must be HTTPS")
         self.origin = f"{base.scheme}://{base.netloc}"
-        self.judge_login = os.environ["II_JUDGE_LOGIN"]
-        self.judge_password = os.environ["II_JUDGE_PASSWORD"]
-        bot_password = os.environ["II_BOT_PASSWORD"]
-        quality_password = os.environ["II_QUALITY_PASSWORD"]
+        credentials = os.environ if credentials is None else credentials
+        self.judge_login = credentials["II_JUDGE_LOGIN"]
+        self.judge_password = credentials["II_JUDGE_PASSWORD"]
+        bot_password = credentials["II_BOT_PASSWORD"]
+        quality_password = credentials["II_QUALITY_PASSWORD"]
         if min(map(len, (self.judge_password, bot_password, quality_password))) < 16:
             raise ValueError("Mail and judge passwords need at least 16 characters")
         self.mail = MailConfig(
@@ -209,7 +233,7 @@ class Assembly:
                 raise HTTPException(503, "Corpus not ready")
             return {"database": "ready", "regulations": n}
 
-        @app.post("/v1/browser/session")
+        @app.post("/v1/browser/session", response_model=BrowserSession)
         def session(request: Request, response: Response):
             self.check_origin(request)
             with connect(self.dsn) as conn:
@@ -225,7 +249,7 @@ class Assembly:
             response.headers["Cache-Control"] = "no-store"
             return {"conversation_id": row["conversation_id"], "mail": self.judge_active(request)}
 
-        @app.post("/v1/browser/mail/login")
+        @app.post("/v1/browser/mail/login", response_model=MailAccess)
         def login(request: Request, response: Response, body: Login):
             self.check_origin(request)
             with connect(self.dsn) as conn:
@@ -257,7 +281,7 @@ class Assembly:
                     return {"mail": True}
             raise HTTPException(429 if attempts > 8 else 401, "Попробуйте войти позже" if attempts > 8 else "Неверный логин или пароль")
 
-        @app.post("/v1/browser/mail/logout")
+        @app.post("/v1/browser/mail/logout", response_model=MailAccess)
         def logout(request: Request, response: Response):
             self.check_origin(request)
             if token := request.cookies.get(JUDGE_COOKIE):
@@ -266,13 +290,13 @@ class Assembly:
             set_cookie(response, JUDGE_COOKIE, "", 0)
             return {"mail": False}
 
-        @app.get("/v1/browser/mail/inbox")
+        @app.get("/v1/browser/mail/inbox", response_model=list[InboxMessage])
         def inbox(request: Request, response: Response):
             self.authorized_inbox(request)
             response.headers["Cache-Control"] = "no-store"
             return self.inbound()
 
-        @app.post("/v1/browser/mail/reply", status_code=202)
+        @app.post("/v1/browser/mail/reply", status_code=202, response_model=ReplyState)
         def send_reply(request: Request, body: Reply):
             self.check_origin(request)
             self.authorized_inbox(request)
@@ -302,7 +326,7 @@ class Assembly:
                         payload={"command_id": str(body.command_id)}, max_attempts=7)
             return {"command_id": body.command_id, "state": row["state"]}
 
-        @app.get("/v1/browser/mail/reply/{command_id}")
+        @app.get("/v1/browser/mail/reply/{command_id}", response_model=ReplyState)
         def reply_status(command_id: UUID, request: Request, response: Response):
             self.authorized_inbox(request)
             response.headers["Cache-Control"] = "no-store"

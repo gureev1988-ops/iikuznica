@@ -379,6 +379,8 @@ def _apply_inbound(conn, inbound_id: UUID, request: dict, parsed: ParsedMail, *,
         match = publish_faq(conn, updated, text, replace=parsed.correction, hackathon=hackathon)
         if match:
             message = match.text
+            if updated["channel"] == "guest":
+                message = f"Разъяснение Отдела качества\n{match.text}"
             refs = [match.source_ref()]
             if match.conflict_revision_id:
                 message += "\n\nОфициальное разъяснение расходится с текущей редакцией документа."

@@ -79,6 +79,8 @@ class A1Engine:
 
         reply = core.answer(question, lookup, past=past, call=calls.chat, decide=calls.decisions,
                             corpus=corpus, norms=norms)
+        if reply.get("coverage_gap") and not reply["sources"]:
+            reply = self._retain_independent_answer(question, reply, lookup, corpus, norms, calls)
         resolved = reply.get("resolved_question", question)
         if reply["action"] == "clarify":
             if request.clarification_count >= 3 or (clarification and UNKNOWN in clarification["value"].casefold()):
@@ -114,6 +116,22 @@ class A1Engine:
             return replace(result, text=f"Пункт 14.4 отсылает к внутреннему регламенту контроля маржинальности сделок [1]. "
                                         f"{result.text}", citations=(basis,))
         return result
+
+    @staticmethod
+    def _retain_independent_answer(question, gap, lookup, corpus, norms, calls):
+        # An unresolved permission must not suppress an independently verified answer.
+        parts = re.fullmatch(r"([^?]+\?)\s+([^?]+\?)", question.strip())
+        if not parts or core.permission.focus(parts[1]) or not core.permission.focus(parts[2]):
+            return gap
+        first = core.answer(parts[1], lookup, call=calls.chat, decide=calls.decisions, corpus=corpus, norms=norms)
+        if first["action"] != "answer" or not first["sources"]:
+            return gap
+        parts = [
+            {"text": parts[1], "result": first, "query": parts[1]},
+            {"text": parts[2], "result": gap, "query": gap.get("escalation_question", parts[2])},
+        ]
+        result = core.dialogue_state.conversation.assemble(parts)
+        return dict(result, coverage_gap=True, escalation_question=parts[1]["query"], resolved_question=question)
 
     @staticmethod
     def _cite(item, refs):
@@ -184,7 +202,21 @@ class A1Engine:
             """, (list(fragments), question)).fetchall()
         if not rows:
             return None
-        by_id = {str(row["id"]): row for row in rows}
+        constraints = core.procedures.directories(question)
+        normalized_question = core.procedures.normalized(question)
+        by_id = {}
+        for row in rows:
+            known_scope = core.procedures.directories(row["question_key"])
+            if known_scope and known_scope != constraints:
+                continue
+            conditions = json.loads(row["conditions_key"])
+            if any(request.conditions.get(key) != value and (not isinstance(value, str) or
+                       core.procedures.normalized(value) not in normalized_question)
+                   for key, value in conditions.items()):
+                continue
+            by_id[str(row["id"])] = row
+        if not by_id:
+            return None
         candidates = [dict(id=id_, question=row["question_key"], conditions=json.loads(row["conditions_key"]),
                            answer=fragments[row["current_fragment_id"]].text)
                       for id_, row in by_id.items()]
