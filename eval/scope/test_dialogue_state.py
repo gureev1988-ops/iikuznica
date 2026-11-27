@@ -117,6 +117,39 @@ class StateTests(unittest.TestCase):
         topic, = json.loads(request["messages"][1]["content"])["sources"]
         self.assertEqual(topic["assistant"], previous_answer)
 
+    def test_retries_short_role_question_mistaken_for_a_new_topic(self):
+        first = ("Я аккаунт-менеджер Технической дирекции. В документации был проект договора. "
+                 "Как довести договор до согласования, кто подключается и в каком порядке?")
+        question = "А кто именно меняет наблюдателя и кого ставит вместо себя?"
+        past = [dict(user=first, resolved=first, assistant="Передать вопрос в отдел качества?",
+                     action="escalate")]
+        new = dict(relation="new", turn=None, query=question)
+        follow = dict(relation="follow", turn=1, query=first, subject="проект договора")
+        planner = Mock(side_effect=[dict(ok=True, text=json.dumps(d)) for d in (new, follow)])
+        self.assertEqual(state.restore(question, past, "model", planner),
+                         ("follow", f"Техническая дирекция. Контекст — проект договора. {question}"))
+        self.assertEqual(planner.call_count, 2)
+        planner = Mock(return_value=dict(ok=True, text=json.dumps(new)))
+        self.assertEqual(state.restore(question, past, "model", planner), ("new", question))
+
+        other = "А кто именно подписывает УПД в ДБРЦТ?"
+        planner.reset_mock()
+        self.assertEqual(state.restore(other, past, "model", planner), ("new", other))
+        self.assertEqual(planner.call_count, 1)
+
+    def test_retries_subject_copied_from_current_question(self):
+        first = "Дирекция ИБ. Как зарегистрировать площадку проекта, раздать доступы и сохранить контакты заказчика?"
+        question = "А сотрудника субподрядчика можно туда пригласить?"
+        past = [dict(user=first, resolved=first, assistant="Ответ по регламенту ИБ.", action="answer")]
+        wrong = dict(relation="follow", turn=1, query=first, subject="сотрудника субподрядчика")
+        fixed = dict(wrong, subject="площадку проекта")
+        planner = Mock(side_effect=[dict(ok=True, text=json.dumps(d)) for d in (wrong, fixed)])
+        self.assertEqual(state.restore(question, past, "model", planner),
+                         ("follow", f"Дирекция ИБ. Контекст — площадку проекта. {question}"))
+        self.assertEqual(planner.call_count, 2)
+        planner = Mock(side_effect=[dict(ok=True, text=json.dumps(wrong)), dict(ok=False, http=429)])
+        self.assertEqual(state.restore(question, past, "model", planner)[0], "ambiguous")
+
     def test_short_followup_resolves_topic_before_matching_faq(self):
         past = [dict(user="ДБРЦТ: что с договором?", assistant="Проверяем договор.",
                      action="answer", resolved="ДБРЦТ: что с договором?")]

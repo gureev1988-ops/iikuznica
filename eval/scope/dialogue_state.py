@@ -32,11 +32,24 @@ PROCEDURE_CONTEXT = (
     "реплики выбранного хода, которая называет нужный объект. Если объект уже назван, верни subject пустым. "
     "В subject оставь только объект, без прошлых просьб или шагов."
 )
+RETRY_PROCEDURE_CONTEXT = (
+    "\nПерепроверь связь с единственным предложенным прошлым ходом. Короткое уточнение роли "
+    "или ссылка «туда», «там» могут продолжать его, даже если прежний ответ отсутствует. "
+    "Если это продолжение, в subject скопируй из прошлого вопроса короткое название объекта, "
+    "к которому относится текущее действие. Не копируй участника из последней реплики. "
+    "Если вопрос самостоятельный или связь неясна, верни new или ambiguous."
+)
 REPLY_REFERENCE = re.compile(
     r"\b(?:в (?:тво[её]м|предыдущем) ответе|ты (?:сказал|написал|упомянул)\w*|"
     r"(?:шаг|пункт)\w*\s+(?:№\s*)?\d+|(?:перв\w*|втор\w*|треть\w*|последн\w*)\s+(?:шаг|пункт)\w*)\b", re.I
 )
+ROLE_FOLLOWUP = re.compile(r"^а\s+(?:кто|кого|кому|что|како\w*)\s+именно\b", re.I)
 DIRECTORATE_NAMES = {"IB": "Дирекция ИБ", "DB": "ДБРЦТ", "TECH": "Техническая дирекция"}
+
+
+def _subject_from(subject, text):
+    return (isinstance(subject, str) and 1 <= len(subject.split()) <= 8
+            and not re.search(r"[.!?;\n]", subject) and subject.strip().casefold() in text.casefold())
 
 
 def _focus_followup(question, query, topic, subject):
@@ -45,12 +58,41 @@ def _focus_followup(question, query, topic, subject):
             raise ValueError("Invalid follow-up subject")
         subject = subject.strip()
         if subject:
-            if (len(subject.split()) > 8 or re.search(r"[.!?;\n]", subject)
-                    or subject.casefold() not in topic.casefold()):
+            if not _subject_from(subject, topic):
                 raise ValueError("Follow-up subject must be a short quote from the employee's topic")
             return f"Контекст — {subject}. {question}"
         return question
     return query
+
+
+def _resolution(question, sources, model, call, instruction):
+    body = make_request({"question": question, "sources": sources}, model, instruction)
+    row = call("resolve", body, "dialogue-state")
+    if not row["ok"]:
+        raise RuntimeError(f"Topic resolution failed (HTTP {row['http']})")
+    raw = row["text"].strip()
+    if raw.startswith("```") and raw.endswith("```"):
+        raw = raw.split("\n", 1)[-1][:-3]
+    decision = json.loads(raw)
+    if not isinstance(decision, dict):
+        raise ValueError("Invalid topic resolution")
+    return decision
+
+
+def _retry_topic(decision, question, visible, procedure_context, past):
+    if not procedure_context or procedures.full_procedure(question):
+        return None
+    relation, anchor = decision.get("relation"), decision.get("turn")
+    if relation == "follow" and type(anchor) is int and anchor in procedure_context:
+        topic = next(turn for turn in visible if turn["turn"] == anchor)
+        subject = decision.get("subject")
+        if _subject_from(subject, question) and not _subject_from(subject, topic["user"]):
+            return topic
+    if (relation == "new" and anchor is None and procedure_context == {visible[-1]["turn"]}
+            and past[-1]["action"] == "escalate" and len(question.split()) <= 16
+            and not procedures.directories(question) and ROLE_FOLLOWUP.match(question)):
+        return visible[-1]
+    return None
 
 
 def restore(question, past, model, call):
@@ -67,15 +109,17 @@ def restore(question, past, model, call):
             turn["assistant"] = ""
             procedure_context.add(turn["turn"])
     instruction = RESOLVE + PROCEDURE_CONTEXT if procedure_context else RESOLVE
-    body = make_request({"question": question, "sources": visible}, model, instruction)
-    row = call("resolve", body, "dialogue-state")
-    if not row["ok"]:
-        raise RuntimeError(f"Topic resolution failed (HTTP {row['http']})")
-    raw = row["text"].strip()
-    if raw.startswith("```") and raw.endswith("```"):
-        raw = raw.split("\n", 1)[-1][:-3]
     try:
-        obj = json.loads(raw)
+        obj = _resolution(question, visible, model, call, instruction)
+        topic = _retry_topic(obj, question, visible, procedure_context, past)
+        if topic is not None:
+            try:
+                corrected = _resolution(question, [topic], model, call, instruction + RETRY_PROCEDURE_CONTEXT)
+            except (RuntimeError, ValueError):
+                corrected = {}
+            if (corrected.get("relation") == "follow" and type(corrected.get("turn")) is int
+                    and corrected["turn"] == topic["turn"] and _subject_from(corrected.get("subject"), topic["user"])):
+                obj = corrected
         relation, query, anchor = obj["relation"], obj["query"], obj["turn"]
         if relation == "new" and anchor is None:
             return "new", question
