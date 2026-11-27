@@ -9,6 +9,7 @@ from pathlib import Path
 import random
 import time
 from urllib.error import HTTPError
+from zipfile import ZipFile
 
 import reasoning_trial as control
 from answer_quality_gates import assess, publication
@@ -231,7 +232,7 @@ def calibrate_threshold(rows):
 def run_cases(variant, cases, lookup, out, reuse=None):
     rows = []
     for case in cases:
-        past = []
+        past = list(case.get("history", ()))
         for index, turn in enumerate(case["turns"], 1):
             position = case.get("position", 0) + index
             cid = f'{case["id"]}.{position}'
@@ -266,13 +267,37 @@ def frozen_bank(working, cache):
     return [{"id": cid, "turns": [{"question": q}]} for cid, (q, _, _) in inputs.items()]
 
 
+def blind_bank(packet):
+    path = "blind/inputs.json"
+    with ZipFile(packet) as archive:
+        payload = archive.read(path)
+        checksums = dict(line.split()[::-1] for line in archive.read("SHA256SUMS").decode().splitlines())
+    if hashlib.sha256(payload).hexdigest() != checksums.get(path):
+        raise ValueError("Blind20 input checksum mismatch")
+    rows = json.loads(payload)
+    if len(rows) != 20 or len({row["id"] for row in rows}) != 20:
+        raise ValueError("Expected 20 distinct Blind20 inputs")
+    cases = []
+    for row in rows:
+        history = row["history"]
+        if [message["role"] for message in history] != ["user", "assistant"] * (len(history) // 2):
+            raise ValueError("Expected complete user and assistant turns in Blind20 history")
+        # The archive gives verbatim history, without a prior route or a rewritten query.
+        past = [dict(user=user["content"], resolved=user["content"], assistant=assistant["content"], action=None)
+                for user, assistant in zip(history[::2], history[1::2])]
+        cases.append(dict(id=row["id"], turns=[{"question": row["target"]}], history=past))
+    return cases
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variant", choices=("C", *VARIANTS), required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--model-dir", type=Path)
     parser.add_argument("--python", default="python3")
-    parser.add_argument("--working50", type=Path)
+    datasets = parser.add_mutually_exclusive_group()
+    datasets.add_argument("--working50", type=Path)
+    datasets.add_argument("--blind20", type=Path, help="Run only the input history and target turns, without the sealed key")
     parser.add_argument("--reuse", type=Path, help="Exact request checkpoints from a prior run")
     parser.add_argument("--case", action="append")
     parser.add_argument("--panel", action="store_true")
@@ -280,6 +305,8 @@ def main():
     parser.add_argument("--threshold-from", type=Path, help="Replay a calibrated threshold on the A5 panel")
     parser.add_argument("--control-traces", type=Path, help="Instrumented C rows for working diagnostics")
     args = parser.parse_args()
+    if args.blind20 and (args.panel or args.calibration):
+        parser.error("--blind20 is only for final evaluation")
     if args.threshold_from and (args.variant != "A5" or not args.panel):
         parser.error("--threshold-from applies only to the A5 panel")
     if args.variant == "A2" and not args.panel:
@@ -304,16 +331,19 @@ def main():
                          "mutated_published": sum(row["mutated"] for row in retained),
                          "unmutated_published": sum(not row["mutated"] for row in retained)})
     else:
-        cases = frozen_bank(args.working50, cache)
+        cases = blind_bank(args.blind20) if args.blind20 else frozen_bank(args.working50, cache)
         if args.case:
             selected = set(args.case)
             cases = [case for case in cases if case["id"] in selected]
             if {case["id"] for case in cases} != selected:
                 parser.error("Unknown case")
-        pin(args.out / "manifest.json", {"variant": args.variant,
+        manifest = {"variant": args.variant,
             "inputs": fingerprint([[c["id"], [t["question"] for t in c["turns"]]] for c in cases]),
             "corpus": fingerprint(list(corpus.values())),
-            "working_zip": hashlib.sha256(args.working50.read_bytes()).hexdigest() if args.working50 else None})
+            "working_zip": hashlib.sha256(args.working50.read_bytes()).hexdigest() if args.working50 else None}
+        if args.blind20:
+            manifest["blind_zip"] = hashlib.sha256(args.blind20.read_bytes()).hexdigest()
+        pin(args.out / "manifest.json", manifest)
         run_cases(args.variant, cases, lookup, args.out, args.reuse)
 
 

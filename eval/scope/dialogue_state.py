@@ -25,7 +25,9 @@ RESOLVE = """Помоги поиску по корпоративным регл�
 PROCEDURE_CONTEXT = (
     "\nЕсли в истории есть полная процедура без текста ответа, используй вопрос сотрудника "
     "и ранее восстановленную тему. Уточнение участника или условия само по себе не меняет объект действия. "
-    "Укажи конкретный объект и известную дирекцию выбранной темы."
+    "Укажи конкретный объект и известную дирекцию выбранной темы. "
+    "Различай исходный процесс и событие в последней реплике. Условия и стадию бери из последней реплики, "
+    "а вопрос формулируй только о том действии, сроке или условии, о котором сотрудник спрашивает сейчас."
 )
 REPLY_REFERENCE = re.compile(
     r"\b(?:в (?:тво[её]м|предыдущем) ответе|ты (?:сказал|написал|упомянул)\w*|"
@@ -42,9 +44,9 @@ def restore(question, past, model, call):
     for turn in visible:
         prior = past[turn["turn"] - 1]
         turn["resolved"] = prior["resolved"]
-        if (not refers_to_reply and prior["action"] == "answer"
+        if (not refers_to_reply and prior["action"] in ("answer", "escalate")
                 and procedures.full_procedure(turn["user"]) and procedures.full_procedure(turn["resolved"])):
-            # Generated instructions are presentation. Keep the employee's topic stable across rewrites.
+            # The employee's topic survives a blocked draft or an offer to contact Quality.
             turn["assistant"] = ""
             procedure_context.add(turn["turn"])
     instruction = RESOLVE + PROCEDURE_CONTEXT if procedure_context else RESOLVE

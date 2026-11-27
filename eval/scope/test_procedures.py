@@ -194,7 +194,7 @@ class QualityFlowTests(unittest.TestCase):
         self.assertEqual(confirm_request(gap, alias, "1", confirmed=True, register=register), "request-1")
         register.assert_called_once_with("1", alias)
 
-    def test_approved_expert_resolves_conflict_with_visible_original(self):
+    def test_conflicting_faq_shows_both_positions_and_offers_confirmed_recheck(self):
         source = fixture("""
             m.syncConfluence();
             m.receiveMail('deadline');
@@ -202,7 +202,60 @@ class QualityFlowTests(unittest.TestCase):
             console.log(JSON.stringify(m.query('estimate')));
         """)
         result = ApprovedFAQ([{"snapshot": source}]).lookup(source["question"], source["approval"]["scope"])
-        self.assertEqual(result["message"], source["approval"]["verifiedText"])
+        self.assertEqual(result["action"], "answer")
+        self.assertIn(source["approval"]["verifiedText"] + " [1]", result["message"])
         self.assertEqual(result["sources"][0]["id"], "deadline")
         self.assertTrue(result["discrepancy"])
-        self.assertTrue(any(s.get("role") == "discrepancy" for s in result["sources"]))
+        rule = result["sources"][1]
+        self.assertEqual(rule["role"], "discrepancy")
+        self.assertIn("7 рабочих дней", rule["text"])
+        self.assertIn(rule["text"] + " [2]", result["message"])
+        self.assertIn("Отправить письмо в отдел качества", result["message"])
+        self.assertTrue(result["offer_quality_request"])
+
+        question = source["question"]
+        register = Mock()
+        confirm_request(result, question, "recheck", confirmed=False, register=register)
+        register.assert_not_called()
+        confirm_request(result, question, "recheck", confirmed=True, register=register)
+        register.assert_called_once_with("recheck", question)
+
+        register.reset_mock()
+        confirm_request(dict(result, resolved_question=question), "А какой срок?", "follow",
+                        confirmed=True, register=register)
+        register.assert_called_once_with("follow", question)
+
+        register.reset_mock()
+        from conversation import assemble
+        parts = [{"text": question, "query": question, "result": result},
+                 {"text": "Другой вопрос", "query": "Другой вопрос", "result": ask.reply("escalate", "gap")}]
+        confirm_request(assemble(parts), question, "recheck", confirmed=True, part_index=0, register=register)
+        register.assert_called_once_with("recheck:0", question)
+
+    def test_conflict_follows_current_regulation_and_excludes_withdrawn_faq(self):
+        question = "Какой срок точной оценки?"
+        expert = "2 рабочих дня"
+        scope = "ДБРЦТ"
+        for revision, days, status in (("v1", 2, "published"), ("v2", 2, "archived"),
+                                       ("v3", 7, "published"), ("v3", 7, "withdrawn")):
+            with self.subTest(revision=revision, status=status):
+                rule = dict(docId="DB", ref="1.6", revision=revision, role="discrepancy", text=f"{days} рабочих дней")
+                publication = dict(question=question, answer=expert, answerKind="faq", status=status,
+                                   approval=dict(scope=scope, verifiedText=expert, mailId="mail-1",
+                                                 actor="Отдел качества", date="2026-11-27"),
+                                   discrepancy=days != 2, sources=[rule])
+                result = ApprovedFAQ([{"snapshot": publication}]).lookup(question, scope)
+                if status in ("archived", "withdrawn"):
+                    self.assertIsNone(result)
+                elif days == 2:
+                    self.assertEqual(result["message"], expert)
+                    self.assertFalse(result["offer_quality_request"])
+                else:
+                    self.assertIn("7 рабочих дней [2]", result["message"])
+                    self.assertIn(expert + " [1]", result["message"])
+                    self.assertTrue(result["offer_quality_request"])
+                    hidden_rule = dict(rule, accessible=False)
+                    hidden = dict(publication, sources=[hidden_rule])
+                    response = ApprovedFAQ([{"snapshot": hidden}]).lookup(question, scope)
+                    self.assertEqual(response["action"], "escalate")
+                    self.assertNotIn("7 рабочих дней", response["message"])

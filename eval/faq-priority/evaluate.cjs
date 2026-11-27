@@ -19,7 +19,8 @@ function sharedAnswer(model, id = 'estimate') {
     text: view.text, expert: primary?.kind === 'faq' ? primary.mailId : null,
     primaryRef: primary?.kind === 'regulation' ? primary.ref : null,
     citationText: primary?.text, identified: Boolean(primary?.actor && primary?.date),
-    record: view.discrepancy, sources: view.sources, note: view.note
+    record: view.discrepancy, sources: view.sources, note: view.note,
+    shared: true, offerQualityRequest: view.offerQualityRequest
   };
 }
 
@@ -54,12 +55,20 @@ function assess(actual, expected) {
         source.kind === 'regulation' && source.ref === ref && source.version === expected.revision
         && normalize(source.text) === normalize(ref + '. ' + text)))
     : Boolean(actual?.citationText && normalize(actual.citationText).includes(normalize(expected.text || '')));
+  const expectedOffer = Boolean(expected.wiki && actual?.shared);
+  const message = expectedOffer ? [
+    'Действующий регламент\n' + actual.sources.flatMap((source, index) =>
+      source.role === 'discrepancy' ? [source.text + ' [' + (index + 1) + ']'] : []).join('\n'),
+    'Разъяснение отдела качества\n' + expected.text + ' [1]',
+    'Отправить письмо в отдел качества, чтобы уточнить, какое правило применять?'
+  ].join('\n\n') : expected.text;
   const sourceCorrect = expected.withhold
     ? !actual
     : actual != null && (actual.expert || null) === (expected.expert || null)
       && (actual.primaryRef || null) === (expected.primaryRef || null)
       && (!expected.expert || actual.identified)
-      && normalize(actual.text) === normalize(expected.text)
+      && normalize(actual.text) === normalize(message)
+      && Boolean(actual.offerQualityRequest) === expectedOffer
       && cited;
   const conflict = actual?.record;
   const mismatchSources = (actual?.sources || []).filter(item => item.role === 'discrepancy');

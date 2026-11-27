@@ -217,14 +217,11 @@ class ApplicableFAQ(ApprovedFAQ):
             if unknown := criteria.keys() - account.keys():
                 missing.update(unknown)
             else:
-                matched.append(proposed)
+                matched.append((source["answer"], proposed))
         if missing:
             return simple_reply("clarify", "Уточни " + sorted(missing)[0] + "?")
         if not matched:
             return None
-        if len({canonical(item["message"]) for item in matched}) > 1:
+        if len({canonical(answer) for answer, _ in matched}) > 1:
             return simple_reply("escalate", "Действующие разъяснения расходятся. Передать вопрос в отдел качества?")
-        reply = matched[0]
-        if reply.get("discrepancy"):
-            return dict(reply, message=reply["message"] + "\n\nДействующее разъяснение расходится с вики.")
-        return reply
+        return matched[0][1]

@@ -54,12 +54,16 @@ class StateTests(unittest.TestCase):
         resolved = "Можно ли пригласить сотрудника субподрядчика на площадку проекта Дирекции ИБ?"
         planner = Mock(return_value=dict(ok=True, text=json.dumps(
             dict(relation="follow", turn=1, query=resolved))))
-        for previous_answer in ("Сайт проекта создаётся автоматически.",
-                                "Открой сайт и выдай доступ команде. Субподрядчики на сайт не допускаются."):
-            past = [dict(user=first, resolved=first, assistant=previous_answer, action="answer")]
+        for action, previous_answer in (
+            ("answer", "Сайт проекта создаётся автоматически."),
+            ("answer", "Открой сайт и выдай доступ команде. Субподрядчики на сайт не допускаются."),
+            ("escalate", "Передать вопрос в отдел качества?"),
+        ):
+            past = [dict(user=first, resolved=first, assistant=previous_answer, action=action)]
             self.assertEqual(state.restore(question, past, "model", planner), ("follow", resolved))
-        old_input, new_input = [call.args[1] for call in planner.call_args_list]
+        old_input, new_input, after_escalation = [call.args[1] for call in planner.call_args_list]
         self.assertEqual(old_input, new_input)
+        self.assertEqual(old_input, after_escalation)
         topic, = json.loads(new_input["messages"][1]["content"])["sources"]
         self.assertEqual((topic["user"], topic["resolved"], topic["assistant"]), (first, first, ""))
 
