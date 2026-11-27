@@ -28,6 +28,7 @@ _HEADER_FIELDS = {'schema_version', 'snapshot_revision', 'complete', 'count', 'd
 _DOCUMENT_FIELDS = {'id', 'revision', 'title', 'text', 'source_url'}
 _NEWLINE = r'(?:\r\n|\r(?!\n)|(?<!\r)\n)'
 _PARAGRAPH_BREAK = re.compile(rf'({_NEWLINE}[ \t]*{_NEWLINE})')
+_INVALID_URL_CHAR = re.compile(r'[\x00-\x20\x7f<>"{}|\\^`]|%(?![0-9a-fA-F]{2})')
 _PRIVATE_HTTP = ContextVar('private_document_http', default=False)
 
 
@@ -45,7 +46,7 @@ def _https_url(value: str) -> bool:
         return (
             parts.scheme == 'https' and bool(parts.hostname) and parts.username is None
             and '%' not in parts.netloc and (parts.port is None or parts.port > 0)
-            and not any(char.isspace() or ord(char) < 32 or char in '\\\x7f' for char in value)
+            and not _INVALID_URL_CHAR.search(value) and not any(char.isspace() for char in value)
             and bool(httpx.URL(value).host)
         )
     except (ValueError, httpx.InvalidURL):

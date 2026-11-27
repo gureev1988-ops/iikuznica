@@ -184,7 +184,8 @@ def test_two_named_sources_and_existing_citation_path(dsn, upstream, monkeypatch
         assert client.get(cited['url'], headers=EMPLOYEE).json()['text'] == cited['quote']
 
         reordered = export(1, dict(reversed(list(a_second.items()))), a_first)
-        responses['a'] = json.dumps(reordered, indent=4).encode()
+        responses['a'] = httpx.Response(200, headers={'Content-Encoding': 'gzip'},
+                                       stream=WireBody(gzip.compress(json.dumps(reordered, indent=4).encode())))
         make_due(dsn, 'a', 'b')
         assert backend.polling()['document-schedule']() == 1
         assert backend.run_job('background')
@@ -233,6 +234,7 @@ async def slow_response(_request):
     ('acl', 'invalid_document'), ('faq', 'invalid_document'), ('nul', 'invalid_document'),
     ('surrogate', 'invalid_document'), ('too_many', 'too_many_documents'), ('huge_version', 'invalid_document'),
     ('unindexable_id', 'invalid_document'),
+    ('invalid_url_escape', 'invalid_document'), ('invalid_url_host', 'invalid_document'),
 ])
 def test_bad_export_preserves_all_previously_available_data(dsn, upstream, monkeypatch, caplog, name, expected):
     responses, calls = upstream
@@ -264,6 +266,8 @@ def test_bad_export_preserves_all_previously_available_data(dsn, upstream, monke
         'too_many': export(2, *(document(str(i)) for i in range(501))),
         'huge_version': export(2, fresh | {'revision': 2**63}),
         'unindexable_id': export(2, fresh, document(unindexable_id)),
+        'invalid_url_escape': export(2, fresh, previous | {'source_url': 'https://kb.example.test/%QZ'}),
+        'invalid_url_host': export(2, fresh, previous | {'source_url': 'https://kb|invalid.example.test/docs'}),
     }
     with TestClient(create_app(services=backend)) as client, caplog.at_level(logging.DEBUG):
         assert sync(backend, client, 'a')['status'] == 'completed'
