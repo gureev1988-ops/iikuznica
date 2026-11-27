@@ -35,14 +35,14 @@ ORIGINALS = {
         "7245b6dc51b3b0de1dd8113537e1e29943cdc48e427baff50835c63b8c22dc2a",
     ),
 }
-# The training edition changes only DB 1.6. _verify still requires the
-# registry's entire underlying clause to match before it can return any rule.
+# The training edition changes only DB 1.6. Its exact wording below was
+# checked against the approved original and the complete active revision.
 DB_TRAINING_REVISION = (
     "b393a87402817a588bc75cc9f29011324977e18db835bdbfb64298cd95769a08",
     "386c756cbd29ca454eeee57c3f6516a0388c92037e4e5cd78010b052f224cf0c",
 )
 DOC_BY_TITLE = {title: doc for doc, title in TITLES.items()}
-POLICY_VERSION = 2
+POLICY_VERSION = 3
 CACHE_SIZE = 64
 
 
@@ -72,6 +72,58 @@ _IB_PREFIX = r"дирекция (?:иб|информационной безоп�
 _DB = r"в дбрцт"
 _ESTIMATE_TIME = r"(?:какой срок подготовки бюджетной оценки|сколько времени занимает подготовка бюджетной оценки)"
 _TPS = r"(?:tps|технического пресейл[- ]специалиста(?: \(tps\))?)"
+
+_DB_ESTIMATE_TARGET = (
+    r"(?:бюджетной(?: оценки)? и точной оценки|точной(?: оценки)? и бюджетной оценки|"
+    r"бюджетных и точных оценок|точных и бюджетных оценок)"
+)
+_DB_ESTIMATE_TERM = r"(?:какие|каковы) (?:рекомендуемые )?сроки(?: рекомендуют)?(?: выдачи)?(?: для)?"
+_DB_ESTIMATE_CONTEXT = (
+    r"(?:надо|нужно) (?:(?:предупредить|уведомить) заказчика|сообщить заказчику), "
+    r"(?:когда ждать оценку|в какие сроки ждать оценку)[.!] "
+)
+_DB_ESTIMATE = re.compile(
+    rf"(?:{_DB} {_DB_ESTIMATE_TERM} {_DB_ESTIMATE_TARGET}|"
+    rf"{_DB_ESTIMATE_TERM} {_DB_ESTIMATE_TARGET} {_DB}|"
+    rf"{_DB} {_DB_ESTIMATE_CONTEXT}{_DB_ESTIMATE_TERM} "
+    rf"(?:{_DB_ESTIMATE_TARGET}|бюджетной и точной|точной и бюджетной))"
+)
+_DB_EXACT_ESTIMATE = {
+    1: "для точных оценок – 5 рабочих дней;",
+    2: "для точных оценок – 7 рабочих дней;",
+}
+_DB_EARLY_PROJECT = r"(?:в дбрцт|на проекте дбрцт)"
+_DB_EARLY_WORK = r"(?:начать работы|приступить к работам) до подписания договора"
+_DB_EARLY_START = re.compile(
+    rf"(?:{_DB_EARLY_PROJECT} (?:(?:заказчик|клиент|команда проекта) (?:хочет|просит) {_DB_EARLY_WORK}[.!] "
+    rf"(?:при каких условиях|на каких условиях) это возможно|"
+    rf"(?:при каких условиях можно|как|можно ли) {_DB_EARLY_WORK})|"
+    rf"(?:при каких условиях можно|как|можно ли) {_DB_EARLY_WORK} {_DB_EARLY_PROJECT})"
+)
+_IB_PRESALE = r"на пресейле (?:иб|в дирекции (?:иб|информационной безопасности))"
+_PACKAGE_TKP = (
+    r"можно ли (?:ss|tss) (?:выдать|предоставить|направить) заказчику официальное ткп "
+    r"без согласования с (?:па|пресейл[- ]архитектором)"
+)
+
+
+_DB_ESTIMATE_RULES = {
+    version: Rule(
+        _DB_ESTIMATE,
+        f"В ДБРЦТ рекомендуют выдавать бюджетную оценку за 3 рабочих дня, точную — за {days} рабочих дней [1]. "
+        "Если к оценке подключают подрядчика, дополнительно учитывайте SLA на его поиск и согласование [2].",
+        (
+            ("DB:1.6:1", _DB_EXACT_ESTIMATE[version] + "\nдля бюджетных оценок – 3 рабочих дня."),
+            (
+                "DB:1.7:1",
+                "В случае подключения к оценке Подрядчика необходимо дополнительно учитывать SLA "
+                "на поиск и согласование подрядчика.",
+            ),
+        ),
+    )
+    for version, days in ((1, 5), (2, 7))
+}
+
 
 _IB_APPOINTMENT_TEXT = (
     "При полных данных координатор департамента назначает руководителя проекта "
@@ -246,6 +298,70 @@ RULES = (
         ),
         action="escalate",
     ),
+    Rule(
+        re.compile(
+            rf"(?:{_IB_PRESALE} (?:продаем|продается) пакетное предложение[.!] {_PACKAGE_TKP}|"
+            rf"{_PACKAGE_TKP} при продаже пакетного предложения {_IB_PRESALE}|"
+            rf"{_IB_PRESALE} {_PACKAGE_TKP} при продаже пакетного предложения)"
+        ),
+        "Да. При продаже пакетного предложения на пресейле ИБ согласование официального ТКП "
+        "с пресейл-архитектором не требуется. Это исключение из общего правила для SS и TSS [1].",
+        (
+            (
+                "PRE:2.3:1",
+                "SS и TSS запрещается без согласования с ПА (Пресейл-архитектором) предоставлять заказчику "
+                "официальное ТКП, кроме случаев перепродажи вендорского сервиса или продажи пакетных предложений.",
+            ),
+        ),
+    ),
+    Rule(
+        _DB_EARLY_START,
+        "Для начала работ в ДБРЦТ общее правило требует подписанного договора и согласованной сметы [1].\n\n"
+        "С гарантийным письмом. Если заказчик подписал письмо, получите письменное согласование директора "
+        "направления [1].\n\n"
+        "Без гарантийного письма. АМ направляет запрос на ранний старт с плановой датой подписания. "
+        "РП запрашивает команду и рассчитывает стоимость работ в рублях до этой даты. АМ получает расчёт для "
+        "согласования с владельцем бюджета [2]. После того как владелец бюджета подтвердит возможность "
+        "компенсации, решение принимает директор направления. Работы можно начать после его согласования [3].\n\n"
+        "За 5 рабочих дней до плановой даты подписания РП запрашивает у АМ подтверждение. Если дату перенесли, "
+        "нужно увеличить сумму затрат производства и повторить согласование, в том числе с владельцем бюджета [4]. "
+        "Если АМ подтвердил дату, а договор в срок не подписан, РП в тот же день обращается к владельцу бюджета, "
+        "АМ, SS и директору направления. Они определяют дальнейшие действия, вплоть до остановки работ "
+        "или назначения финальной контрольной точки подписания [5].",
+        (
+            (
+                "DB:8.4:1",
+                "Работы со стороны команды проекта без подписанного договора и согласованной сметы запрещены. "
+                "Исключение – наличие подписанного гарантийного письма со стороны Заказчика и письменное "
+                "согласование Директора направления.",
+            ),
+            (
+                "DB:8.5:1",
+                "В случае отсутствия Гарантийного письма запрос на старт работ до подписания договора АМ "
+                "направляет с указанием плановой даты подписания договора. Далее РП запрашивает формирование "
+                "команды проекта и производит расчёт стоимости работ в рублях до даты подписания. После чего "
+                "информация направляется АМ для согласования с Владельцем бюджета.",
+            ),
+            (
+                "DB:8.6:1",
+                "После получения подтверждения о возможности компенсации работ со стороны Владельца бюджета "
+                "Директор направления принимает решение о согласовании старта работ. В этом случае работы "
+                "могут быть начаты только после получения согласования Директора направления.",
+            ),
+            (
+                "DB:8.7:1",
+                "За 5 рабочих дней до наступления плановой даты подписания Договора РП запрашивает у АМ "
+                "подтверждение того, что договор будет подписан в срок. В случае сдвига даты подписания процесс "
+                "согласования старта без договора, описанный выше, повторяется с учётом корректировки суммы "
+                "затрат производства в большую сторону и повторного согласования с Владельцем бюджета.",
+            ),
+            (
+                "DB:8.8:1",
+                "РП в этот же день инициирует эскалацию на Владельца бюджета, АМ, SS и Директора направления "
+                "с запросом дальнейших действий по Заказчику.",
+            ),
+        ),
+    ),
 )
 
 
@@ -263,34 +379,55 @@ def faq_candidate(row, question_scope, normalized_question, conditions):
 
 
 def potential_faq(conn, question, conditions, fragments):
+    blocked, _ = _check_faq(conn, question, conditions, fragments)
+    return blocked
+
+
+def _check_faq(conn, question, conditions, fragments):
+    """Return unknown applicability and the approved seed when its scope is certain."""
     faq = {fragment.fragment_id: fragment for fragment in fragments if fragment.kind == "faq"}
     if not faq:
-        return False
+        return False, None
     rows = conn.execute("""
-        SELECT f.current_fragment_id, f.question_key, f.conditions_key, seed.faq_id IS NOT NULL AS is_seed
-        FROM faq_entries f LEFT JOIN assembly_quality_seed seed ON seed.faq_id=f.id
+        SELECT f.current_fragment_id, f.question_key, f.conditions_key, f.status, r.pending,
+               seed.faq_id IS NOT NULL AS is_seed
+        FROM faq_entries f JOIN mail_requests r ON r.id=f.request_id
+        LEFT JOIN assembly_quality_seed seed ON seed.faq_id=f.id
         WHERE f.current_fragment_id = ANY(%s::uuid[])
     """, (list(faq),)).fetchall()
     if {row["current_fragment_id"] for row in rows} != faq.keys():
-        return True
+        return True, None
     scope, text = directories(question), normalized(question)
+    intent = text.removesuffix("?").rstrip()
+    applicable_seed = None
     for row in rows:
         if not compatible_ids(row["question_key"], question, conditions):
             continue
         if not faq_candidate(row, scope, text, conditions):
             continue
-        if row.get("is_seed") and _DB_APPOINTMENT.fullmatch(text.removesuffix("?").rstrip()):
-            from .quality_seed import ANSWER, QUESTION
-            from backend.mailfaq.faq import _key
-            # A question about the duration of an exact estimate cannot govern
-            # who appoints the PM at initiation. Any edit or other FAQ still
-            # requires the ordinary applicability check and publication guard.
-            fragment = faq[row["current_fragment_id"]]
-            if (fragment.version == 1 and fragment.text == ANSWER and row["question_key"] == _key(QUESTION)
-                    and row["conditions_key"] == "{}"):
-                continue
-        return True
-    return False
+        fragment = faq[row["current_fragment_id"]]
+        if not _is_reviewed_seed(row, fragment):
+            return True, None
+        if _DB_APPOINTMENT.fullmatch(intent) or _DB_EARLY_START.fullmatch(intent):
+            # The estimate lead time has no bearing on appointment or early start.
+            continue
+        if not conditions and _DB_ESTIMATE.fullmatch(intent):
+            # The exact-estimate part has the same scope, so the answer must cite
+            # the seed separately alongside the current regulation.
+            applicable_seed = fragment
+            continue
+        return True, None
+    return False, applicable_seed
+
+
+def _is_reviewed_seed(row, fragment):
+    if not row.get("is_seed") or row.get("status") != "active" or row.get("pending") != []:
+        return False
+    from .quality_seed import ANSWER, QUESTION
+    from backend.mailfaq.faq import _key
+
+    return (fragment.version == 1 and fragment.text == ANSWER
+            and row["question_key"] == _key(QUESTION) and row["conditions_key"] == "{}")
 
 
 def _scope(fragments):
@@ -355,30 +492,44 @@ class VerifiedAnswers:
                 or request.clarification_count or datetime.now(UTC) >= request.deadline):
             return None
         question = normalized(request.question).removesuffix("?").rstrip()
+        estimates = _DB_ESTIMATE.fullmatch(question)
         rule = next((rule for rule in RULES if rule.question.fullmatch(question)), None)
-        if rule is None:
+        if rule is None and not estimates:
             return None
         scoped = _scope(request.sources.fragments)
         if scoped is None:
             return None
         versions, faq, refs = scoped
+        if estimates:
+            rule = _DB_ESTIMATE_RULES[refs["DB", "1.6"].version]
         # Standalone only. Keep fixed-size keys and omit raw question text and case data.
         key = POLICY_VERSION, _digest(request.question), versions, _digest(sorted(faq))
         with self._lock:
             cached = self._cache.get(key)
             if cached is not None:
                 self._cache.move_to_end(key)
+        reviewed_faq = None
         if cached is None or faq:
             with connect(self.dsn) as conn:
-                if potential_faq(conn, request.question, request.conditions, request.sources.fragments):
+                blocked, reviewed_faq = _check_faq(conn, request.question, request.conditions, request.sources.fragments)
+                if blocked:
                     return None
                 if cached is None and not _official_originals(conn, versions):
                     return None
-        if cached is not None:
+        if cached is not None and reviewed_faq is None:
             return replace(cached, resolved_question=request.question)
         result = self._verify(rule, refs)
         if result is None:
             return None
+        if reviewed_faq is not None:
+            number = len(result.citations) + 1
+            citation = Citation(reviewed_faq.document_id, reviewed_faq.revision_id, reviewed_faq.fragment_id,
+                                reviewed_faq.text)
+            return replace(result,
+                           text=f"Регламент\n{result.text}\n\nFAQ Отдела качества\n{reviewed_faq.text} [{number}]"
+                                "\n\nРуководствуйтесь регламентом. Повторно уточнить расхождение письмом?",
+                           citations=(*result.citations, citation), resolved_question=request.question,
+                           escalation_question=request.question)
         if result.action == "escalate":
             return replace(result, resolved_question=request.question, escalation_question=request.question)
         with self._lock:
@@ -396,8 +547,12 @@ class VerifiedAnswers:
             record = by_id.get(claim_id)
             part = refs[doc, ref]
             if (not record or record["status"] != "indexed" or (record["doc"], record["ref"]) != (doc, ref)
-                    or record["source_sha256"] != ORIGINALS[doc][0] or record["quote"] != part.text
-                    or quote not in part.text):
+                    or record["source_sha256"] != ORIGINALS[doc][0]):
+                return None
+            original_text = record["quote"]
+            if claim_id == "DB:1.6:1" and part.version == 2:
+                original_text = original_text.replace(_DB_EXACT_ESTIMATE[1], _DB_EXACT_ESTIMATE[2])
+            if original_text != part.text or quote not in part.text:
                 return None
             citations.append(Citation(part.document_id, part.revision_id, part.fragment_id, quote))
         return VerifiedAnswer(rule.action, rule.text, citations=tuple(citations), allow_faq=False)

@@ -2303,6 +2303,8 @@ export interface components {
         Step: {
             /** Cost Usd */
             cost_usd: string | null;
+            /** Elapsed Ms */
+            elapsed_ms?: number | null;
             /** Input Tokens */
             input_tokens: number | null;
             /** Local */
@@ -2317,6 +2319,8 @@ export interface components {
             provider: string | null;
             /** Role */
             role: string;
+            /** Started At */
+            started_at?: string | null;
             /** Status */
             status: string;
             /** Trace Id */

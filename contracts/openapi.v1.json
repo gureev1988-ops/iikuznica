@@ -3399,6 +3399,17 @@
             ],
             "title": "Cost Usd"
           },
+          "elapsed_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Ms"
+          },
           "input_tokens": {
             "anyOf": [
               {
@@ -3454,6 +3465,18 @@
           "role": {
             "title": "Role",
             "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
           },
           "status": {
             "title": "Status",

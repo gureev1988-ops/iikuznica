@@ -19,15 +19,16 @@ def record_steps(dsn, request):
         if rows and request.attempts is not None and dsn:
             with connect(dsn) as conn, conn.cursor() as cursor:
                 cursor.executemany("""
-                    INSERT INTO assembly_local_steps(turn_id, role, started_at, state)
-                    VALUES (%s,%s,%s,%s)
+                    INSERT INTO assembly_local_steps(turn_id, role, started_at, state, elapsed_ms)
+                    VALUES (%s,%s,%s,%s,%s)
                 """, [(request.turn_id, *row) for row in rows])
 
 
 def record(role, started, success=True):
     rows = _steps.get()
     if rows is not None:
-        rows.append((role, started, "succeeded" if success else "failed"))
+        elapsed_ms = max(0, (datetime.now(UTC) - started).total_seconds() * 1000)
+        rows.append((role, started, "succeeded" if success else "failed", elapsed_ms))
 
 
 @contextmanager

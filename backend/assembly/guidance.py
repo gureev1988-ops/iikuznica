@@ -1,4 +1,5 @@
 """Session-scoped DION walkthrough and the most recent user turn's physical usage."""
+from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
@@ -39,6 +40,8 @@ class Step(BaseModel):
     input_tokens: int | None
     output_tokens: int | None
     cost_usd: Decimal | None
+    started_at: datetime | None = None
+    elapsed_ms: float | None = None
 
 
 class MailEvent(BaseModel):
@@ -177,11 +180,12 @@ def latest_log(conn, session):
         return LastLog(steps=[])
     rows = conn.execute("""
         SELECT started_at, id::text, role, model, route AS provider, state AS status, trace_id,
-               false AS local, input_tokens, output_tokens, cost AS cost_usd
+               false AS local, input_tokens, output_tokens, cost AS cost_usd,
+               extract(epoch FROM finished_at - started_at)::double precision * 1000 AS elapsed_ms
         FROM model_calls WHERE turn_id=%s
           AND (job_id IS NULL OR EXISTS (SELECT 1 FROM jobs WHERE id=model_calls.job_id AND kind='answer_turn'))
         UNION ALL
-        SELECT started_at, id::text, role, NULL, NULL, state, NULL, true, NULL, NULL, 0
+        SELECT started_at, id::text, role, NULL, NULL, state, NULL, true, NULL, NULL, 0, elapsed_ms
         FROM assembly_local_steps WHERE turn_id=%s ORDER BY started_at, id
     """, (turn["id"], turn["id"])).fetchall()
     steps = [Step(ordinal=i, **row) for i, row in enumerate(rows, 1)]

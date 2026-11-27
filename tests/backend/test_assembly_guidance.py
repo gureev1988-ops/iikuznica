@@ -22,8 +22,11 @@ def test_log_separates_the_latest_personal_turn_and_preserves_unknown_charges(ds
             INSERT INTO turns(conversation_id,case_id,request_id,question,status)
             VALUES (%s,%s,'q1','Вопрос','completed') RETURNING id
         """, (chat, case)).fetchone()["id"]
-        conn.execute("INSERT INTO assembly_local_steps(turn_id,role,started_at,state) VALUES (%s,'A1',%s,'succeeded')",
-                     (turn, datetime.now(UTC)))
+        started = datetime.now(UTC)
+        conn.execute("""
+            INSERT INTO assembly_local_steps(turn_id,role,started_at,state,elapsed_ms)
+            VALUES (%s,'A1',%s,'succeeded',2.5)
+        """, (turn, started))
         background = enqueue(conn, queue="background", kind="mail.interpret", key="mail-test", payload={})
         for job in (None, background):
             # An expired background attempt on the same originating turn must
@@ -35,6 +38,8 @@ def test_log_separates_the_latest_personal_turn_and_preserves_unknown_charges(ds
         view = latest_log(conn, session)
         assert view.incomplete and view.total_cost_usd is None
         assert [(s.local, s.cost_usd) for s in view.steps] == [(True, 0), (False, None)]
+        assert view.steps[0].started_at == started and view.steps[0].elapsed_ms == 2.5
+        assert view.steps[1].elapsed_ms is None
         conn.execute("""
             INSERT INTO turns(conversation_id,case_id,request_id,question,created_at)
             VALUES (%s,%s,'q2','Новый вопрос',clock_timestamp())

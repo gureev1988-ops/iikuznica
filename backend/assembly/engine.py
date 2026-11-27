@@ -302,9 +302,15 @@ class A1Engine:
                        escalation_question=" ".join(q for q in disputed_questions if q) or conflict.escalation_question)
 
     def _regulation_conflict(self, question, calls, lookup, corpus, refs, sources):
+        cited = {(p["doc"], p["ref"]) for p in sources if "doc" in p}
+        if not cited and hasattr(lookup, "lexical_pool"):
+            # The ranked seeds and the first ten passages are all drawn from this pool.
+            # If even the full pool has no candidate pair, reranking cannot find one.
+            lexical = {(p["doc"], p["ref"]): p for p in lookup.lexical_pool(question)}
+            if not competition(question, lexical, cited):
+                return None
         seeds, pool = lookup(question)
         pool_keys = [(passage["doc"], passage["ref"]) for passage in pool[:10]]
-        cited = {(p["doc"], p["ref"]) for p in sources if "doc" in p}
         keys = list(dict.fromkeys([*map(tuple, seeds), *pool_keys, *sorted(cited)]))
         candidates = {key: corpus[key] for key in keys if key in corpus and key in refs}
         pairs = competition(question, candidates, cited)
