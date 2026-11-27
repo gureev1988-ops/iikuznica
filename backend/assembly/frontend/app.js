@@ -19,11 +19,30 @@ let mail = false;
 let tab = "inbox";
 let stream;
 let refreshTimer;
+let deeperSearchTimer;
 let refreshing = false;
 let needRefresh = false;
+let correspondenceRefresh;
 let viewVersion = 0;
 const status = (message) => { $("chat-status").textContent = message; };
 const mailStatus = (message) => { $("quality-status").textContent = message; };
+const SEARCHING = "Ищу и проверяю основания…";
+const DEEPER_SEARCH = "Осуществляю более глубокий поиск…";
+
+function updateSearchStatus() {
+  clearTimeout(deeperSearchTimer);
+  const pending = history.turns.filter((turn) => ["queued", "processing"].includes(turn.status));
+  if (!pending.length) {
+    if ([SEARCHING, DEEPER_SEARCH].includes($("chat-status").textContent)) status("");
+    return;
+  }
+  const waitingFor = new Set(pending.map((turn) => turn.turn_id));
+  const since = history.messages.find((msg) => msg.role === "user" && waitingFor.has(msg.turn_id));
+  const elapsed = since ? Date.now() - Date.parse(since.created_at) : 0;
+  const delay = 4000 - Math.max(0, elapsed);
+  status(delay <= 0 ? DEEPER_SEARCH : SEARCHING);
+  if (delay > 0) deeperSearchTimer = setTimeout(() => status(DEEPER_SEARCH), delay);
+}
 
 async function api(path, body) {
   const options = body === undefined ? {} : {
@@ -39,7 +58,13 @@ async function api(path, body) {
   return data;
 }
 
-function perform(node, operation, report = status) {
+function chatNotice(message) {
+  if (!message) status("");
+  else if (message === "interactive_queue_full") status("Сейчас много вопросов. Попробуйте отправить чуть позже.");
+  else status("Пока не получается выполнить действие. Попробуйте ещё раз.");
+}
+
+function perform(node, operation, report = chatNotice) {
   node.disabled = true;
   report("");
   return Promise.resolve().then(operation).catch((error) => report(error.message))
@@ -122,6 +147,7 @@ function render() {
   const scroll = $("dion-scroll");
   const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 80;
   const turns = new Map(history.turns.map((turn) => [turn.turn_id, turn]));
+  const latestTurns = new Map(history.turns.map((turn) => [turn.case_id, turn.turn_id]));
   const topics = new Map();
   for (const turn of history.turns) if (!topics.has(turn.case_id)) topics.set(turn.case_id, turn.question);
   const topicNodes = [...topics].map(([id, title]) => {
@@ -173,13 +199,13 @@ function render() {
     items.push(item);
   }
   for (const turn of history.turns) {
-    if (turn.status === "technical_failure") {
-      const item = el("article", "Технический сбой при подготовке ответа.");
+    if (turn.status === "technical_failure" && latestTurns.get(turn.case_id) === turn.turn_id) {
+      const item = el("article", "Ответ пока не готов. Вопрос сохранён.");
       item.className = "message";
-      item.append(" ", button("Повторить", (event) => perform(event.currentTarget, async () => {
+      item.append(" ", button("Продолжить поиск", (event) => perform(event.currentTarget, async () => {
         await api(`/v1/turns/${turn.turn_id}/retry?attempt=${turn.attempt}`, {});
         await refresh();
-      })));
+      }, (message) => status(message ? "Пока не получается продолжить поиск. Вопрос сохранён." : ""))));
       items.push(item);
     }
   }
@@ -192,25 +218,33 @@ function render() {
   }
   $("dion-messages").replaceChildren(...items);
   if (atBottom) scroll.scrollTop = scroll.scrollHeight;
-  const pending = history.turns.some((turn) => ["queued","processing"].includes(turn.status));
-  if (pending) status("Ищу и проверяю основания…");
-  else if ($("chat-status").textContent === "Ищу и проверяю основания…") status("");
+  updateSearchStatus();
   $("message").placeholder = openClarification() ? "Ответьте на уточнение" : "Напишите сообщение";
 }
 
+function refreshCorrespondence() {
+  if (correspondenceRefresh) return;
+  correspondenceRefresh = api("/v1/browser/correspondence").then((next) => {
+    if (JSON.stringify(mailStates) !== JSON.stringify(next)) {
+      mailStates = next;
+      render();
+    }
+  }).catch(() => {
+    // Keep the latest correspondence snapshot until the next refresh.
+  }).finally(() => { correspondenceRefresh = null; });
+}
+
 async function refresh() {
+  refreshCorrespondence();
   if (refreshing) {
     needRefresh = true;
     return;
   }
   refreshing = true;
   try {
-    const [nextHistory, nextMailStates] = await Promise.all([
-      api(`/v1/conversations/${conversation}/messages`), api("/v1/browser/correspondence"),
-    ]);
-    if (!history || history.cursor !== nextHistory.cursor || JSON.stringify(mailStates) !== JSON.stringify(nextMailStates)) {
+    const nextHistory = await api(`/v1/conversations/${conversation}/messages`);
+    if (!history || history.cursor !== nextHistory.cursor) {
       history = nextHistory;
-      mailStates = nextMailStates;
       render();
     }
   } finally {
@@ -223,8 +257,11 @@ async function refresh() {
 }
 
 function scheduleRefresh() {
-  clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(() => refresh().catch((err) => status(err.message)), 70);
+  if (refreshTimer != null) return;
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    refresh().catch(() => {});
+  }, 0);
 }
 
 function watch() {
@@ -455,5 +492,5 @@ try {
   const pending = JSON.parse(sessionStorage.getItem(`pending:${conversation}`) || "null");
   if (pending) await send(pending.fields);
 } catch (error) {
-  status(error.message);
+  chatNotice(error.message);
 }

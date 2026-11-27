@@ -126,7 +126,7 @@ class Settings(ConfigModel):
         if data.get("profile") == "assembly":
             data.update(engine="a1", max_pending=int(os.getenv("II_MAX_PENDING", "32")),
                         interactive_concurrency=int(os.getenv("II_INTERACTIVE_CONCURRENCY", "10")),
-                        deadline_seconds=float(os.getenv("II_TURN_DEADLINE", "90")),
+                        deadline_seconds=float(os.getenv("II_TURN_DEADLINE", "15")),
                         public_base_url=os.getenv("II_PUBLIC_URL", "https://localhost:4443"),
                         integration_poll_interval=1)
         return cls.model_validate(data)

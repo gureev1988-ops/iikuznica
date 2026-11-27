@@ -160,3 +160,44 @@ class StateTests(unittest.TestCase):
         result = state.answer("А срок?", Mock(side_effect=AssertionError), past=past, planner=call, faq=faq, faq_scope="DB")
         faq.lookup.assert_called_once_with("Какой срок согласования договора ДБРЦТ?", "DB")
         self.assertEqual(result["message"], "ответ качества")
+
+    def test_directorate_followup_preserves_only_the_explicit_employee_request(self):
+        planner = Mock(side_effect=AssertionError("The prior topic is explicit"))
+        for prior_question, question, expected in (
+            ("Кто назначает РП и в какой срок в ДБРЦТ?", "А в Дирекции ИБ?",
+             "Дирекция ИБ. Кто назначает РП и в какой срок?"),
+            ("Кто и в какой срок назначают РП на этапе инициации в ДБРЦТ?", "А в Дирекции ИБ?",
+             "Дирекция ИБ. Кто и в какой срок назначают РП на этапе инициации?"),
+            ("Какой срок подготовки бюджетной оценки для торгов у Технической дирекции?", "А в Дирекции ИБ?",
+             "Дирекция ИБ. Какой срок подготовки бюджетной оценки для торгов?"),
+            ("В Дирекции ИБ, кто согласует договор?", "А в Технической дирекции?",
+             "Техническая дирекция. Кто согласует договор?"),
+            ("У нас ИБ. Кто отвечает за поставку?", "А в ДБРЦТ?",
+             "ДБРЦТ. Кто отвечает за поставку?"),
+        ):
+            with self.subTest(question=question, prior=prior_question):
+                past = [dict(user=prior_question, resolved=prior_question, action="answer",
+                             assistant="АМ, только на этапе инициации, за 5 дней.")]
+                self.assertEqual(state.restore(question, past, "model", planner), ("follow", expected))
+        planner.assert_not_called()
+
+    def test_directorate_followup_asks_model_if_anchor_or_request_is_unclear(self):
+        user = "Кто назначает РП в ДБРЦТ?"
+        known = dict(user=user, resolved=user, assistant="РП назначает директор.", action="answer")
+        question = "А в Дирекции ИБ?"
+        overlapping = "ДБРЦТ. Кто назначает РП в Технической дирекции?"
+        cases = (
+            (question, [known, dict(known, user="Кто подписывает договор?", resolved="Кто подписывает договор?")]),
+            (question, [dict(known, user="А кто именно?")]),
+            (question, [dict(known, user=overlapping, resolved=overlapping)]),
+            (question, [dict(known, action="clarify")]),
+            (question, [dict(known, user="Кто назначает РП на инициации?", resolved="Кто назначает РП на инициации?")]),
+            (question, [dict(known, user="Передай вопрос в Отдел качества", resolved="Передай вопрос в Отдел качества")]),
+            ("А в Дирекции ИБ кто его замещает?", [known]),
+            ("Кто согласует договор в Дирекции ИБ?", [known]),
+        )
+        for followup, past in cases:
+            with self.subTest(question=followup, past=past):
+                planner = Mock(return_value=dict(ok=True, text=json.dumps(dict(relation="new", turn=None, query=""))))
+                self.assertEqual(state.restore(followup, past, "model", planner), ("new", followup))
+                planner.assert_called_once()

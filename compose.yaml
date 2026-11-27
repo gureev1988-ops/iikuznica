@@ -14,7 +14,7 @@ x-app: &app
     II_PUBLIC_URL: ${II_PUBLIC_URL:-https://localhost:4443}
     II_MAX_PENDING: ${II_MAX_PENDING:-32}
     II_INTERACTIVE_CONCURRENCY: ${II_INTERACTIVE_CONCURRENCY:-10}
-    II_TURN_DEADLINE: ${II_TURN_DEADLINE:-90}
+    II_TURN_DEADLINE: ${II_TURN_DEADLINE:-15}
     II_MODEL_DIR: /models
     II_ORIGINALS: /originals
   volumes:
@@ -76,6 +76,8 @@ services:
     environment:
       <<: *app-env
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      II_GEMMA_RESERVE_PROVIDER: ${II_GEMMA_RESERVE_PROVIDER:-}
+      II_QWEN_RESERVE_PROVIDER: ${II_QWEN_RESERVE_PROVIDER:-}
     depends_on:
       init:
         condition: service_completed_successfully

@@ -134,6 +134,10 @@ def main():
             if args.mode == "interactive" and settings.profile == "assembly":
                 if not os.getenv("OPENROUTER_API_KEY"):
                     raise SystemExit("OPENROUTER_API_KEY is required for the assembly worker")
+                latency = logging.getLogger("backend.assembly.latency")
+                latency.setLevel(logging.INFO)
+                latency.addHandler(logging.StreamHandler())
+                latency.propagate = False
                 _ = services.engine.search.model
             worker(services, args.mode, args.once)
         else:

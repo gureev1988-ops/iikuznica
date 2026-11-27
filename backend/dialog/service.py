@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
 
+from backend.assembly.fast_answers import VerifiedAnswer, potential_faq
 from backend.contracts.api import AcceptedMessage, MessageRequest
 from backend.contracts.engine import (
     AnswerEngine,
@@ -526,7 +527,13 @@ class DialogueService:
             conditions, condition_sources = self._conditions(conn, actor, turn["case_id"])
             if conditions != dict(request.conditions):
                 raise EvidenceChanged("Case conditions changed during the turn")
-            if actor.channel == "guest":
+            if isinstance(result, VerifiedAnswer):
+                from backend.documents import list_fragments
+
+                current = list_fragments(conn, actor.id, hackathon=self.hackathon)
+                if current != request.sources.fragments or potential_faq(conn, request.question, conditions, current):
+                    raise EvidenceChanged("Verified answer source snapshot changed during the turn")
+            elif actor.channel == "guest":
                 from backend.documents import list_fragments
                 current = list_fragments(conn, actor.id, kind="document", hackathon=self.hackathon)
                 expected = {_fragment_key(fragment) for fragment in request.sources.fragments
@@ -709,7 +716,7 @@ class DialogueService:
             self.queue_reply(
                 conn, effect_key=f"turn:{turn['id']}:{turn['attempt']}:failed",
                 conversation_id=turn["conversation_id"], case_id=turn["case_id"], turn_id=turn["id"],
-                actor_id=actor.id, text="Не удалось обработать вопрос из-за технической ошибки.",
+                actor_id=actor.id, text="Ответ пока не готов. Можно повторить вопрос.",
             )
 
     def _refs_visible(self, conn, actor: Actor, refs: list[dict], *, current: bool = False) -> bool:

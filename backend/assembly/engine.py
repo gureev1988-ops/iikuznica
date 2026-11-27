@@ -3,6 +3,7 @@ import json
 import os
 from functools import cached_property
 import re
+from time import perf_counter
 
 from dataclasses import replace
 
@@ -11,8 +12,9 @@ from backend.db import connect
 from eval.search_core import core
 from registry import compile_records
 
-from .models import GEMMA, QWEN, ModelCalls, json_reply
-from .search import Search, linked_norms
+from .fast_answers import VerifiedAnswers, faq_candidate
+from .models import GEMMA, LATENCY_LOG, QWEN, ModelCalls, json_reply
+from .search import SEARCH_TURN, Search, linked_norms
 
 CLARIFY = """Уточни один факт, который сотрудник может сообщить и от которого зависит применимость
 регламента. Сравни варианты по доступным пунктам. Не задавай вопрос, если вывод совпадает.
@@ -49,17 +51,28 @@ class A1Engine:
     def __init__(self, dsn, search=None):
         self.dsn = dsn
         self.search = search or Search(dsn, os.getenv("II_MODEL_DIR", ".ii-local/models"))
+        self.fast_answers = VerifiedAnswers(dsn, lambda: self.records)
 
     @cached_property
     def records(self):
         return compile_records()
 
     def answer(self, request):
-        calls = ModelCalls(request)
+        started = perf_counter()
+        trace = SEARCH_TURN.set(request.turn_id)
+        path = "full"
         try:
-            return self._answer(request, calls)
+            verified = self.fast_answers.answer(request)
+            if verified is not None:
+                path = "local"
+                return verified
+            return self._answer(request, ModelCalls(request))
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise EngineUnavailable("Invalid A1 model response or search evidence") from exc
+        finally:
+            SEARCH_TURN.reset(trace)
+            LATENCY_LOG.info("turn=%s stage=engine path=%s elapsed_s=%.3f",
+                             request.turn_id, path, perf_counter() - started)
 
     def _answer(self, request, calls):
         corpus, lookup, refs, originals = self.search.snapshot(request.sources.fragments)
@@ -254,15 +267,8 @@ class A1Engine:
         normalized_question = core.procedures.normalized(question)
         by_id = {}
         for row in rows:
-            known_scope = core.procedures.directories(row["question_key"])
-            if known_scope and known_scope != constraints:
-                continue
-            conditions = json.loads(row["conditions_key"])
-            if any(request.conditions.get(key) != value and (not isinstance(value, str) or
-                       core.procedures.normalized(value) not in normalized_question)
-                   for key, value in conditions.items()):
-                continue
-            by_id[str(row["id"])] = row
+            if faq_candidate(row, constraints, normalized_question, request.conditions):
+                by_id[str(row["id"])] = row
         if not by_id:
             return None
         candidates = [dict(id=id_, question=row["question_key"], conditions=json.loads(row["conditions_key"]),
