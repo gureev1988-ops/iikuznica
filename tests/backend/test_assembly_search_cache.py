@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Event
 
 import pytest
@@ -32,8 +32,13 @@ def test_reusing_exact_ranking_preserves_the_pool_and_retries_failures(monkeypat
 def test_identical_concurrent_requests_share_inference(monkeypatch, tmp_path):
     worker = search.Search(None, tmp_path)
     monkeypatch.setattr(search, "load_model", lambda _: (None, None))
-    started, release = Event(), Event()
+    started, joined, release = Event(), Event(), Event()
     calls = []
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            joined.set()
+            return super().result(timeout)
 
     def rank(*_):
         calls.append(1)
@@ -42,11 +47,15 @@ def test_identical_concurrent_requests_share_inference(monkeypatch, tmp_path):
         return [1.0]
 
     monkeypatch.setattr(search, "score_pairs", rank)
+    monkeypatch.setattr(search, "Future", ObservedFuture)
     pool = [dict(title="Regulation", section="1", text="Rule")]
     with ThreadPoolExecutor(max_workers=2) as workers:
         first = workers.submit(worker.rank, "Question", pool)
-        assert started.wait(2)
-        second = workers.submit(worker.rank, "Question", pool)
-        release.set()
+        try:
+            assert started.wait(2)
+            second = workers.submit(worker.rank, "Question", pool)
+            assert joined.wait(2)
+        finally:
+            release.set()
         assert first.result() == second.result() == (1.0,)
     assert calls == [1]
