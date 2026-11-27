@@ -1,7 +1,7 @@
 """A1 AnswerEngine over the employee's immutable authorization snapshot."""
 import json
 import os
-from functools import cached_property
+from functools import cached_property, lru_cache
 import re
 from time import perf_counter
 
@@ -12,7 +12,7 @@ from backend.db import connect
 from eval.search_core import core
 from registry import compile_records
 
-from .fast_answers import VerifiedAnswers, faq_candidate
+from .fast_answers import VerifiedAnswer, VerifiedAnswers, faq_candidate, potential_faq
 from .models import GEMMA, LATENCY_LOG, QWEN, ModelCalls, json_reply
 from .search import SEARCH_TURN, Search, linked_norms
 
@@ -62,7 +62,7 @@ class A1Engine:
         trace = SEARCH_TURN.set(request.turn_id)
         path = "full"
         try:
-            verified = self.fast_answers.answer(request)
+            verified = self._verified_turn(request)
             if verified is not None:
                 path = "local"
                 return verified
@@ -74,12 +74,76 @@ class A1Engine:
             LATENCY_LOG.info("turn=%s stage=engine path=%s elapsed_s=%.3f",
                              request.turn_id, path, perf_counter() - started)
 
+    def _verified_turn(self, request):
+        verified = self.fast_answers.answer(request)
+        if verified is not None:
+            return verified
+
+        clarification = request.clarification
+        if clarification is not None:
+            value = core.procedures.normalized(clarification["value"])
+            if (clarification.get("key") != "directorate" or request.clarification_count != 1
+                    or {**request.conditions} != {"directorate": clarification["value"]}
+                    or value != "дирекция иб"
+                    or value not in {core.procedures.normalized(option) for option in clarification["choices"]}
+                    or core.procedures.operation(request.question) != "appoint_pm"):
+                return None
+            return self._verified_context(request, f"Дирекция ИБ. {request.question}")
+
+        if request.conditions or request.clarification_count:
+            return None
+        if request.history:
+            past = self._history(request)
+            restored = core.dialogue_state._directorate_followup(request.question.strip(), past)
+            return self._verified_context(request, restored) if restored else None
+
+        conversation = core.dialogue_state.conversation
+        pair = conversation.explicit_pair(request.question)
+        if not pair or self._possible_faq(request, request.question):
+            return None
+        parts = []
+        target = None
+        payload = []
+        for question in pair:
+            answer = self.fast_answers.answer(replace(request, question=question))
+            if answer is None or answer.action not in {"answer", "escalate"}:
+                return None
+            target = target or answer.escalation_question
+            parts.append(AnswerPart(answer.action, answer.text, answer.citations))
+            payload.append(dict(text=question, result=dict(action=answer.action, message=answer.text,
+                                                           sources=answer.citations)))
+        result = conversation.assemble(payload)
+        return VerifiedAnswer(result["action"], result["message"], citations=tuple(result["sources"]),
+                              parts=tuple(parts), escalation_question=target, allow_faq=False,
+                              resolved_question=request.question,
+                              checked_questions=(request.question, *pair))
+
+    def _verified_context(self, request, question):
+        if self._possible_faq(request, request.question, question):
+            return None
+        scoped = replace(request, question=question, history=(), conditions={}, clarification=None,
+                         clarification_count=0)
+        answer = self.fast_answers.answer(scoped)
+        return replace(answer, checked_questions=(request.question, question)) if answer is not None else None
+
+    def _possible_faq(self, request, *questions):
+        fragments = request.sources.fragments
+        if not any(fragment.kind == "faq" for fragment in fragments):
+            return False
+        with connect(self.dsn) as conn:
+            return any(potential_faq(conn, question, request.conditions, fragments) for question in questions)
+
+    @staticmethod
+    def _history(request):
+        return [dict(user=m.question, resolved=m.resolved or m.question, assistant=m.text, action=m.action)
+                for m in request.history if m.question and m.action]
+
     def _answer(self, request, calls):
         corpus, lookup, refs, originals = self.search.snapshot(request.sources.fragments)
+        lookup = lru_cache(maxsize=32)(lookup)
         norms = linked_norms(originals, self.records)
         question = request.question
-        past = [dict(user=m.question, resolved=m.resolved or m.question, assistant=m.text, action=m.action)
-                for m in request.history if m.question and m.action]
+        past = self._history(request)
         clarification = request.clarification
         if clarification:
             past = []

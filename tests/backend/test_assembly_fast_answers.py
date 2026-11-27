@@ -12,7 +12,9 @@ from backend.assembly.corpus import seed
 from backend.assembly.engine import A1Engine
 from backend.assembly.fast_answers import VerifiedAnswer, VerifiedAnswers
 from backend.contracts.api import MessageRequest
-from backend.contracts.engine import AnswerRequest, AnswerResult, HistoryMessage, SourceFragment, SourceSnapshot
+from backend.contracts.engine import (
+    AnswerRequest, AnswerResult, ClarificationOption, HistoryMessage, SourceFragment, SourceSnapshot,
+)
 from backend.db import connect, lock_source_catalog
 from backend.dialog import Actor, DialogueService
 from backend.dialog.service import EvidenceChanged
@@ -27,6 +29,8 @@ DB_QUESTION = "Кто и в какой срок назначают РП на э�
 PRE_QUESTION = ("На пресейле в Дирекции ИБ заказчик уже выбрал оборудование, запросил только расчёт поставки "
                 "и явно отказался от всех услуг. Кому BDM направляет ТКП?")
 TECH_QUESTION = "Какой срок подготовки бюджетной оценки для торгов у Технической дирекции?"
+TPS_QUESTION = "Кто назначает TPS в Дирекции ИБ?"
+PM_QUESTION = "В какой срок должны назначить руководителя проекта?"
 ACTOR = Actor("employee", frozenset({"employee"}), "employee@example.test")
 
 
@@ -103,11 +107,10 @@ def test_local_answer_cites_audited_original_without_model(engine, fragments, mo
 
 @pytest.mark.parametrize("text", [
     "В какой срок назначают руководителя проекта при инициации?",
-    "В какой срок в Дирекции ИБ назначают руководителя проекта?",
     "В какой срок в Дирекции ИБ назначают руководителя проекта при реализации?",
     "В какой срок в Дирекции ИБ назначают РП при инициации, если нет расчёта?",
     "В какой срок в Дирекции ИБ назначают РП при инициации за координатора в отпуске?",
-    "Кто назначает технического пресейл-специалиста (TPS) в Дирекции ИБ?",
+    "Кто назначает TPS Технической дирекции на проекте ИБ?",
     "А в Дирекции ИБ?",
     IB_QUESTION + " Кто замещает координатора?",
     PRE_QUESTION.replace("от всех услуг", "от внедрения"),
@@ -245,3 +248,88 @@ def test_publication_rechecks_faq_and_source_access(dsn, tmp_path, monkeypatch, 
     with connect(dsn) as conn:
         turn = conn.execute("SELECT status, result FROM turns WHERE id = %s", (second.turn_id,)).fetchone()
         assert turn == {"status": "processing", "result": None}
+
+
+@pytest.mark.parametrize("select_option", [False, True])
+def test_local_reply_after_confirmed_directorate(dsn, tmp_path, select_option):
+    class Clarifies:
+        def answer(self, request):
+            return AnswerResult("clarify", "Какая дирекция ведёт проект?",
+                                options=(ClarificationOption("ib", "Дирекция ИБ", {"directorate": "Дирекция ИБ"}),),
+                                clarification_key="directorate")
+
+    seed(dsn, tmp_path)
+    service = DialogueService(dsn=dsn, engine=Clarifies())
+    original = _admit(dsn, service, PM_QUESTION)
+    service.answer_job(claim(dsn, "interactive"))
+    with connect(dsn) as conn:
+        clarification = conn.execute("SELECT id, version FROM clarifications WHERE turn_id = %s",
+                                     (original.turn_id,)).fetchone()
+        chosen = {"option_id": "ib"} if select_option else {"text": "Дирекция ИБ"}
+        follow = service.admit(
+            conn, ACTOR, original.conversation_id,
+            MessageRequest(client_message_id=str(uuid4()), case_id=original.case_id,
+                           clarification_id=clarification["id"], clarification_version=clarification["version"],
+                           **chosen),
+        )
+    service.engine = A1Engine(dsn, search=object())
+    service.answer_job(claim(dsn, "interactive"))
+    with connect(dsn) as conn:
+        turn = service.get_turn(conn, ACTOR, follow.turn_id)
+        assert turn["status"] == "completed" and turn["result"]["action"] == "answer"
+        assert "инициаци" in turn["result"]["text"].casefold()
+        assert "1 рабочего дня" in turn["result"]["text"]
+        assert turn["result"]["sources"]
+
+
+def test_explicit_followup_keeps_subject_and_changes_directorate(dsn, tmp_path):
+    seed(dsn, tmp_path)
+    service = DialogueService(dsn=dsn, engine=A1Engine(dsn, search=object()))
+    first = _admit(dsn, service, TECH_QUESTION)
+    service.answer_job(claim(dsn, "interactive"))
+    with connect(dsn) as conn:
+        follow = service.admit(
+            conn, ACTOR, first.conversation_id,
+            MessageRequest(text="А в Дирекции ИБ?", client_message_id=str(uuid4()), case_id=first.case_id),
+        )
+    service.answer_job(claim(dsn, "interactive"))
+    with connect(dsn) as conn:
+        turn = service.get_turn(conn, ACTOR, follow.turn_id)
+        assert turn["status"] == "completed" and turn["result"]["action"] == "escalate"
+        assert "2 недели" not in turn["result"]["text"]
+        assert "дирекции иб" in turn["result"]["text"].casefold()
+        target = conn.execute("SELECT payload->>'question' AS question FROM offers WHERE turn_id = %s",
+                              (follow.turn_id,)).fetchone()
+        assert "бюджетной оценки для торгов" in target["question"].casefold()
+
+
+@pytest.mark.parametrize("faq_race", [False, True])
+def test_local_compound_rechecks_faq_for_each_scope(dsn, tmp_path, monkeypatch, faq_race):
+    seed(dsn, tmp_path)
+    assembly = A1Engine(dsn, search=object())
+    service = DialogueService(dsn=dsn, engine=assembly)
+    run = assembly.answer
+    if faq_race:
+        def publish_before_commit(request):
+            answer = run(request)
+            assert isinstance(answer, VerifiedAnswer)
+            _publish_faq(dsn, TPS_QUESTION)
+            return answer
+
+        monkeypatch.setattr(assembly, "answer", publish_before_commit)
+    turn = _admit(dsn, service, f"{TPS_QUESTION} {TECH_QUESTION}")
+    job = claim(dsn, "interactive")
+    if faq_race:
+        with pytest.raises(EvidenceChanged, match="source snapshot changed"):
+            service.answer_job(job)
+        return
+    service.answer_job(job)
+    with connect(dsn) as conn:
+        result = service.get_turn(conn, ACTOR, turn.turn_id)["result"]
+        assert [part["action"] for part in result["parts"]] == ["escalate", "answer"]
+        assert "TPS" in result["parts"][0]["text"]
+        assert "2 недели" in result["parts"][1]["text"]
+        assert len(result["sources"]) == sum(len(part["sources"]) for part in result["parts"])
+        target = conn.execute("SELECT payload->>'question' AS question FROM offers WHERE turn_id = %s",
+                              (turn.turn_id,)).fetchone()
+        assert target["question"] == TPS_QUESTION

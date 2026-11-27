@@ -39,10 +39,11 @@ POLICY_VERSION = 1
 CACHE_SIZE = 64
 
 
+@dataclass(frozen=True, slots=True)
 class VerifiedAnswer(AnswerResult):
     """A local result whose assumptions depend on the entire visible catalog."""
 
-    __slots__ = ()
+    checked_questions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
