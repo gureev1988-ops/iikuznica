@@ -241,6 +241,8 @@ def complete_ids(ids, allowed, question):
         attach(["TECH:23.2:1"])
     if "TECH:9.1:1" in ids:
         attach(["TECH:9.2:1"])
+    if {"IB:32.1:1", "IB:32.2:1"}.intersection(ids):
+        attach(["IB:32.3:1"])
     if general_early_start(question) and any(key.startswith(("DB:8.4:", "DB:8.5:", "DB:8.6:")) for key in ids):
         letter = letter_status(question)
         group = [f"DB:8.{i}:1" for i in range(4, 9)]
@@ -265,8 +267,9 @@ def companion_sources(sources, corpus):
     refs = {(s["doc"], s["ref"]) for s in sources}
     needed = []
     for anchor, companion in [(("DB", "1.1.1"), ("DB", "1.1")), (("DB", "1.6"), ("DB", "1.7")),
+                              (("IB", "32.1"), ("IB", "32.3")), (("IB", "32.2"), ("IB", "32.3")),
                               (("TECH", "9.1"), ("TECH", "9.2"))]:
-        if anchor in refs:
+        if anchor in refs and companion in corpus:
             needed.append(corpus[companion])
     if any(("DB", f"8.{i}") in refs for i in (4, 5, 6)):
         needed.extend(corpus["DB", f"8.{i}"] for i in range(4, 9))

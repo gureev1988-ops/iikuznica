@@ -49,10 +49,12 @@ class ProcedureTests(unittest.TestCase):
 
     def test_companions_for_roles_deadlines_and_early_start(self):
         corpus = ask.full_corpus()
-        anchors = [corpus[key] for key in (("DB", "1.1.1"), ("DB", "1.6"), ("TECH", "9.1"), ("DB", "8.4"))]
+        anchors = [corpus[key] for key in (("DB", "1.1.1"), ("DB", "1.6"), ("TECH", "9.1"),
+                                          ("DB", "8.4"), ("IB", "32.1"), ("IB", "32.2"))]
         _, allowed = evidence.options(p.companion_sources(anchors, corpus))
         for anchor, linked in [("DB:1.1.1:1", "DB:1.1:1"), ("DB:1.6:1", "DB:1.7:1"),
-                               ("TECH:9.1:1", "TECH:9.2:1")]:
+                               ("TECH:9.1:1", "TECH:9.2:1"), ("IB:32.1:1", "IB:32.3:1"),
+                               ("IB:32.2:1", "IB:32.3:1")]:
             with self.subTest(anchor=anchor):
                 self.assertIn(linked, p.complete_ids([anchor], allowed, "Какие условия действуют?"))
         general = "При каких условиях можно начать работы до подписания договора?"
