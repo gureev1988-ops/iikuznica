@@ -235,9 +235,9 @@ class DialogueService:
                 UPDATE offers SET status = 'superseded', updated_at = now()
                 WHERE case_id = %s AND status = 'open' RETURNING *
                 """, (case_id,)).fetchall()
-            for offer in closed:
-                append_event(conn, conversation_id, case_id, offer["turn_id"], "offer.superseded",
-                             {"offer": _public_action(offer)})
+            for superseded in closed:
+                append_event(conn, conversation_id, case_id, superseded["turn_id"], "offer.superseded",
+                             {"offer": _public_action(superseded)})
         turn = conn.execute(
             """
             INSERT INTO turns (conversation_id, case_id, request_id, question, request, created_at, updated_at)

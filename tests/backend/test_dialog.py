@@ -151,6 +151,37 @@ def test_decline_then_consent_is_closed_and_concurrent_confirm_queues_once(dsn):
         assert conn.execute("SELECT count(*) AS n FROM events WHERE kind = 'offer.confirmed'").fetchone()["n"] == 1
 
 
+@pytest.mark.parametrize(("reply", "offer_status"), [
+    (FIXTURE.scenarios[0].questions[0], "superseded"),
+    ("Да, передай", "confirmed"),
+    ("Нет, не отправляй", "declined"),
+], ids=["ordinary-question", "accept", "decline"])
+def test_next_message_after_mail_offer(dsn, reply, offer_status):
+    with connect(dsn) as conn:
+        seed_fixture_sources(conn)
+    service = DialogueService(dsn=dsn, engine=build_engine("fixture-alpha"), mail_config=MailConfig())
+    client = client_for(service)
+    conversation = uuid4()
+    first = enqueue(client, conversation, 2)
+    process(service)
+    offer = snapshot(client, first["turn_id"])["offers"][0]
+    assert offer["status"] == "open"
+
+    next_turn = enqueue(client, conversation, 0, message_id="next", case_id=first["case_id"], text=reply)
+    if offer_status == "superseded":
+        assert snapshot(client, next_turn["turn_id"])["status"] == "queued"
+        process(service)
+    result = snapshot(client, next_turn["turn_id"])
+    assert result["status"] == "completed" and result["result"]["action"] == "answer"
+    assert bool(result["result"].get("mail_request_id")) == (offer_status == "confirmed")
+    if offer_status == "superseded":
+        assert result["result"]["sources"]
+    assert snapshot(client, first["turn_id"])["offers"][0]["status"] == offer_status
+    with connect(dsn) as conn:
+        assert conn.execute("SELECT count(*) AS n FROM mail_requests").fetchone()["n"] == int(offer_status == "confirmed")
+        assert conn.execute("SELECT count(*) AS n FROM mail_outbound").fetchone()["n"] == int(offer_status == "confirmed")
+
+
 def test_technical_failure_retry_reuses_the_turn(dsn):
     engine = build_engine("fixture-alpha")
     service = DialogueService(dsn=dsn, engine=engine)
