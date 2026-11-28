@@ -76,10 +76,25 @@ def match_options(text, options, *, implicit=False):
     return [option for score, option in candidates if score == high]
 
 
+_SEND = r"(?:передай(?:те)?|передавай(?:те)?|отправь(?:те)?|отправляй(?:те)?|перешли(?:те)?)"
+_CONFIRM_OFFER = re.compile(
+    rf"(?:да(?: конечно)?|давай(?:те)?|подтверждаю(?: отправку)?|"
+    rf"(?:(?:да(?: пожалуйста)?|хорошо|давай(?:те)?) )?{_SEND}(?: (?:вопрос|письмо|обращение))?)"
+    r"(?: в (?:отдел качества|ок))?"
+)
+_DECLINE_OFFER = re.compile(
+    r"(?:отмена|нет(?: спасибо)?|(?:нет )?(?:не надо|не нужно|не (?:передавай|отправляй|пересылай)(?:те)?))"
+)
+
+
 def offer_decision(text):
-    reply = " ".join(words(text))
-    if re.fullmatch(r"(?:да(?: (?:передай(?:те)?|отправь(?:те)?|отправляй(?:те)?)(?: (?:вопрос|письмо|обращение))?)?|(?:передай(?:те)?|отправь(?:те)?) (?:письмо|обращение|вопрос))(?: в отдел качества)?", reply):
+    """Interpret a complete reply to an offer; questions and quotations keep their meaning."""
+    if ".." in text or "…" in text:
+        return None
+    reply = " ".join(text.casefold().strip().rstrip(".!").replace(",", " ").split())
+    reply = reply.removeprefix("пожалуйста ").removesuffix(" пожалуйста")
+    if _CONFIRM_OFFER.fullmatch(reply):
         return "confirmed"
-    if reply in {"нет", "нет не надо", "нет не отправляй", "нет не отправляйте", "не отправляй", "не отправляйте", "нет спасибо", "не надо"}:
+    if _DECLINE_OFFER.fullmatch(reply):
         return "declined"
     return None

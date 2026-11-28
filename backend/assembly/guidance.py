@@ -108,7 +108,9 @@ def next_hint(conn, session):
                c.status AS clarification, c.options,
                EXISTS (SELECT 1 FROM assembly_opened_citations x WHERE x.turn_id=t.id) AS opened
         FROM turns t LEFT JOIN offers o ON o.turn_id=t.id
+            OR (o.case_id=t.case_id AND o.id::text=t.result->>'pending_offer_id')
         LEFT JOIN clarifications c ON c.turn_id=t.id
+            OR (c.case_id=t.case_id AND c.id::text=t.result->>'pending_clarification_id')
         WHERE t.conversation_id=%s AND t.status='completed'
         ORDER BY t.created_at, t.id
     """, (conversation,)).fetchall()
@@ -152,7 +154,7 @@ def next_hint(conn, session):
     for row in rows:
         result = row["result"] or {}
         docs = [ref for ref in result.get("sources", []) if ref["kind"] == "document"]
-        if result.get("action") != "answer" or not docs:
+        if result.get("action") != "answer" or not docs or result.get("pending_clarification_id"):
             continue
         if stage == "simple":
             if row["opened"]:

@@ -228,7 +228,178 @@ def test_poll_cursor_and_feed_jobs_commit_and_deduplicate(dsn, dion, monkeypatch
         ]
 
 
-def test_dion_ambiguous_confirmation_and_late_delivery_use_original_case(dsn, dion):
+def test_dion_bare_imperative_accepts_single_offer_only_in_applicable_context(dsn, dion):
+    provider, adapter, dialogue = dion
+    question = provider.text("Нужно официальное разъяснение")
+    adapter.poll_once(timeout=0)
+    assert adapter.route_once() == 1
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    _run(dsn, "background", adapter.handlers)
+    provider.settle(provider.sends[-1])
+    adapter.poll_once(timeout=0)
+
+    # Quoting the employee's own question does not select the bot's offer in its case.
+    provider.text("передай", reply=question)
+    adapter.poll_once(timeout=0)
+    assert adapter.route_once() == 1
+    before = _state(dsn)
+    assert not before["mail"] and before["offers"][0]["status"] == "open"
+    provider.text("передай")
+    adapter.poll_once(timeout=0)
+    assert adapter.route_once() == 1
+    after = _state(dsn)
+    request, = after["mail"]
+    assert request["offer_id"] == before["offers"][0]["id"]
+    assert after["offers"][0]["status"] == "confirmed"
+    reply, = after["turns"][len(before["turns"]):]
+    assert reply["case_id"] == request["case_id"] and reply["question"] == "передай"
+
+
+def test_dion_routes_free_text_and_replies_to_offer_preview_through_dialogue(dsn, dion, monkeypatch):
+    from backend.db import connect
+    from backend.dion.operations import DionDeliveryDecision, _reconcile_attempt
+
+    provider, adapter, dialogue = dion
+    question = "Нужно официальное разъяснение"
+    preview = "Я хочу понять, кто увидит обращение и что в нём будет."
+    consent = "Пусть им уйдёт именно этот вопрос."
+    interpreted = []
+
+    def interpret(text, *, offer, context):
+        interpreted.append((text, offer, context.case_id))
+        return {"intent": "ask_details" if text == preview else "confirm"}
+
+    def receive(text, *, reply=None):
+        provider.text(text, reply=reply)
+        adapter.poll_once(timeout=0)
+        assert adapter.route_once() == 1
+
+    monkeypatch.setattr(dialogue.engine, "interpret_offer", interpret, raising=False)
+    monkeypatch.setattr(dialogue, "resolve_actor", lambda *_: adapter._actor(USER))
+    receive(question)
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    _run(dsn, "background", adapter.handlers)
+    state = _state(dsn)
+    offer, = state["offers"]
+    attempt, = state["attempts"]
+    final_id = provider.settle(provider.sends[-1])
+    # The receipt only has the final ID. Reconciliation can confirm it without replacing provider_id.
+    del provider.updates[-1]["message"]["intermediate_id"]
+    with connect(dsn) as conn:
+        _reconcile_attempt(conn, dsn, attempt["id"], DionDeliveryDecision(
+            state="sent", message_id=final_id, evidence="Доставка подтверждена по итоговому идентификатору.",
+        ))
+    adapter.poll_once(timeout=0)
+
+    receive(preview)
+    turn = _state(dsn)["turns"][-1]
+    assert turn["case_id"] == offer["case_id"] and turn["request"]["reply_offer"]["id"] == str(offer["id"])
+    assert interpreted == []
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    assert _state(dsn)["mail"] == []
+    _run(dsn, "background", adapter.handlers)
+    preview_message = provider.settle(provider.sends[-1])
+    assert "/confirm " + str(offer["id"]) in provider.sends[-1]["text"]
+
+    receive(consent, reply=preview_message)
+    assert len(interpreted) == 1
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    request, = _state(dsn)["mail"]
+    assert request["offer_id"] == offer["id"] and request["question"] == question
+    assert [text for text, _, _ in interpreted] == [preview, consent]
+    assert all(context["question"] == question and case == offer["case_id"] for _, context, case in interpreted)
+
+
+@pytest.mark.parametrize("choose_before_delivery", [False, True])
+def test_dion_can_answer_original_clarification_by_replying_to_its_explanation(
+    dsn, dion, monkeypatch, choose_before_delivery,
+):
+    from backend.contracts.engine import AnswerResult, Citation
+    from backend.db import connect
+
+    provider, adapter, dialogue = dion
+    question = "Как подать заявку?"
+    explanation = "Что значат варианты?"
+    original_answer = dialogue.engine.answer
+
+    def answer(request):
+        if request.question == explanation:
+            source = request.sources.fragments[0]
+            citation = Citation(source.document_id, source.revision_id, source.fragment_id, source.text)
+            return AnswerResult("answer", "Пояснение [1]", citations=(citation,))
+        return original_answer(request)
+
+    def receive(text, *, reply=None):
+        provider.text(text, reply=reply)
+        adapter.poll_once(timeout=0)
+        assert adapter.route_once() == 1
+        _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+
+    def deliver():
+        _run(dsn, "background", adapter.handlers)
+        return provider.settle(provider.sends[-1])
+
+    monkeypatch.setattr(dialogue.engine, "interpret_choice", lambda *_: ("about_choices", None, {}), raising=False)
+    monkeypatch.setattr(dialogue.engine, "answer", answer)
+    receive(question)
+    prompt = deliver()
+    receive(explanation, reply=prompt)
+    if choose_before_delivery:
+        receive("1", reply=prompt)
+    explanation_message = deliver()
+    assert "Пояснение [1]" in provider.sends[-1]["text"]
+    assert ("/answer" in provider.sends[-1]["text"]) is not choose_before_delivery
+
+    if not choose_before_delivery:
+        receive("1", reply=explanation_message)
+    with connect(dsn) as conn:
+        resolved, = conn.execute("SELECT status, case_id FROM clarifications").fetchall()
+    assert resolved["status"] == "resolved"
+    turn = _state(dsn)["turns"][-1]
+    assert (turn["status"], turn["case_id"], turn["question"]) == ("completed", resolved["case_id"], question)
+
+
+def test_dion_unthreaded_consent_requires_last_offer_receipt_before_employee_reply(dsn, dion):
+    provider, adapter, dialogue = dion
+
+    def send(text, *, reply=None):
+        provider.text(text, reply=reply)
+        adapter.poll_once(timeout=0)
+        assert adapter.route_once() == 1
+
+    send("Нужно официальное разъяснение")
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    _run(dsn, "background", adapter.handlers)
+    # Both updates are polled together. The employee spoke before the delivery receipt.
+    provider.text("передай")
+    provider.settle(provider.sends[-1])
+    adapter.poll_once(timeout=0)
+    assert adapter.route_once() == 1
+    assert not _state(dsn)["mail"]
+    _run(dsn, "background", adapter.handlers)
+    provider.settle(provider.sends[-1])
+    adapter.poll_once(timeout=0)
+
+    send("Сколько дней рассматривают заявку?")
+    send("передай")
+    assert not _state(dsn)["mail"]
+    _run(dsn, "interactive", {"answer_turn": dialogue.answer_job})
+    for _ in range(2):
+        _run(dsn, "background", adapter.handlers)
+        provider.settle(provider.sends[-1])
+    adapter.poll_once(timeout=0)
+    send("передай")
+    state = _state(dsn)
+    offer, = state["offers"]
+    assert not state["mail"] and offer["status"] == "open"
+
+    send(f"/confirm {offer['id']}")
+    confirmed, = _state(dsn)["mail"]
+    assert confirmed["offer_id"] == offer["id"]
+
+
+@pytest.mark.parametrize("consent", ["да", "передай"])
+def test_dion_ambiguous_confirmation_and_late_delivery_use_original_case(dsn, dion, consent):
     from backend.db import connect
     from backend.mailfaq import MailService
     from backend.runtime import run_once
@@ -246,7 +417,7 @@ def test_dion_ambiguous_confirmation_and_late_delivery_use_original_case(dsn, di
     provider.settle(provider.sends[1])
     assert adapter.poll_once(timeout=0) == 2
 
-    provider.text("да")
+    provider.text(consent)
     adapter.poll_once(timeout=0)
     assert adapter.route_once() == 1
     assert _state(dsn)["mail"] == []
@@ -255,8 +426,8 @@ def test_dion_ambiguous_confirmation_and_late_delivery_use_original_case(dsn, di
     for offer in _state(dsn)["offers"]:
         assert str(offer["id"]) in provider.sends[-1]["text"]
 
-    provider.text("да", reply=first_offer_message)
-    provider.text("да", reply=first_offer_message)
+    provider.text(consent, reply=first_offer_message)
+    provider.text(consent, reply=first_offer_message)
     adapter.poll_once(timeout=0)
     assert adapter.route_once() == 2
     state = _state(dsn)
@@ -408,6 +579,7 @@ def test_dion_native_mail_followup_waits_for_delivery_receipt_and_survives_resta
     while run_once(dsn, "background", handlers) is not None:
         pass
     assert len(mail.simulator.sent) == 1
+    initial_turn_ids = [turn["id"] for turn in _state(dsn)["turns"]]
     initial_mail = mail.simulator.sent[0]
     mail.simulator.reply(
         initial_mail, "Уточните категорию документа?", message_id="<counter-dion@example.invalid>",
@@ -449,7 +621,7 @@ def test_dion_native_mail_followup_waits_for_delivery_receipt_and_survives_resta
     handlers.update(restarted.handlers)
     while run_once(dsn, "background", handlers) is not None:
         pass
-    assert len(_state(dsn)["turns"]) == 1
+    assert [turn["id"] for turn in _state(dsn)["turns"]] == initial_turn_ids
     assert len(mail.simulator.sent) == 2
     followup = mail.simulator.sent[1]
     assert "Категория договора" in followup.body

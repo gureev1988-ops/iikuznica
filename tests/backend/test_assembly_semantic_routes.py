@@ -135,9 +135,20 @@ def test_number_uses_list_order_and_keeps_free_text(text, id_):
     assert "5. Не знаю" in numbered("Какой этап?", options)
     assert match_options("7", options) == []
     assert match_options("7", []) is None
-    assert offer_decision("Нет, не отправляй") == "declined"
-    assert offer_decision("Да, передай") == "confirmed"
-    assert offer_decision("Может быть, передам позже") is None
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("передай", "confirmed"), ("Пожалуйста, передайте вопрос в отдел качества!", "confirmed"),
+    ("Да, передай", "confirmed"), ("Отправляй, пожалуйста.", "confirmed"),
+    ("Да, пожалуйста, отправь в ОК", "confirmed"), ("Хорошо, передай вопрос", "confirmed"),
+    ("Нет, не отправляй", "declined"), ("Не передавай, пожалуйста", "declined"),
+    ("Может быть, передам позже", None), ("Передай?", None), ("«передай»", None),
+    ("Ну, передай…", None), ("Передай...", None),
+    ("передай, если он не ответит", None), ("отправь регламент мне", None),
+    ("да, но пока не отправляй", None), ("передай руководителю", None),
+])
+def test_consent_replies_use_the_whole_utterance(text, expected):
+    assert offer_decision(text) == expected
 
 
 def test_semantic_mail_quotes_must_be_from_the_correct_message():
@@ -309,7 +320,7 @@ def test_number_and_explicit_mail_consent_freeze_only_the_current_case(dsn, tmp_
         assert conn.execute("SELECT pending_message_id,retry_after FROM assembly_quality_checks").fetchone() == {
             "pending_message_id": None, "retry_after": None}
     if review_path.endswith("after_new_offer"):
-        send("Да, передай", "confirm-next", case_id=first.case_id)
+        send("Да, передай", "confirm-next", case_id=first.case_id, reply_to_offer={"id": next_offer, "version": 1})
         with connect(dsn) as conn:
             agreed = conn.execute("SELECT question FROM mail_requests WHERE offer_id=%s", (next_offer,)).fetchone()
             assert agreed["question"] == "Новый вопрос"

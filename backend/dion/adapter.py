@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
 
-from backend.dialog.clarifications import QUESTION, match_options, numbered
+from backend.dialog.clarifications import QUESTION, match_options, numbered, offer_decision
 from backend.contracts.api import MessageRequest
 from backend.db import connect, lock_source_catalog
 from backend.dialog import Actor, DialogueError, DialogueService
@@ -305,7 +305,14 @@ class DionAdapter:
         reply_to = as_uuid(as_object(row["payload"]["message"].get("reply_to_message")).get("message_id"))
         if reply_to is None:
             return None
-        target = conn.execute(
+        return self._target_for_message(conn, conversation_id, row, reply_to) or {
+            "case_id": None, "offer_id": None, "clarification_id": None,
+            "mail_request_id": None, "effect_key": None, "linked": False,
+        }
+
+    @staticmethod
+    def _target_for_message(conn, conversation_id, row, message_id):
+        return conn.execute(
             """
             SELECT o.case_id,
                    CASE WHEN prep.envelope IS NULL THEN o.offer_id
@@ -323,22 +330,35 @@ class DionAdapter:
             WHERE bot_id = %s AND chat_id = %s AND message_id = %s AND kind = 'input'
             LIMIT 1
             """,
-            (conversation_id, reply_to, row["bot_id"], row["chat_id"], reply_to),
+            (conversation_id, message_id, row["bot_id"], row["chat_id"], message_id),
         ).fetchone()
-        return target or {
-            "case_id": None, "offer_id": None, "clarification_id": None,
-            "mail_request_id": None, "effect_key": None, "linked": False,
-        }
+
+    def _last_offer_target(self, conn, conversation_id, row, offer_id):
+        last = conn.execute("""
+            SELECT CASE WHEN kind = 'message' THEN payload->'message'->>'message_id' END AS message_id
+            FROM dion_updates WHERE bot_id = %s AND chat_id = %s AND update_id < %s
+              AND (kind = 'message' OR (kind = 'input' AND case_id IS NOT NULL))
+            ORDER BY update_id DESC LIMIT 1
+            """, (row["bot_id"], row["chat_id"], row["update_id"])).fetchone()
+        message_id = as_uuid(last["message_id"]) if last else None
+        if message_id is None:
+            return None
+        target = self._target_for_message(conn, conversation_id, row, message_id)
+        if target and target["offer_id"] == offer_id and not (target["clarification_id"] or target["mail_request_id"]):
+            return target
+        return None
 
     def _route_message(self, conn, actor, conversation_id, row):
         text = row["payload"]["message"]["text"].strip()
         command, *words = text.split(maxsplit=1)
         argument = words[0] if words else ""
-        command = command.casefold().rstrip(".!?")
+        command = command.casefold()
+        slash_command = command.startswith("/")
+        command = command.rstrip(".!?" if slash_command else ".!")
         target = self._reply_target(conn, conversation_id, row)
         if command == "/mail" or (target and target["mail_request_id"] is not None):
             return self._mail_followup(conn, actor, conversation_id, row, command, argument, text, target)
-        if target is not None and not target["linked"] and not command.startswith("/"):
+        if target is not None and not target["linked"] and not slash_command:
             self._notice(
                 conn, actor, conversation_id, row,
                 "Не удалось определить, к какому обращению относится ответ. "
@@ -346,17 +366,29 @@ class DionAdapter:
             )
             return None, None
         replying_to_clarification = target is not None and target["clarification_id"] is not None
-        if (
-            command in _APPROVE | _DECLINE
-            and (command.startswith("/") or not replying_to_clarification)
-            and (not argument or command.startswith("/") or as_uuid(argument.strip()) is not None)
+        if command in _APPROVE | _DECLINE and (
+            slash_command or (not replying_to_clarification and as_uuid(argument.strip()) is not None)
         ):
-            return self._offer_decision(conn, actor, conversation_id, row, command, argument, target)
+            return self._offer_command(conn, actor, conversation_id, row, command, argument, target)
+        if (target and not target["offer_id"] and not replying_to_clarification and not slash_command
+                and (decision := offer_decision(text))):
+            offers = self.dialogue.open_actions(conn, actor, conversation_id)["offers"]
+            self._offer_guidance(conn, actor, conversation_id, row, decision, offers)
+            return None, None
 
         fields = {"text": text}
+        offer_id = None
         implicit = None
-        if target is None and not command.startswith("/"):
+        actions = None
+        if target is None and not slash_command:
             actions = self.dialogue.open_actions(conn, actor, conversation_id)
+            offers = actions["offers"]
+            if len(offers) == 1 and not text.isdecimal():
+                target = self._last_offer_target(conn, conversation_id, row, offers[0]["id"])
+            if target is None and (offers or not actions["clarifications"]) and (decision := offer_decision(text)):
+                self._offer_guidance(conn, actor, conversation_id, row, decision, offers)
+                return None, None
+        if target is None and actions and actions["clarifications"]:
             sent = {r["clarification_id"] for r in conn.execute("""
                 SELECT clarification_id FROM dion_outbox WHERE conversation_id=%s
                 AND clarification_id IS NOT NULL AND confirmed_message_id IS NOT NULL
@@ -378,7 +410,7 @@ class DionAdapter:
             if command == "/answer":
                 identifier, _, text = argument.strip().partition(" ")
                 clarification_id = as_uuid(identifier)
-            actions = self.dialogue.open_actions(conn, actor, conversation_id)
+            actions = actions or self.dialogue.open_actions(conn, actor, conversation_id)
             clarification = next(
                 (item for item in actions["clarifications"] if item["id"] == clarification_id), None
             )
@@ -389,9 +421,12 @@ class DionAdapter:
                       "clarification_version": clarification["version"]}
         elif target and target["case_id"] is not None:
             fields["case_id"] = target["case_id"]
+            if not slash_command:
+                offer_id = target["offer_id"]
 
         accepted = self.dialogue.admit(
-            conn, actor, conversation_id, MessageRequest(client_message_id=f"dion:{row['message_id']}", **fields)
+            conn, actor, conversation_id, MessageRequest(client_message_id=f"dion:{row['message_id']}", **fields),
+            offer_id=offer_id,
         )
         return accepted.case_id, accepted.turn_id
 
@@ -435,39 +470,34 @@ class DionAdapter:
         )
         return request["case_id"], request["turn_id"]
 
-    def _offer_decision(self, conn, actor, conversation_id, row, command, argument, target):
+    def _offer_command(self, conn, actor, conversation_id, row, command, argument, target):
         actions = self.dialogue.open_actions(conn, actor, conversation_id)["offers"]
-        selected = as_uuid(argument.strip()) if argument else None
-        if target is not None and not argument:
-            selected = target["offer_id"]
-        if selected is not None:
-            eligible = [offer for offer in actions if offer["id"] == selected]
-        elif not argument and target is None:
-            eligible = actions
-        else:
-            eligible = []
-        if len(eligible) != 1:
+        if not argument and target is None and len(actions) == 1:
+            target = self._last_offer_target(conn, conversation_id, row, actions[0]["id"])
+        selected = as_uuid(argument.strip()) if argument else target and target["offer_id"]
+        offer = next((offer for offer in actions if offer["id"] == selected), None)
+        confirm = command in _APPROVE
+        if offer is None:
             if selected is not None:
                 self._notice(conn, actor, conversation_id, row, "Указанное предложение уже закрыто или недоступно.")
-            elif actions:
-                action_command = "/confirm" if command in _APPROVE else "/decline"
-                choices = [
-                    f"{action_command} {offer['id']} — обращение {offer['case_id']}"
-                    for offer in actions[:20]
-                ]
-                prompt = "Уточните, какое предложение вы имеете в виду. Ответьте на него или отправьте команду:"
-                self._notice(conn, actor, conversation_id, row, "\n".join([prompt, *choices]))
             else:
-                self._notice(conn, actor, conversation_id, row, "Сейчас нет открытых предложений для подтверждения.")
+                self._offer_guidance(conn, actor, conversation_id, row, "confirmed" if confirm else "declined", actions)
             return None, None
 
-        offer = eligible[0]
-        confirm = command in _APPROVE
         decide = self.dialogue.confirm if confirm else self.dialogue.decline
         decide(conn, actor, offer["id"], offer["version"])
         text = "Предложение подтверждено." if confirm else "Предложение отклонено."
         self._notice(conn, actor, conversation_id, row, text, case_id=offer["case_id"], turn_id=offer["turn_id"])
         return None, None
+
+    def _offer_guidance(self, conn, actor, conversation_id, row, decision, offers):
+        if not offers:
+            self._notice(conn, actor, conversation_id, row, "Сейчас нет открытых предложений для подтверждения.")
+            return
+        command = "/confirm" if decision == "confirmed" else "/decline"
+        choices = [f"{command} {offer['id']} — обращение {offer['case_id']}" for offer in offers[:20]]
+        prompt = "Уточните, какое предложение вы имеете в виду. Ответьте на него или отправьте команду:"
+        self._notice(conn, actor, conversation_id, row, "\n".join([prompt, *choices]))
 
     def _notice(self, conn, actor, conversation_id, row, text, *, case_id=None, turn_id=None):
         queue_reply(
