@@ -43,7 +43,7 @@ DB_TRAINING_REVISION = (
     "386c756cbd29ca454eeee57c3f6516a0388c92037e4e5cd78010b052f224cf0c",
 )
 DOC_BY_TITLE = {title: doc for doc, title in TITLES.items()}
-POLICY_VERSION = 4
+POLICY_VERSION = 5
 CACHE_SIZE = 64
 DIRECTORATE_OPTIONS = ("ДБРЦТ", "Дирекция ИБ", "Техническая дирекция")
 
@@ -141,15 +141,18 @@ _ESTIMATE_PAIR = (
 _ESTIMATE_ASK = r"(?:за сколько(?: рабочих дней| дней| времени)|какие сроки|каковы сроки|в какие сроки)"
 _ESTIMATE_CUSTOMER = r"(?:заказчику|клиенту)"
 _DB_ESTIMATE = ScopedQuestion(
-    _DB_ESTIMATE_WORDING, (_DB_SCOPE,),
-    re.compile(rf"(?:(?:готовлю|готовим|составляю) ответ {_ESTIMATE_CUSTOMER}[.:] )?{_ESTIMATE_ASK} "
+    _DB_ESTIMATE_WORDING, (re.compile(r"\b(?:(?:на проекте|в|у) )?дбрцт\b"),),
+    re.compile(rf"(?:сколько (?:рабочих )?дней (?:обычно )?занимают (?:две|обе) оценки\s*[—–,:-]\s*"
+               rf"(?:точная и бюджетная|бюджетная и точная)|(?:(?:готовлю|готовим|составляю) ответ {_ESTIMATE_CUSTOMER}[.:] )?{_ESTIMATE_ASK} "
                rf"(?:(?:рекомендует|рекомендуют|следует) )?"
                rf"(?:(?:делать|готовить|подготовить|выдавать|предоставлять|выдачи|подготовки) |"
-               rf"(?:назвать|сообщить|указать) {_ESTIMATE_CUSTOMER} )?{_ESTIMATE_PAIR}"),
+               rf"(?:назвать|сообщить|указать) {_ESTIMATE_CUSTOMER} )?{_ESTIMATE_PAIR})"),
 )
-_EARLY_ACTION = (r"(?:начать (?:проектные )?работы|приступить к работам)(?: по проекту)? "
-                 r"до (?:подписания договора|того,? как (?:заказчик|клиент) подпишет договор)")
-_EARLY_PERMISSION = r"(?:когда|при каких условиях|на каких условиях) (?:можно|допускается|разрешается)"
+_EARLY_ACTION = (r"(?:начать (?:проектные )?работы|приступить к работам)(?: по проекту)?,? "
+                 r"(?:до (?:подписания договора|того,? как (?:заказчик|клиент) подпишет договор)|"
+                 r"пока договор (?:с (?:заказчиком|клиентом) )?(?:еще )?не подписан)")
+_EARLY_PERMISSION = (r"(?:можно ли|(?:когда|при каких условиях|на каких условиях) "
+                     r"(?:можно|допускается|разрешается|команда (?:проекта )?может))")
 _EARLY_CONDITIONS = (r"(?:какие условия (?:нужно|надо|придется|необходимо) (?:соблюсти|выполнить)|"
                      r"при каких условиях (?:это )?(?:допустимо|возможно))")
 _DB_EARLY_START = ScopedQuestion(
@@ -168,6 +171,18 @@ _PACKAGE_PERMISSION = re.compile(
     rf"(?:(?:можно ли|может ли|вправе ли) {_SELLER}|{_SELLER} (?:вправе|может)) {_ISSUE} "
     rf"(?:{_CUSTOMER} {_OFFICIAL}|{_OFFICIAL}(?: {_CUSTOMER})?) "
     r"без согласования с (?:па|пресейл[- ]архитектором)"
+)
+_PACKAGE_APPROVAL_ASK = re.compile(
+    rf"{_IB_PRESALE} {_SELLER} (?:продает|предлагает) пакетное предложение[.!] "
+    rf"(?:требуется|нужно|надо) ли согласовать с (?:па|пресейл[- ]архитектором) "
+    rf"{_OFFICIAL} (?:до|перед) (?:отправки|отправкой|выдачи|выдачей) {_CUSTOMER}"
+)
+_PACKAGE_EXEMPTION_EVIDENCE = (
+    (
+        "PRE:2.3:1",
+        "SS и TSS запрещается без согласования с ПА (Пресейл-архитектором) предоставлять заказчику "
+        "официальное ТКП, кроме случаев перепродажи вендорского сервиса или продажи пакетных предложений.",
+    ),
 )
 _KICKOFF_PLAN = rf"(?:планирую|планируем|готовлю|готовим|организую|организуем) {_KICKOFF}(?: по проекту)?"
 _KICKOFF_ATTEND = r"кто (?:(?:обязательно|непременно) )?должен (?:(?:на ней|на нем) )?присутствовать"
@@ -258,6 +273,11 @@ _DB_ARCHITECT = ScopedQuestion(None, (_DB_SCOPE,), re.compile(
 ))
 
 
+_TENDER_TECH_TIME = re.compile(rf"{_ESTIMATE_TIME} для (?:торгов|конкурса) (?:у|в) технической дирекции")
+_DB_TENDER_QUESTION = "Какой срок подготовки бюджетной оценки для торгов в ДБРЦТ?"
+_DB_TENDER = re.compile(rf"(?:дбрцт[.:] {_ESTIMATE_TIME} для (?:торгов|конкурса)|"
+                        rf"{_ESTIMATE_TIME} для (?:торгов|конкурса) (?:у|в) дбрцт)")
+
 RULES = (
     Rule(
         _DB_ARCHITECT,
@@ -269,6 +289,15 @@ RULES = (
                       "мессенджер) для проработки требований/ТЗ заказчика или участия в технической встрече "
                       "с Заказчиком для уточнения требований. После проведения скоринга и определения требований "
                       "SS создаёт Заявку на пресейл (ЗнП)"),),
+    ),
+    Rule(
+        _DB_TENDER,
+        "Бюджетную оценку ДБРЦТ нельзя использовать для подачи в конкурс. Исключение — RFI [1]. "
+        "Для самой бюджетной оценки рекомендуемый срок выдачи — 3 рабочих дня [2]. "
+        "При подключении подрядчика учитывайте также SLA на его поиск и согласование [3].",
+        (("DB:2.4:1", "Бюджетная оценка не может использоваться для подачи в конкурс (за исключением RFI)"),
+         ("DB:1.6:1", "для бюджетных оценок – 3 рабочих дня."),
+         ("DB:1.7:1", "дополнительно учитывать SLA на поиск и согласование подрядчика.")),
     ),
     Rule(
         re.compile(rf"(?:{_INVITE} на {_KICKOFF}|(?:(?:мне|нам) )?(?:нужно|надо|предстоит) "
@@ -419,13 +448,13 @@ RULES = (
         ), (_PRESALE_SCOPE, _PACKAGE_SCOPE), _PACKAGE_PERMISSION),
         "Да. При продаже пакетного предложения на пресейле ИБ согласование официального ТКП "
         "с пресейл-архитектором не требуется. Это исключение из общего правила для SS и TSS [1].",
-        (
-            (
-                "PRE:2.3:1",
-                "SS и TSS запрещается без согласования с ПА (Пресейл-архитектором) предоставлять заказчику "
-                "официальное ТКП, кроме случаев перепродажи вендорского сервиса или продажи пакетных предложений.",
-            ),
-        ),
+        _PACKAGE_EXEMPTION_EVIDENCE,
+    ),
+    Rule(
+        _PACKAGE_APPROVAL_ASK,
+        "Нет. При продаже пакетного предложения на пресейле ИБ SS и TSS могут отправить заказчику "
+        "официальное ТКП без согласования с пресейл-архитектором [1].",
+        _PACKAGE_EXEMPTION_EVIDENCE,
     ),
     Rule(
         _TECH_NOTIFICATION,
@@ -534,8 +563,8 @@ def _check_faq(conn, question, conditions, fragments):
             continue
         if not _is_reviewed_seed(row, fragment):
             return True, None
-        if any(pattern.fullmatch(intent) for pattern in (_DB_APPOINTMENT, _DB_EARLY_START, _DB_ARCHITECT)):
-            # The estimate lead time applies to none of these operations.
+        if any(pattern.fullmatch(intent) for pattern in (_DB_APPOINTMENT, _DB_EARLY_START, _DB_TENDER, _DB_ARCHITECT)):
+            # The reviewed FAQ covers only the exact estimate, not a budgetary bid or these other actions.
             continue
         if not conditions and _DB_ESTIMATE.fullmatch(intent):
             # The exact-estimate part has the same scope, so the answer must cite
@@ -614,10 +643,28 @@ class VerifiedAnswers:
         self._lock = Lock()
 
     def answer(self, request):
-        if (request.conditions or request.history or request.clarification is not None
+        if (request.conditions or request.clarification is not None
                 or request.clarification_count or datetime.now(UTC) >= request.deadline):
             return None
         question = normalized(request.question).removesuffix("?").rstrip()
+        if request.history:
+            if len(request.history) != 2:
+                return None
+            prior, reply = request.history
+            if (prior.role != "user" or reply.role != "assistant" or reply.action != "answer"
+                    or prior.text != reply.question or (reply.resolved or reply.question) != prior.text):
+                return None
+            prior_question = normalized(prior.text).removesuffix("?").rstrip()
+            if question == "а в дбрцт" and _TENDER_TECH_TIME.fullmatch(prior_question):
+                # Restore the tender qualifier before matching the new directorate's rule and checking FAQ.
+                previous = self.answer(replace(request, question=prior.text, history=()))
+                if previous is None or previous.text != reply.text:
+                    return None
+                result = self.answer(replace(request, question=_DB_TENDER_QUESTION, history=()))
+                return replace(result, checked_questions=(prior.text, _DB_TENDER_QUESTION)) if result else None
+            # A fully specified, new operation after an estimate does not inherit an estimate deadline.
+            if not (_DB_ESTIMATE.fullmatch(prior_question) and _DB_EARLY_START.fullmatch(question)):
+                return None
         estimates = _DB_ESTIMATE.fullmatch(question)
         rule = next((rule for rule in RULES if rule.question.fullmatch(question)), None)
         if rule is None and not estimates:
