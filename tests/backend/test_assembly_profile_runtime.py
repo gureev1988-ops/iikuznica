@@ -58,18 +58,20 @@ def test_assembly_api_can_start_without_openrouter_key(assembly_cli, local_model
 
 
 @pytest.mark.parametrize("local", [True, False], ids=["pilot", "demo"])
-def test_interactive_worker_only_requires_demo_key_for_openrouter(assembly_cli, local_models, monkeypatch, local):
+def test_interactive_worker_only_requires_demo_key_for_openrouter(assembly_cli, local_models, monkeypatch, local, capsys):
     from backend.assembly.search import Search
 
     if not local:
         monkeypatch.delenv("II_MODEL_PROFILE")
-    monkeypatch.setattr(Search, "model", "cpu-model")
+    session = SimpleNamespace(get_session_options=lambda: SimpleNamespace(intra_op_num_threads=4))
+    monkeypatch.setattr(Search, "model", (session, object()))
     started = []
     monkeypatch.setattr(cli, "worker", lambda backend, queue, once: started.append((queue, once)))
     monkeypatch.setattr(sys, "argv", ["backend", "interactive", "--once"])
     if local:
         cli.main()
         assert started == [("interactive", True)]
+        assert "onnx_intra_threads=4" in capsys.readouterr().err
     else:
         with pytest.raises(SystemExit, match="OPENROUTER_API_KEY"):
             cli.main()

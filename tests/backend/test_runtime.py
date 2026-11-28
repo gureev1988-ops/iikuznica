@@ -1,8 +1,9 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from threading import Barrier, Event
+from threading import Barrier, Event, Thread
 from time import sleep
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -36,6 +37,68 @@ from backend.runtime import (
 
 class WorkerStopped(BaseException):
     """Simulate a restart before the worker can record a provider outcome."""
+
+
+@pytest.mark.parametrize("slots", [3, 10])
+def test_interactive_worker_polls_once_when_idle_and_fills_all_slots(dsn, monkeypatch, slots):
+    from backend import __main__ as cli
+    from backend.runtime import jobs, journal
+
+    idle, resume, second_idle = Event(), Event(), Event()
+
+    class StopEvent(Event):
+        def wait(self, timeout=None):
+            if idle.is_set():
+                second_idle.set()
+            idle.set()
+            resume.wait(timeout=5)
+            return self.is_set()
+
+    stop = StopEvent()
+    monkeypatch.setattr(cli, "Event", lambda: stop)
+    monkeypatch.setattr(cli.signal, "signal", lambda *_: None)
+    connections = []
+
+    def counted_connect(url):
+        connections.append(url)
+        return connect(url)
+
+    monkeypatch.setattr(jobs, "connect", counted_connect)
+    monkeypatch.setattr(journal, "connect", counted_connect)
+    active_handlers = Barrier(slots)
+
+    def handle(job):
+        if job.business_key == str(slots):
+            stop.set()
+        else:
+            active_handlers.wait(timeout=5)
+
+    backend = SimpleNamespace(
+        settings=SimpleNamespace(profile="test", interactive_concurrency=slots, poll_interval=15),
+        run_job=lambda queue, **opts: run_once(dsn, queue, {"answer": handle}, max_running=slots, **opts),
+    )
+    runner = Thread(target=cli.worker, args=(backend, "interactive", False))
+    runner.start()
+    try:
+        assert idle.wait(timeout=5)
+        assert not second_idle.wait(timeout=0.1)
+        assert len(connections) == 3  # Recovery of jobs, recovery of calls, and one claim.
+        with connect(dsn) as conn:
+            for i in range(slots + 1):
+                enqueue(conn, queue="interactive", kind="answer", key=str(i), payload={})
+        resume.set()
+        runner.join(timeout=8)
+        assert not runner.is_alive()
+    finally:
+        stop.set()
+        resume.set()
+        active_handlers.abort()
+        runner.join(timeout=8)
+    with connect(dsn) as conn:
+        rows = conn.execute("SELECT business_key, state FROM jobs ORDER BY first_started_at").fetchall()
+    assert [(row["business_key"], row["state"]) for row in rows] == [
+        (str(i), "succeeded") for i in range(slots + 1)
+    ]
 
 
 def test_atomic_admission_and_business_key_deduplication(dsn, db):

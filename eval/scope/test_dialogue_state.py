@@ -15,6 +15,17 @@ def lookup(_):
 
 
 class StateTests(unittest.TestCase):
+    def test_handoff_checks_all_authorized_candidates_without_neural_sorting(self):
+        from eval.search_core import core
+
+        def no_rerank(query):
+            self.fail("The certified handoff only requires pool membership")
+
+        no_rerank.lexical_pool = Mock(return_value=[{"doc": "PRE", "ref": "1.3"}])
+        self.assertEqual(core.answer(BOTH, no_rerank), core.answer(BOTH, lookup))
+        self.assertEqual([c.args[0] for c in no_rerank.lexical_pool.call_args_list],
+                         [BOTH, handoff.TRANSFER_QUESTION])
+
     def test_unsupported_subrequest_stays_with_quality(self):
         direct = state.answer(MAIN, lookup)
         self.assertIn("отправляет его АМ", direct["message"])

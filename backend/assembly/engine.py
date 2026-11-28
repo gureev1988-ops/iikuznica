@@ -311,10 +311,11 @@ class A1Engine:
 
     def _regulation_conflict(self, question, calls, lookup, corpus, refs, sources):
         cited = {(p["doc"], p["ref"]) for p in sources if "doc" in p}
-        if not cited and hasattr(lookup, "lexical_pool"):
-            # The ranked seeds and the first ten passages are all drawn from this pool.
-            # If even the full pool has no candidate pair, reranking cannot find one.
+        if hasattr(lookup, "lexical_pool"):
+            # Ranked seeds are drawn from this pool. Linked citations may be
+            # outside it and can introduce a competing rule.
             lexical = {(p["doc"], p["ref"]): p for p in lookup.lexical_pool(question)}
+            lexical.update((key, corpus[key]) for key in cited if key in corpus and key in refs)
             if not competition(question, lexical, cited):
                 return None
         seeds, pool = lookup(question)

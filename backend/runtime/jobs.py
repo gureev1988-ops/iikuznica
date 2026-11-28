@@ -310,11 +310,13 @@ def run_once(
     terminal_handlers: Mapping[str, TerminalHandler] | None = None,
     active_kinds: Collection[str] | None = None,
     document_source_keys: Collection[str] | None = None,
+    on_claim: Callable[[], None] | None = None,
 ) -> Job | None:
     """Recover expired work in the queue, then claim and run one eligible job.
 
     Pass active_kinds to park jobs for disabled integrations until a worker
     enables their kind. Document work can be scoped to configured source keys.
+    The optional on_claim hook runs after commit and before the handler.
     """
     from .journal import recover_journal
 
@@ -327,6 +329,8 @@ def run_once(
     )
     if job is None:
         return None
+    if on_claim is not None:
+        on_claim()
 
     handler = handlers.get(job.kind)
     reason = None

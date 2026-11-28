@@ -349,6 +349,13 @@ def test_conflict_review_compares_the_same_action_and_survives_provider_outage()
 
     no_rerank.lexical_pool = lambda text: [entries["n", "1"], entries["k", "3"]]
     assert engine._regulation_conflict(question, calls, no_rerank, entries, refs, []) is None
+    assert engine._regulation_conflict(question, calls, no_rerank, entries, refs, [entries["n", "1"]]) is None
+
+    # A linked citation from outside the lexical pool can introduce a conflict.
+    def ranked_north(text):
+        return [("n", "1")], [entries["n", "1"], entries["k", "3"]]
+    ranked_north.lexical_pool = no_rerank.lexical_pool
+    assert engine._regulation_conflict(question, calls, ranked_north, entries, refs, [entries["s", "2"]]) == result
 
 
 def test_compound_document_request_keeps_the_independent_question():

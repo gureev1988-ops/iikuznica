@@ -90,6 +90,9 @@ def answer(question, search, *, past=(), publications=(), scope=None, call=model
         pending.set_result(found)
         return found
 
+    if hasattr(search, "lexical_pool"):
+        lookup.lexical_pool = search.lexical_pool
+
     def plan(case, body, stage):
         return call(case, body, stage)
 
