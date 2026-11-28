@@ -43,7 +43,7 @@ DB_TRAINING_REVISION = (
     "386c756cbd29ca454eeee57c3f6516a0388c92037e4e5cd78010b052f224cf0c",
 )
 DOC_BY_TITLE = {title: doc for doc, title in TITLES.items()}
-POLICY_VERSION = 3
+POLICY_VERSION = 4
 CACHE_SIZE = 64
 DIRECTORATE_OPTIONS = ("ДБРЦТ", "Дирекция ИБ", "Техническая дирекция")
 
@@ -56,8 +56,26 @@ class VerifiedAnswer(AnswerResult):
 
 
 @dataclass(frozen=True)
+class ScopedQuestion:
+    """Allow a scope phrase to move; all remaining words must match the request."""
+    original: re.Pattern | None
+    scope: tuple[re.Pattern, ...]
+    request: re.Pattern
+
+    def fullmatch(self, text):
+        if self.original is not None and self.original.fullmatch(text):
+            return True
+        for phrase in self.scope:
+            parts = phrase.split(text)
+            if len(parts) != 2:
+                return False
+            text = " ".join(" ".join(parts).split()).strip(" .,:")
+        return self.request.fullmatch(text)
+
+
+@dataclass(frozen=True)
 class Rule:
-    question: re.Pattern
+    question: re.Pattern | ScopedQuestion
     text: str
     evidence: tuple[tuple[str, str], ...]
     action: Action = "answer"
@@ -84,7 +102,7 @@ _DB_ESTIMATE_CONTEXT = (
     r"(?:надо|нужно) (?:(?:предупредить|уведомить) заказчика|сообщить заказчику), "
     r"(?:когда ждать оценку|в какие сроки ждать оценку)[.!] "
 )
-_DB_ESTIMATE = re.compile(
+_DB_ESTIMATE_WORDING = re.compile(
     rf"(?:{_DB} {_DB_ESTIMATE_TERM} {_DB_ESTIMATE_TARGET}|"
     rf"{_DB_ESTIMATE_TERM} {_DB_ESTIMATE_TARGET} {_DB}|"
     rf"{_DB} {_DB_ESTIMATE_CONTEXT}{_DB_ESTIMATE_TERM} "
@@ -96,7 +114,7 @@ _DB_EXACT_ESTIMATE = {
 }
 _DB_EARLY_PROJECT = r"(?:в дбрцт|на проекте дбрцт)"
 _DB_EARLY_WORK = r"(?:начать работы|приступить к работам) до подписания договора"
-_DB_EARLY_START = re.compile(
+_DB_EARLY_WORDING = re.compile(
     rf"(?:{_DB_EARLY_PROJECT} (?:(?:заказчик|клиент|команда проекта) (?:хочет|просит) {_DB_EARLY_WORK}[.!] "
     rf"(?:при каких условиях|на каких условиях) это возможно|"
     rf"(?:при каких условиях можно|как|можно ли) {_DB_EARLY_WORK})|"
@@ -109,6 +127,62 @@ _PACKAGE_TKP = (
 )
 _KICKOFF = r"установочн(?:ую встречу|ое совещание)"
 _INVITE = r"кого (?:(?:обязательно|нужно|надо|следует) )?(?:позвать|пригласить)"
+
+
+# Keep the actor, requested action and recipient in grammatical order. Only
+# complete, affirmative scope phrases may move. Extra conditions leave
+# unmatched text and are interpreted by the ordinary engine.
+_DB_SCOPE = re.compile(r"\b(?:(?:на проекте|в) )?дбрцт\b")
+_ESTIMATE_PAIR = (
+    r"(?:(?:для )?(?:двух|обеих) оценок,? (?:бюджетной и точной|точной и бюджетной)|"
+    r"(?:для )?(?:бюджетн(?:ую|ой|ых) и точн(?:ую|ой|ых)|точн(?:ую|ой|ых) и бюджетн(?:ую|ой|ых)) "
+    r"оцен(?:ку|ки|ок))"
+)
+_ESTIMATE_ASK = r"(?:за сколько(?: рабочих дней| дней| времени)|какие сроки|каковы сроки|в какие сроки)"
+_ESTIMATE_CUSTOMER = r"(?:заказчику|клиенту)"
+_DB_ESTIMATE = ScopedQuestion(
+    _DB_ESTIMATE_WORDING, (_DB_SCOPE,),
+    re.compile(rf"(?:(?:готовлю|готовим|составляю) ответ {_ESTIMATE_CUSTOMER}[.:] )?{_ESTIMATE_ASK} "
+               rf"(?:(?:рекомендует|рекомендуют|следует) )?"
+               rf"(?:(?:делать|готовить|подготовить|выдавать|предоставлять|выдачи|подготовки) |"
+               rf"(?:назвать|сообщить|указать) {_ESTIMATE_CUSTOMER} )?{_ESTIMATE_PAIR}"),
+)
+_EARLY_ACTION = (r"(?:начать (?:проектные )?работы|приступить к работам)(?: по проекту)? "
+                 r"до (?:подписания договора|того,? как (?:заказчик|клиент) подпишет договор)")
+_EARLY_PERMISSION = r"(?:когда|при каких условиях|на каких условиях) (?:можно|допускается|разрешается)"
+_EARLY_CONDITIONS = (r"(?:какие условия (?:нужно|надо|придется|необходимо) (?:соблюсти|выполнить)|"
+                     r"при каких условиях (?:это )?(?:допустимо|возможно))")
+_DB_EARLY_START = ScopedQuestion(
+    _DB_EARLY_WORDING, (_DB_SCOPE,),
+    re.compile(rf"(?:{_EARLY_PERMISSION} {_EARLY_ACTION}|"
+               rf"(?:заказчик|клиент) (?:просит|хочет) {_EARLY_ACTION}[.!] {_EARLY_CONDITIONS})"),
+)
+_PACKAGE_SCOPE = re.compile(r"\b(?:при продаже пакетного предложения|(?:для|в рамках) пакетного предложения|"
+                            r"на пакетное предложение)\b")
+_PRESALE_SCOPE = re.compile(r"\b(?:на|в) пресейле (?:иб|(?:в )?дирекции (?:иб|информационной безопасности))\b")
+_SELLER = r"(?:ss|tss|продавец решений)"
+_ISSUE = r"(?:выдать|предоставить|направить|отправить|передать)"
+_OFFICIAL = r"официальное ткп"
+_CUSTOMER = r"(?:клиенту|заказчику)"
+_PACKAGE_PERMISSION = re.compile(
+    rf"(?:(?:можно ли|может ли|вправе ли) {_SELLER}|{_SELLER} (?:вправе|может)) {_ISSUE} "
+    rf"(?:{_CUSTOMER} {_OFFICIAL}|{_OFFICIAL}(?: {_CUSTOMER})?) "
+    r"без согласования с (?:па|пресейл[- ]архитектором)"
+)
+_KICKOFF_PLAN = rf"(?:планирую|планируем|готовлю|готовим|организую|организуем) {_KICKOFF}(?: по проекту)?"
+_KICKOFF_ATTEND = r"кто (?:(?:обязательно|непременно) )?должен (?:(?:на ней|на нем) )?присутствовать"
+_TECH_WIN = re.compile(r"\b(?:техническая дирекция (?:выиграла конкурс|победила в конкурсе)|"
+                       r"после (?:победы технической дирекции в конкурсе|выигрыша конкурса технической дирекцией))\b")
+_TECH_SELLER = r"(?:ss|продавцу решений)"
+_TECH_RECIPIENT = r"(?:tps|техническому пресейл[- ]специалисту)"
+_NOTICE = r"(?:известить|оповестить|уведомить|проинформировать|сообщить)"
+_OUTCOME = r"о (?:результате(?: конкурса)?|победе(?: в конкурсе)?)"
+_NOTICE_DETAILS = r"что (?:указать|написать|сообщить)(?: в (?:сообщении|уведомлении))?"
+_TECH_NOTIFICATION = ScopedQuestion(None, (_TECH_WIN,), re.compile(
+    rf"(?:(?:как|каким способом|каким образом) {_TECH_SELLER} {_NOTICE} "
+    rf"(?:{_TECH_RECIPIENT}(?: {_OUTCOME})?|{_OUTCOME} {_TECH_RECIPIENT})(?:,? и |, ){_NOTICE_DETAILS}|"
+    rf"что {_TECH_SELLER} (?:написать|сообщить) {_TECH_RECIPIENT} и (?:как|каким способом|каким образом))"
+))
 
 
 _DB_ESTIMATE_RULES = {
@@ -171,7 +245,8 @@ _DB_APPOINTMENT = _appointment(_DB)
 RULES = (
     Rule(
         re.compile(rf"(?:{_INVITE} на {_KICKOFF}|(?:(?:мне|нам) )?(?:нужно|надо|предстоит) "
-                   rf"(?:провести|организовать) {_KICKOFF}[.!] {_INVITE})"),
+                   rf"(?:провести|организовать) {_KICKOFF}[.!] {_INVITE}|{_INVITE},? если {_KICKOFF_PLAN}|"
+                   rf"{_KICKOFF_PLAN}[.!] (?:{_INVITE}|{_KICKOFF_ATTEND}))"),
         clarify(["directorate"])["message"],
         (),
         action="clarify",
@@ -310,11 +385,11 @@ RULES = (
         action="escalate",
     ),
     Rule(
-        re.compile(
+        ScopedQuestion(re.compile(
             rf"(?:{_IB_PRESALE} (?:продаем|продается) пакетное предложение[.!] {_PACKAGE_TKP}|"
             rf"{_PACKAGE_TKP} при продаже пакетного предложения {_IB_PRESALE}|"
             rf"{_IB_PRESALE} {_PACKAGE_TKP} при продаже пакетного предложения)"
-        ),
+        ), (_PRESALE_SCOPE, _PACKAGE_SCOPE), _PACKAGE_PERMISSION),
         "Да. При продаже пакетного предложения на пресейле ИБ согласование официального ТКП "
         "с пресейл-архитектором не требуется. Это исключение из общего правила для SS и TSS [1].",
         (
@@ -324,6 +399,13 @@ RULES = (
                 "официальное ТКП, кроме случаев перепродажи вендорского сервиса или продажи пакетных предложений.",
             ),
         ),
+    ),
+    Rule(
+        _TECH_NOTIFICATION,
+        "После победы в конкурсе продавец решений (SS) уведомляет TPS в Заявке на пресейл. "
+        "В ней нужно указать номер и ссылку на Заявку на согласование договора с итоговым договором [1].",
+        (("TECH:8.1:1", "SS оповещает об этом TPS в Заявке на пресейл, указывая номер "
+                        "и ссылку на Заявку на согласование договора с итоговым договором."),),
     ),
     Rule(
         _DB_EARLY_START,

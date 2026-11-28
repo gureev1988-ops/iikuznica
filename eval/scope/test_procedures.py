@@ -38,6 +38,9 @@ class ProcedureTests(unittest.TestCase):
         fact = p.requested_fact(question)
         self.assertTrue(fact.matches({"text": "Ограничение для вложения — до 25 МБ."}))
         self.assertFalse(fact.matches({"text": "Объём работ по проекту — 25 МБ."}))
+        size = p.requested_fact("Сколько мегабайт может весить одно вложение на сайте проекта?")
+        self.assertEqual(size, fact)
+        self.assertIsNone(p.requested_fact("Сколько вложений можно приложить к заявке?"))
         phone = p.requested_fact("Телефон дежурного сотрудника первой линии?")
         self.assertTrue(phone.matches({"text": "Телефон дежурного: +7 (495) 123-45-67."}))
         substitute = "ИБ, кто заменяет недоступного пресейл-архитектора?"
@@ -46,10 +49,12 @@ class ProcedureTests(unittest.TestCase):
 
     def test_companions_for_roles_deadlines_and_early_start(self):
         corpus = ask.full_corpus()
-        anchors = [corpus[key] for key in (("DB", "1.1.1"), ("DB", "1.6"), ("TECH", "9.1"), ("DB", "8.4"))]
+        anchors = [corpus[key] for key in (("DB", "1.1.1"), ("DB", "1.6"), ("TECH", "9.1"),
+                                          ("DB", "8.4"), ("IB", "32.1"), ("IB", "32.2"))]
         _, allowed = evidence.options(p.companion_sources(anchors, corpus))
         for anchor, linked in [("DB:1.1.1:1", "DB:1.1:1"), ("DB:1.6:1", "DB:1.7:1"),
-                               ("TECH:9.1:1", "TECH:9.2:1")]:
+                               ("TECH:9.1:1", "TECH:9.2:1"), ("IB:32.1:1", "IB:32.3:1"),
+                               ("IB:32.2:1", "IB:32.3:1")]:
             with self.subTest(anchor=anchor):
                 self.assertIn(linked, p.complete_ids([anchor], allowed, "Какие условия действуют?"))
         general = "При каких условиях можно начать работы до подписания договора?"

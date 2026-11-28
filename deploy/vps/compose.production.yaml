@@ -10,6 +10,7 @@ services:
   interactive:
     restart: unless-stopped
     environment:
+      II_HOSTED_PASSAGE_RANKING: ${II_HOSTED_PASSAGE_RANKING:-0}
       II_MINILM_INTRA_THREADS: ${II_MINILM_INTRA_THREADS:-2}
   background:
     restart: unless-stopped

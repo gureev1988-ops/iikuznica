@@ -141,7 +141,9 @@ class ModelCalls:
     def call(self, invoke, role, model, endpoint, providers):
         if not self.profile.is_local and not os.getenv("OPENROUTER_API_KEY"):
             raise EngineUnavailable("OPENROUTER_API_KEY is missing")
-        for attempt, (provider, limit) in enumerate(zip(providers, ATTEMPT_SECONDS[model])):
+        # A cold-ranking failure can use the original local MiniLM without a second external attempt.
+        limits = (2.0,) if role == "passage-ranking" else ATTEMPT_SECONDS[model]
+        for attempt, (provider, limit) in enumerate(zip(providers, limits)):
             def perform():
                 # The recorder may take time before it starts the physical call.
                 remaining = self.remaining() - 0.15
@@ -157,7 +159,7 @@ class ModelCalls:
                     return self.request.attempts.call(perform, role=role, model=requested, route=route)
                 return perform().value
             except AssemblyModelFailure as error:
-                if attempt or not error.retryable or self.remaining() < 0.6:
+                if attempt + 1 == len(limits) or not error.retryable or self.remaining() < 0.6:
                     raise
                 time.sleep(0.1)
 

@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import json
 import os
-from functools import cached_property, lru_cache
+from functools import cached_property, lru_cache, partial
 import re
 from time import perf_counter
 
@@ -17,6 +17,7 @@ from registry import compile_records
 from . import faq_scope
 from .demo_project import asks_about_demo_project, display_text, legacy_faq_tag
 from .fast_answers import DIRECTORATE_OPTIONS, VerifiedAnswer, VerifiedAnswers, faq_candidate, potential_faq
+from . import hosted_rank
 from .models import GEMMA, LATENCY_LOG, QWEN, ModelCalls, json_reply
 from .local_steps import record, record_steps
 from .search import SEARCH_TURN, Search, linked_norms
@@ -203,7 +204,10 @@ class A1Engine:
                 for m in request.history if m.question and m.action]
 
     def _answer(self, request, calls):
-        corpus, lookup, refs, originals = self.search.snapshot(request.sources.fragments)
+        search_options = {}
+        if hosted_rank.eligible(request, calls):
+            search_options["alternative"] = partial(hosted_rank.rank_demo_passages, calls=calls)
+        corpus, lookup, refs, originals = self.search.snapshot(request.sources.fragments, **search_options)
         lookup = lru_cache(maxsize=32)(lookup)
         norms = linked_norms(originals, self.records)
         question = request.question
