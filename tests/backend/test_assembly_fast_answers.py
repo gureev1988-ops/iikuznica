@@ -84,6 +84,8 @@ def allow_originals(rows, fragments):
 
 
 @pytest.mark.parametrize(("text", "expected", "anchors"), [
+    ("Как пригласить архитектора на техническую встречу до создания ЗнП в ДБРЦТ?",
+     "через корпоративный мессенджер", ["1.4"]),
     (IB_QUESTION, "1 рабочего дня", ["2.7", "2.2", "2.3"]),
     ("Кто в дирекции ИБ на инициации при полных данных назначает руководителя проекта и за сколько?",
      "1 рабочего дня", ["2.7", "2.2", "2.3"]),
@@ -116,6 +118,10 @@ def test_local_answer_cites_audited_original_without_model(engine, fragments, mo
     "В какой срок в Дирекции ИБ назначают РП при инициации за координатора в отпуске?",
     "Кто назначает TPS Технической дирекции на проекте ИБ?",
     "А в Дирекции ИБ?",
+    "Как привлечь архитектора в ДБРЦТ и какую анкету приложить к ЗнП?",
+    "В ДБРЦТ нужна техническая встреча. Как его пригласить?",
+    "Как подключить архитектора на техническую встречу в Дирекции ИБ?",
+    "Где взять форму квалификационной анкеты для ЗнП в ДБРЦТ?",
     IB_QUESTION + " Кто замещает координатора?",
     PRE_QUESTION.replace("от всех услуг", "от внедрения"),
     PRE_QUESTION.replace("явно отказался", "не отказался"),
@@ -430,6 +436,15 @@ def test_db_training_edition_and_seed_preserve_only_independent_fast_answer(dsn,
     with connect(dsn) as conn:
         tx = conn.execute("SELECT status,result FROM turns WHERE id=%s", (admitted.turn_id,)).fetchone()
         assert tx["status"] == "completed" and tx["result"]["text"] == baseline.text
+    contact = "В ДБРЦТ до подачи ЗнП нужна техническая встреча с архитектором. Как его пригласить?"
+    asked = _admit(dsn, service, contact)
+    service.answer_job(claim(dsn, "interactive"))
+    with connect(dsn) as conn:
+        tx = conn.execute("SELECT status,result FROM turns WHERE id=%s", (asked.turn_id,)).fetchone()
+        assert tx["status"] == "completed" and tx["result"]["action"] == "answer"
+        assert "ресурс-менеджерам" in tx["result"]["text"] and "мессенджер" in tx["result"]["text"]
+        assert len(tx["result"]["sources"]) == 1
+
     # A changed seed, or an additional applicable FAQ, must invalidate cached decisions.
     mutated = tuple(replace(f, text="Назначение выполняет другой сотрудник") if f == faq else f for f in current)
     assert assembly.fast_answers.answer(question(DB_QUESTION, mutated)) is None

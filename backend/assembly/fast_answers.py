@@ -242,7 +242,34 @@ def _appointment(directorate, *, complete_data=False):
 _DB_APPOINTMENT = _appointment(_DB)
 
 
+# DB 1.4 establishes the contact route directly. Its mention of attachments
+# concerns the later presale request. Questions about those documents fall through.
+_BEFORE_PRESALE = r"до (?:(?:оформления|создания|подачи) )?знп"
+_TECH_MEETING = r"(?:устн(?:ая|ую) )?техническ(?:ая|ую) встреч(?:а|у)"
+_MEETING_CONTEXT = (
+    rf"(?:{_BEFORE_PRESALE}|(?:еще |пока )?не оформил[аи]? знп|"
+    r"(?:клиент|заказчик) (?:еще |пока )?не сформулировал требования|у (?:клиента|заказчика) неясны требования|"
+    rf"нужна {_TECH_MEETING}(?: с архитектором)?(?: для (?:уточнения|выяснения) требований (?:клиента|заказчика))?)"
+)
+_CONTACT_VERB = r"(?:привлечь|подключить|пригласить)"
+_DB_ARCHITECT = ScopedQuestion(None, (_DB_SCOPE,), re.compile(
+    rf"(?=.*\bархитектор(?:а|ом)\b)(?:{_MEETING_CONTEXT}[.,:]? )*как (?:(?:мне|нам|ss) )?"
+    rf"(?:{_CONTACT_VERB} архитектора|его {_CONTACT_VERB})(?: на {_TECH_MEETING})?(?: {_BEFORE_PRESALE})?"
+))
+
+
 RULES = (
+    Rule(
+        _DB_ARCHITECT,
+        "Для технической встречи с заказчиком или проработки требований SS обращается к соответствующим "
+        "ресурс-менеджерам вне учётных систем — по почте или через корпоративный мессенджер. "
+        "Так можно привлечь архитектора до оформления заявки на пресейл [1].",
+        (("DB:1.4:1", "SS при необходимости может привлечь Архитектора, обратившись к соответствующим "
+                      "Ресурс-менеджерам за рамками учётных систем по каналам связи (почта, корпоративный "
+                      "мессенджер) для проработки требований/ТЗ заказчика или участия в технической встрече "
+                      "с Заказчиком для уточнения требований. После проведения скоринга и определения требований "
+                      "SS создаёт Заявку на пресейл (ЗнП)"),),
+    ),
     Rule(
         re.compile(rf"(?:{_INVITE} на {_KICKOFF}|(?:(?:мне|нам) )?(?:нужно|надо|предстоит) "
                    rf"(?:провести|организовать) {_KICKOFF}[.!] {_INVITE}|{_INVITE},? если {_KICKOFF_PLAN}|"
@@ -507,8 +534,8 @@ def _check_faq(conn, question, conditions, fragments):
             continue
         if not _is_reviewed_seed(row, fragment):
             return True, None
-        if _DB_APPOINTMENT.fullmatch(intent) or _DB_EARLY_START.fullmatch(intent):
-            # The estimate lead time has no bearing on appointment or early start.
+        if any(pattern.fullmatch(intent) for pattern in (_DB_APPOINTMENT, _DB_EARLY_START, _DB_ARCHITECT)):
+            # The estimate lead time applies to none of these operations.
             continue
         if not conditions and _DB_ESTIMATE.fullmatch(intent):
             # The exact-estimate part has the same scope, so the answer must cite
