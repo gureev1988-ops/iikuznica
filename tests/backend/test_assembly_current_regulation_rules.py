@@ -13,7 +13,7 @@ from backend.assembly.engine import A1Engine
 from backend.assembly.fast_answers import VerifiedAnswer
 from backend.assembly.quality_seed import ANSWER, QUESTION, seed_quality, training_original
 from backend.contracts.api import MessageRequest
-from backend.contracts.engine import AnswerRequest, SourceFragment, SourceSnapshot
+from backend.contracts.engine import AnswerRequest, HistoryMessage, SourceFragment, SourceSnapshot
 from backend.db import connect
 from backend.dialog import Actor, DialogueService
 from backend.mailfaq.faq import _key
@@ -127,6 +127,8 @@ def test_adjacent_intents_remain_with_normal_engine(engine, revisions, question)
 
 @pytest.mark.parametrize("estimate_question,start_question", [
     (ESTIMATES, EARLY_START),
+    ("Сколько рабочих дней у ДБРЦТ обычно занимают две оценки — точная и бюджетная?",
+     "При каких условиях команда ДБРЦТ может начать работы, пока договор с заказчиком ещё не подписан?"),
     ("В какие сроки в ДБРЦТ следует подготовить точную и бюджетную оценки?",
      "Когда в ДБРЦТ разрешается начать работы по проекту до подписания договора?"),
 ])
@@ -238,3 +240,52 @@ def test_competition_notification_uses_complete_authorized_clause(engine, revisi
 ])
 def test_unreviewed_qualifier_keeps_normal_routing(question, engine, revisions):
     assert answer(engine, question, revisions[1]) is None
+
+
+def test_positive_approval_question_requires_a_negative_answer(engine, revisions):
+    query = ("На пресейле ИБ SS продаёт пакетное предложение. "
+             "Требуется ли согласовать с ПА официальное ТКП до отправки заказчику?")
+    result = answer(engine, query, revisions[1])
+    assert evidence(result, revisions[1]) == [("2.3", 1)]
+    assert result.text.startswith("Нет.") and "без согласования" in result.text
+    for other in (query.replace("SS", "АМ"), query.replace("пакетное", "непакетное"),
+                  query.replace("официальное", "черновое"), query.replace("с ПА", "с директором")):
+        assert answer(engine, other, revisions[1]) is None
+
+
+def test_early_start_is_a_new_operation_only_after_a_completed_estimate(engine, revisions):
+    fragments = revisions[1]
+    query = "В ДБРЦТ можно ли начать работы до подписания договора?"
+    estimate = answer(engine, ESTIMATES, fragments)
+    history = (HistoryMessage("user", ESTIMATES), HistoryMessage("assistant", estimate.text, ESTIMATES, ESTIMATES, "answer"))
+    result = answer(engine, query, fragments, history=history)
+    assert evidence(result, fragments) == [(f"8.{i}", 2) for i in range(4, 9)]
+    assert "Без гарантийного письма" in result.text
+    for other in (query.replace("в ДБРЦТ", "вне ДБРЦТ").replace("В ДБРЦТ", "Вне ДБРЦТ"),
+                  query.replace("до подписания договора", "до подписания допсоглашения"),
+                  query.replace("начать", "не начать"), query.replace("договора?", "договора с подрядчиком?")):
+        assert answer(engine, other, fragments, history=history) is None
+    for changes in ({"conditions": {"directorate": "ИБ"}}, {"clarification_count": 1},
+                    {"clarification": {"value": "Да"}}, {"history": (*history, HistoryMessage("user", "Но письмо уже есть"))}):
+        assert answer(engine, query, fragments, **({"history": history} | changes)) is None
+
+
+def test_directorate_followup_keeps_tender_and_requires_the_prior_answer_and_active_sources(engine, revisions):
+    query = "Какой срок подготовки бюджетной оценки для торгов у Технической дирекции?"
+    for fragments in revisions:
+        previous = answer(engine, query, fragments)
+        history = (HistoryMessage("user", query), HistoryMessage("assistant", previous.text, query, query, "answer"))
+        result = answer(engine, "А в ДБРЦТ?", fragments, history=history)
+        assert [anchor for anchor, _ in evidence(result, fragments)] == ["2.4", "1.6", "1.7"]
+        assert "нельзя использовать для подачи в конкурс" in result.text and "RFI" in result.text
+        assert "3 рабочих дня" in result.text and "2 недели" not in result.text
+        assert result.checked_questions == (query, result.resolved_question)
+        assert "для торгов" in result.resolved_question
+        assert answer(engine, "А в ДБРЦТ?", fragments, history=(history[0], replace(history[1], text="Иная операция"))) is None
+        assert answer(engine, "А в ДБРЦТ?", fragments, history=(history[0], replace(history[1], action="clarify"))) is None
+        other = query.replace("торгов", "контракта")
+        assert answer(engine, "А в ДБРЦТ?", fragments, history=(HistoryMessage("user", other),
+                      replace(history[1], question=other, resolved=other))) is None
+        edited = tuple(replace(f, text=f.text.replace("RFI", "RFP")) if f.title == TITLES["DB"] and f.anchor == "2.4"
+                       else f for f in fragments)
+        assert answer(engine, "А в ДБРЦТ?", edited, history=history) is None
