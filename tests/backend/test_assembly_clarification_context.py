@@ -206,9 +206,12 @@ def test_a1_explains_choice_references_using_the_actual_prompt_context_and_can_r
         assert service.get_turn(conn, employee, second.turn_id)["status"] == "technical_failure"
         assert service.retry(conn, employee, second.turn_id, 1) == second
     process()
+    repeated = send(reply, case_id=first.case_id, clarification_id=clarification["id"])
+    process()
     with connect(dsn) as conn:
-        result = service.get_turn(conn, employee, second.turn_id)["result"]
-        assert result["action"] == "answer" and result["sources"]
+        for answered in (second, repeated):
+            result = service.get_turn(conn, employee, answered.turn_id)["result"]
+            assert result["action"] == "answer" and result["sources"]
         hint = next_hint(conn, session)
         assert (hint.stage, hint.case_id, hint.example) == ("answer", first.case_id, "2")
-    assert len(resolutions) == 2 and lookups and set(lookups) == {resolved}
+    assert len(resolutions) == 3 and lookups and set(lookups) == {resolved}
