@@ -125,7 +125,12 @@ def test_adjacent_intents_remain_with_normal_engine(engine, revisions, question)
     assert answer(engine, question, revisions[1]) is None
 
 
-def test_only_reviewed_seed_can_be_compared_locally(engine, revisions, monkeypatch):
+@pytest.mark.parametrize("estimate_question,start_question", [
+    (ESTIMATES, EARLY_START),
+    ("В какие сроки в ДБРЦТ следует подготовить точную и бюджетную оценки?",
+     "Когда в ДБРЦТ разрешается начать работы по проекту до подписания договора?"),
+])
+def test_only_reviewed_seed_can_be_compared_locally(engine, revisions, monkeypatch, estimate_question, start_question):
     fragments = revisions[1]
     faq = SourceFragment(uuid4(), uuid4(), uuid4(), ANSWER, anchor="official-answer", kind="faq", version=1)
     all_fragments = (*fragments, faq)
@@ -134,23 +139,23 @@ def test_only_reviewed_seed_can_be_compared_locally(engine, revisions, monkeypat
     rows = [row]
     conn = SimpleNamespace(execute=lambda *_: SimpleNamespace(fetchall=lambda: rows))
     monkeypatch.setattr(fast_answers, "connect", lambda _: nullcontext(conn))
-    result = answer(engine, ESTIMATES, all_fragments)
+    result = answer(engine, estimate_question, all_fragments)
     assert evidence(result, all_fragments) == [("1.6", 2), ("1.7", 2), ("official-answer", 1)]
     assert "7 рабочих дней" in result.text.split("FAQ Отдела качества")[0]
     assert "6 рабочих дней" in result.text.split("FAQ Отдела качества")[1]
-    assert result.escalation_question == ESTIMATES
-    assert not fast_answers.potential_faq(conn, ESTIMATES, {}, all_fragments)
+    assert result.escalation_question == estimate_question
+    assert not fast_answers.potential_faq(conn, estimate_question, {}, all_fragments)
     assert fast_answers.potential_faq(conn, QUESTION, {}, all_fragments)
-    assert evidence(answer(engine, EARLY_START, all_fragments), all_fragments) == [
+    assert evidence(answer(engine, start_question, all_fragments), all_fragments) == [
         (f"8.{ref}", 2) for ref in range(4, 9)
     ]
     row["pending"] = ["Уточните сторону"]
-    assert answer(engine, ESTIMATES, all_fragments) is None
+    assert answer(engine, estimate_question, all_fragments) is None
     row["pending"] = []
-    assert answer(engine, ESTIMATES, (*fragments, replace(faq, text="Обновлено"))) is None
+    assert answer(engine, estimate_question, (*fragments, replace(faq, text="Обновлено"))) is None
     other = replace(faq, fragment_id=uuid4())
-    rows.append(dict(row, current_fragment_id=other.fragment_id, question_key=_key(ESTIMATES), is_seed=False))
-    assert answer(engine, ESTIMATES, (*all_fragments, other)) is None
+    rows.append(dict(row, current_fragment_id=other.fragment_id, question_key=_key(estimate_question), is_seed=False))
+    assert answer(engine, estimate_question, (*all_fragments, other)) is None
 
 
 def test_current_rules_publish_with_real_training_revision_and_seed(dsn, tmp_path, monkeypatch):
@@ -183,3 +188,53 @@ def test_current_rules_publish_with_real_training_revision_and_seed(dsn, tmp_pat
         result = service.get_turn(conn, actor, turn.turn_id)
         assert result["status"] == "completed" and result["result"]["action"] == "clarify"
         assert len(result["clarifications"]) == 1 and result["offers"] == []
+
+
+@pytest.mark.parametrize("question,baseline", [
+    ("В какие сроки следует подготовить точную и бюджетную оценки в ДБРЦТ?", ESTIMATES),
+    ("За сколько времени в ДБРЦТ рекомендуют предоставлять бюджетную и точную оценки?", ESTIMATES),
+    ("На пресейле Дирекции ИБ может ли TSS передать заказчику официальное ТКП без согласования с ПА "
+     "при продаже пакетного предложения?", PACKAGE_TKP),
+    ("В рамках пакетного предложения SS вправе направить клиенту официальное ТКП без согласования с ПА "
+     "в пресейле ИБ?", PACKAGE_TKP),
+    ("В ДБРЦТ на каких условиях допускается приступить к работам по проекту до подписания договора?", EARLY_START),
+    ("Заказчик просит ДБРЦТ начать работы до того, как клиент подпишет договор. "
+     "При каких условиях это допустимо?", EARLY_START),
+    ("Кого позвать, если готовим установочное совещание по проекту?", KICKOFF),
+    ("Организуем установочное совещание. Кто должен на нем присутствовать?", KICKOFF),
+])
+def test_scope_phrases_preserve_the_audited_answer(question, baseline, engine, revisions):
+    for fragments in revisions:
+        result = answer(engine, question, fragments)
+        assert result == replace(answer(engine, baseline, fragments), resolved_question=question)
+
+
+def test_competition_notification_uses_complete_authorized_clause(engine, revisions):
+    text = "После выигрыша конкурса технической дирекцией каким образом SS оповестить TPS о победе, что сообщить?"
+    fragments = revisions[1]
+    result = answer(engine, text, fragments)
+    assert evidence(result, fragments) == [("8.1", 1)]
+    assert all(part in result.text for part in ("SS", "TPS", "в Заявке на пресейл", "номер и ссылку",
+                                               "с итоговым договором"))
+    assert answer(engine, text, fragments[1:]) is None
+
+
+@pytest.mark.parametrize("question", [
+    "В ДБРЦТ за сколько рабочих дней рекомендуют делать бюджетную и ориентировочную оценки?",
+    "За сколько дней рекомендуют делать бюджетную и точную оценки в ДБРЦТ при наличии подрядчика?",
+    "Клиент просит ДБРЦТ не приступать к работам до подписания договора. Какие условия нужно выполнить?",
+    "Когда ДБРЦТ допускается начать работы до подписания дополнительного соглашения?",
+    "В ДБРЦТ на этапе реализации когда разрешается начать работы до подписания договора?",
+    "Может ли заказчик на пресейле ИБ передать SS официальное ТКП на пакетное предложение без согласования с ПА?",
+    "SS в пресейле ИБ вправе не выдавать официальное ТКП на пакетное предложение без согласования с ПА?",
+    "В рамках пакетного предложения ИБ и ДБРЦТ SS вправе выдать официальное ТКП без согласования с ПА?",
+    "В пресейле ИБ SS вправе выдать официальное ТКП на пакетное предложение без согласования с юристом?",
+    "Кого пригласить, если организую внутреннюю установочную встречу по проекту?",
+    "Готовлю установочную встречу Дирекции ИБ. Кто должен на ней присутствовать?",
+    "Готовлю установочную встречу. Кто не должен на ней присутствовать?",
+    "Техническая дирекция не выиграла конкурс. Как продавцу решений известить TPS и что указать в сообщении?",
+    "Техническая дирекция выиграла конкурс. Как TPS уведомить продавца решений и что указать в сообщении?",
+    "Техническая дирекция выиграла конкурс. Как продавцу решений известить TPS и что указать для другого этапа?",
+])
+def test_unreviewed_qualifier_keeps_normal_routing(question, engine, revisions):
+    assert answer(engine, question, revisions[1]) is None
