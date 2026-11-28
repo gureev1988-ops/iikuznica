@@ -2,7 +2,7 @@
 from collections import OrderedDict, defaultdict
 from concurrent.futures import Future
 from contextvars import ContextVar
-from functools import cached_property, lru_cache, partial
+from functools import cached_property, lru_cache
 from hashlib import sha256
 import json
 import logging
@@ -113,29 +113,13 @@ class Search:
     def model(self):
         return load_model(self.model_dir)
 
-    @staticmethod
-    def _ranking_key(question, pool):
+    def rank(self, question, pool):
+        if not pool:
+            return ()
         # Only the exact model inputs are reusable. The caller still builds the
         # pool from its own current authorized snapshot and verifies citations.
         inputs = [(p["title"], p["section"], p["text"]) for p in pool]
-        return sha256(json.dumps((question, inputs), ensure_ascii=False).encode("utf-8")).digest()
-
-    def rank(self, question, pool, *, alternative=None):
-        if not pool:
-            return ()
-        key = self._ranking_key(question, pool)
-        if alternative is not None:
-            with self._ranking_lock:
-                existing = self._rankings.get(key)
-                if existing is not None:
-                    self._rankings.move_to_end(key)
-            if existing is not None:
-                with local_step("Повторное использование оценок MiniLM"):
-                    return existing.result()
-            ranked = alternative(question, pool)
-            if ranked is not None:
-                return ranked
-
+        key = sha256(json.dumps((question, inputs), ensure_ascii=False).encode("utf-8")).digest()
         with self._ranking_lock:
             existing = self._rankings.get(key)
             if existing is None:
@@ -159,7 +143,7 @@ class Search:
         future.set_result(scores)
         return scores
 
-    def snapshot(self, fragments, *, alternative=None):
+    def snapshot(self, fragments):
         started = perf_counter()
         by_id = {f.fragment_id: f for f in fragments if f.kind == "document"}
         with connect(self.dsn) as conn:
@@ -199,12 +183,10 @@ class Search:
                              SEARCH_TURN.get(), perf_counter() - started, len(rows))
             return [corpus[eligible[row["fragment_id"]]] for row in rows]
 
-        scoped_ranker = partial(alternative, originals=originals) if alternative is not None else None
-
         def lookup(question):
             pool = lexical_pool(question)
             started = perf_counter()
-            scores = self.rank(question, pool, alternative=scoped_ranker)
+            scores = self.rank(question, pool)
             LATENCY_LOG.info("turn=%s stage=search rerank_s=%.3f candidates=%s",
                              SEARCH_TURN.get(), perf_counter() - started, len(pool))
             neural = sorted(range(2, len(scores)), key=lambda i: -scores[i])
