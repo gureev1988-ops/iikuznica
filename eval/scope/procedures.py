@@ -99,7 +99,8 @@ class Fact:
 
 def requested_fact(text):
     t = normalized(text)
-    if re.search(r"размер|объем|лимит|ограничен", t) and re.search(r"файл|вложени", t):
+    size_request = r"размер|объем|лимит|ограничен|\bсколько (?:[кмг]б|(?:кило|мега|гига)байт\w*) (?:может |должен )?весить\b"
+    if re.search(size_request, t) and re.search(r"файл|вложени", t):
         return Fact("file_size", "допустимого размера загружаемого файла",
                     r"\b\d+(?:[,.]\d+)?\s*(?:[кмгkmg][бb]|мегабайт\w*|гигабайт\w*|килобайт\w*)\b", r"файл|вложени")
     if re.search(r"телефон|позвонить|(?:прямой|контактный) номер", t):

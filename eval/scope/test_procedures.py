@@ -38,6 +38,9 @@ class ProcedureTests(unittest.TestCase):
         fact = p.requested_fact(question)
         self.assertTrue(fact.matches({"text": "Ограничение для вложения — до 25 МБ."}))
         self.assertFalse(fact.matches({"text": "Объём работ по проекту — 25 МБ."}))
+        size = p.requested_fact("Сколько мегабайт может весить одно вложение на сайте проекта?")
+        self.assertEqual(size, fact)
+        self.assertIsNone(p.requested_fact("Сколько вложений можно приложить к заявке?"))
         phone = p.requested_fact("Телефон дежурного сотрудника первой линии?")
         self.assertTrue(phone.matches({"text": "Телефон дежурного: +7 (495) 123-45-67."}))
         substitute = "ИБ, кто заменяет недоступного пресейл-архитектора?"
