@@ -98,6 +98,7 @@ const guide = chatTools({
     saveDraft();
     const continuation = ["answer", "consent"].includes(hint.stage);
     const caseId = continuation ? hint.case_id || activeCase : null;
+    rememberOffer(caseId, true);
     sessionStorage.setItem("hint:" + draftKey(), JSON.stringify({text: hint.example, caseId}));
     $("message").focus();
   },
@@ -146,6 +147,20 @@ const labels = {
 };
 
 function draftKey() { return "draft:" + conversation + ":" + (activeCase || "new"); }
+function rememberOffer(caseId, replace = false) {
+  const key = "offer:" + draftKey();
+  if (!$("message").value.trim()) {
+    sessionStorage.removeItem(key);
+    return null;
+  }
+  const saved = JSON.parse(sessionStorage.getItem(key) || "null");
+  if (!replace && saved && saved.caseId === caseId) return saved.offer;
+  const open = history?.turns.filter((turn) => turn.case_id === caseId)
+    .flatMap((turn) => turn.offers).find((offer) => offer.status === "open");
+  const offer = open ? {id: open.id, version: open.version} : null;
+  sessionStorage.setItem(key, JSON.stringify({caseId, offer}));
+  return offer;
+}
 function saveDraft() {
   if (!conversation) return;
   if ($("message").value) sessionStorage.setItem(draftKey(), $("message").value);
@@ -153,6 +168,7 @@ function saveDraft() {
 }
 $("message").oninput = () => {
   sessionStorage.removeItem("hint:" + draftKey());
+  rememberOffer(activeCase);
   saveDraft();
 };
 
@@ -355,6 +371,7 @@ function watch() {
 
 async function send(fields) {
   const selectedCase = activeCase;
+  const submittedDraft = draftKey();
   const key = `pending:${conversation}`;
   const previous = JSON.parse(sessionStorage.getItem(key) || "null");
   const same = previous && JSON.stringify(previous.fields) === JSON.stringify(fields);
@@ -365,6 +382,10 @@ async function send(fields) {
     result = await api(`/v1/conversations/${conversation}/messages`, {client_message_id: command, ...fields});
   } catch (error) {
     if (error.status && error.status < 500) sessionStorage.removeItem(key);
+    if (error.detail?.code === "reply_offer_changed") {
+      sessionStorage.removeItem("offer:" + submittedDraft);
+      await refresh();
+    }
     throw error;
   }
   sessionStorage.removeItem(key);
@@ -397,22 +418,23 @@ $("compose").onsubmit = (event) => {
   if (!chatReady || $("dion-send").disabled) return;
   const submittedKey = draftKey();
   const applied = JSON.parse(sessionStorage.getItem("hint:" + submittedKey) || "null");
-  // Applying a hint only fills the composer. Select the target when the user sends it.
   const caseId = applied?.text === text ? applied.caseId : activeCase;
+  const offer = rememberOffer(caseId);
   const clarification = openClarification(caseId);
   const waiting = history.mail_followups.find((req) => req.case_id === caseId);
   perform($("compose").querySelector("button"), async () => {
-    if (waiting) {
+    if (waiting && !offer) {
       await sendMailFollowup(waiting, text);
     } else {
       await send({
-        text, case_id: caseId || null,
-        ...(clarification ? {clarification_id: clarification.id, clarification_version: clarification.version} : {}),
+        text, case_id: caseId || null, reply_to_offer: offer,
+        ...(clarification && !offer ? {clarification_id: clarification.id, clarification_version: clarification.version} : {}),
       });
     }
     if ($("message").value.trim() === text) {
       $("message").value = "";
       sessionStorage.removeItem(submittedKey);
+      sessionStorage.removeItem("offer:" + submittedKey);
       sessionStorage.removeItem("hint:" + submittedKey);
       saveDraft();
     }
@@ -491,14 +513,21 @@ async function openChat() {
     }
     await refresh();
     const pending = JSON.parse(sessionStorage.getItem("pending:" + conversation) || "null");
+    let draftNotice;
     if (pending) {
       const previousDraft = draftKey();
-      await send(pending.fields);
-      if ($("message").value.trim() === pending.fields.text) {
-        $("message").value = "";
-        sessionStorage.removeItem(previousDraft);
-        sessionStorage.removeItem("hint:" + previousDraft);
-        saveDraft();
+      try {
+        await send(pending.fields);
+        if ($("message").value.trim() === pending.fields.text) {
+          $("message").value = "";
+          sessionStorage.removeItem(previousDraft);
+          sessionStorage.removeItem("offer:" + previousDraft);
+          sessionStorage.removeItem("hint:" + previousDraft);
+          saveDraft();
+        }
+      } catch (error) {
+        if (error.detail?.code !== "reply_offer_changed") throw error;
+        draftNotice = error.detail.message;
       }
     }
     chatReady = true;
@@ -508,6 +537,7 @@ async function openChat() {
     $("compose").setAttribute("aria-busy", "false");
     status("");
     updateSearchStatus();
+    if (draftNotice) status(draftNotice);
     watch();
     reader.readDocument();
     // Polling recovers an expired SSE cursor and asynchronous mail delivery.

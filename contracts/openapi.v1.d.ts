@@ -1728,6 +1728,8 @@ export interface components {
             client_message_id: string;
             /** Option Id */
             option_id?: string | null;
+            /** @description Offer shown when composing this reply. Explicit null means no offer was shown. */
+            reply_to_offer?: components["schemas"]["OfferReference"] | null;
             /** Text */
             text?: string | null;
         };
@@ -1840,6 +1842,16 @@ export interface components {
         };
         /** OfferDecision */
         OfferDecision: {
+            /** Version */
+            version: number;
+        };
+        /** OfferReference */
+        OfferReference: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /** Version */
             version: number;
         };

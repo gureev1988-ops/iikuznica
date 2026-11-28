@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from threading import Event
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI, Header
@@ -180,6 +180,227 @@ def test_next_message_after_mail_offer(dsn, reply, offer_status):
     with connect(dsn) as conn:
         assert conn.execute("SELECT count(*) AS n FROM mail_requests").fetchone()["n"] == int(offer_status == "confirmed")
         assert conn.execute("SELECT count(*) AS n FROM mail_outbound").fetchone()["n"] == int(offer_status == "confirmed")
+
+
+def test_guest_confirms_coordinator_substitution_offer_in_chat(dsn, tmp_path):
+    from backend.assembly.corpus import seed
+    from backend.assembly.engine import A1Engine
+
+    seed(dsn, tmp_path)
+    service = DialogueService(dsn=dsn, engine=A1Engine(dsn), mail_config=MailConfig())
+    guest = Actor("guest:test", frozenset({"employee"}), "guest@example.test", channel="guest")
+    app = FastAPI()
+    app.include_router(create_router(service, lambda: guest))
+    client = TestClient(app)
+    path = f"/v1/conversations/{uuid4()}/messages"
+    question = "Кто замещает координатора проектов Дирекции ИБ на время отпуска?"
+    asked = client.post(path, json={"client_message_id": "ask", "text": question})
+    assert asked.status_code == 202, asked.text
+    first = asked.json()
+    assert process(service)
+    initial = snapshot(client, first["turn_id"])
+    offer, = initial["offers"]
+    assert offer["status"] == "open" and "Передать вопрос о замещении в Отдел качества?" in offer["text"]
+    citation, = initial["result"]["sources"]
+
+    consent = {"case_id": first["case_id"], "client_message_id": "consent", "text": "передай"}
+    accepted = client.post(path, json=consent)
+    assert accepted.status_code == 202, accepted.text
+    assert client.post(path, json=consent).json() == accepted.json()
+    turn = snapshot(client, accepted.json()["turn_id"])
+    assert turn["status"] == "completed"
+    assert not turn["clarifications"] and not process(service)
+    assert snapshot(client, first["turn_id"])["offers"][0]["status"] == "confirmed"
+    with connect(dsn) as conn:
+        request, = conn.execute("SELECT id,question,offer_id FROM mail_requests").fetchall()
+        outbound, = conn.execute("SELECT request_id,body FROM mail_outbound").fetchall()
+        assert str(request["id"]) == turn["result"]["mail_request_id"]
+        assert request["question"] == question and str(request["offer_id"]) == offer["id"]
+        assert outbound["request_id"] == request["id"]
+        assert "Что просим уточнить: " + question in outbound["body"]
+        assert citation["quote"] in outbound["body"]
+
+
+def test_bare_consent_in_separate_case_cannot_accept_an_open_offer(dsn):
+    service = DialogueService(dsn=dsn, engine=build_engine("fixture-alpha"), mail_config=MailConfig())
+    client = client_for(service)
+    conversation = uuid4()
+    first = enqueue(client, conversation, 2)
+    assert process(service)
+    separate = enqueue(client, conversation, 0, message_id="separate", text="передай")
+    assert separate["case_id"] != first["case_id"]
+    assert snapshot(client, first["turn_id"])["offers"][0]["status"] == "open"
+    with connect(dsn) as conn:
+        assert conn.execute("SELECT count(*) AS n FROM mail_outbound").fetchone()["n"] == 0
+
+
+@pytest.mark.parametrize("text", ["передай", "Обратитесь к ним от моего имени"])
+def test_web_reply_is_bound_to_the_offer_shown_in_its_tab(dsn, monkeypatch, text):
+    engine = build_engine("fixture-alpha")
+    service = DialogueService(dsn=dsn, engine=engine, mail_config=MailConfig(), resolve_actor=lambda *_: EMPLOYEE)
+    client = client_for(service)
+    conversation = uuid4()
+    first = enqueue(client, conversation, 2)
+    process(service)
+    old, = snapshot(client, first["turn_id"])["offers"]
+    assert client.post(f"/v1/offers/{old['id']}/decline", json={"version": old["version"]}).status_code == 200
+    second = enqueue(client, conversation, 2, case_id=first["case_id"], message_id="second")
+    process(service)
+    current, = snapshot(client, second["turn_id"])["offers"]
+    path = f"/v1/conversations/{conversation}/messages"
+    reply = {"case_id": first["case_id"], "text": text, "client_message_id": "draft"}
+    monkeypatch.setattr(engine, "interpret_offer", lambda *_, **__: {"intent": "confirm", "evidence": text},
+                        raising=False)
+    for fields in ({"reply_to_offer": {"id": old["id"], "version": old["version"]}},
+                   {"reply_to_offer": {"id": current["id"], "version": current["version"] + 1}},
+                   {"reply_to_offer": None}, {}):
+        response = client.post(path, json={**reply, **fields})
+        assert response.status_code == 409 and response.json()["detail"]["code"] == "reply_offer_changed"
+    assert snapshot(client, second["turn_id"])["offers"][0]["status"] == "open"
+    with connect(dsn) as conn:
+        assert not conn.execute("SELECT id FROM mail_requests").fetchone()
+        assert not conn.execute("SELECT id FROM turns WHERE request_id='draft'").fetchone()
+    fields = {**reply, "reply_to_offer": {"id": current["id"], "version": current["version"]}}
+    accepted = client.post(path, json=fields)
+    assert accepted.status_code == 202
+    process(service)
+    assert client.post(path, json=fields).json() == accepted.json()
+    with connect(dsn) as conn:
+        mail, = conn.execute("SELECT offer_id FROM mail_requests").fetchall()
+        assert str(mail["offer_id"]) == current["id"]
+    following = enqueue(client, conversation, 1, case_id=first["case_id"], message_id="clarify",
+                        reply_to_offer=None)
+    process(service)
+    assert snapshot(client, following["turn_id"])["clarifications"][0]["status"] == "open"
+    stale = client.post(path, json={**fields, "client_message_id": "another-tab"})
+    assert stale.status_code == 409 and stale.json()["detail"]["code"] == "reply_offer_changed"
+
+
+@pytest.mark.parametrize("legacy_payload", [False, True], ids=["current", "legacy"])
+def test_offer_preview_and_semantic_consent_keep_the_visible_question(dsn, monkeypatch, legacy_payload):
+    engine = build_engine("fixture-alpha")
+    service = DialogueService(dsn=dsn, engine=engine, mail_config=MailConfig(),
+                              resolve_actor=lambda *_: EMPLOYEE)
+    client = client_for(service)
+    conversation = uuid4()
+    first = enqueue(client, conversation, 2)
+    assert process(service)
+    offer, = snapshot(client, first["turn_id"])["offers"]
+    if legacy_payload:
+        with connect(dsn) as conn:
+            conn.execute("UPDATE offers SET payload=payload-'question' WHERE id=%s", (offer["id"],))
+    seen = []
+
+    def interpret(text, *, offer, context):
+        assert context.case_id == first_case and context.question == text
+        seen.append(dict(offer))
+        intent = "ask_details" if len(seen) == 1 else "confirm"
+        return {"intent": intent, "evidence": text}
+
+    first_case = UUID(first["case_id"])
+    monkeypatch.setattr(engine, "interpret_offer", interpret, raising=False)
+    monkeypatch.setattr(engine, "answer", lambda *_: pytest.fail("Offer replies must bypass regulation search"))
+    def send(text, key):
+        return enqueue(client, conversation, 2, message_id=key, text=text, case_id=first["case_id"])
+    preview = send("А что конкретно они получат?", "preview")
+    assert snapshot(client, preview["turn_id"])["status"] == "queued" and not seen
+    assert process(service)
+    details = snapshot(client, preview["turn_id"])["result"]["text"]
+    assert seen[0]["prompt"] == offer["text"] and seen[0]["question"] in details and "Отправить обращение?" in details
+    with connect(dsn) as conn:
+        assert not conn.execute("SELECT id FROM mail_requests").fetchone()
+    accepted = send("Пусть коллеги из качества разберутся с этим", "approval")
+    assert process(service)
+    assert seen[1]["prompt"] == details and seen[1]["question"] == seen[0]["question"]
+    assert send("Пусть коллеги из качества разберутся с этим", "approval") == accepted
+    result = snapshot(client, accepted["turn_id"])["result"]
+    assert result["case_number"] and result["mail_request_id"]
+    with connect(dsn) as conn:
+        request, = conn.execute("SELECT offer_id,question FROM mail_requests").fetchall()
+        assert str(request["offer_id"]) == offer["id"] and request["question"] == seen[0]["question"]
+        assert conn.execute("SELECT count(*) AS n FROM mail_outbound").fetchone()["n"] == 1
+
+
+@pytest.mark.parametrize("intent, status", [("clarify", "open"), ("decline", "declined"), ("new_question", "superseded")])
+def test_semantic_reply_routes_without_mail(dsn, monkeypatch, intent, status):
+    engine = build_engine("fixture-alpha")
+    with connect(dsn) as conn:
+        seed_fixture_sources(conn)
+    monkeypatch.setattr(engine, "interpret_offer", lambda *_, **__: {"intent": intent, "evidence": ""}, raising=False)
+    service = DialogueService(dsn=dsn, engine=engine, mail_config=MailConfig(), resolve_actor=lambda *_: EMPLOYEE)
+    client = client_for(service)
+    conversation = uuid4()
+    first = enqueue(client, conversation, 2)
+    assert process(service)
+    reply = enqueue(client, conversation, 0, case_id=first["case_id"], message_id="next",
+                    text=FIXTURE.scenarios[0].questions[0] if intent == "new_question" else "Сначала разберусь")
+    assert process(service)
+    assert snapshot(client, first["turn_id"])["offers"][0]["status"] == status
+    result = snapshot(client, reply["turn_id"])
+    assert result["status"] == "completed"
+    if intent == "new_question":
+        assert result["result"]["sources"]
+    with connect(dsn) as conn:
+        assert not conn.execute("SELECT id FROM mail_requests").fetchone()
+
+
+@pytest.mark.parametrize("intent", ["new_question", "related_question"])
+def test_topic_change_scopes_later_model_calls_and_mail(dsn, monkeypatch, intent):
+    engine = build_engine("fixture-alpha")
+    service = DialogueService(dsn=dsn, engine=engine, mail_config=MailConfig(), resolve_actor=lambda *_: EMPLOYEE)
+    client, conversation = client_for(service), uuid4()
+    original = "Кто заместит координатора во время отпуска?"
+    next_question = ("Я про Дирекцию ИБ спрашивал." if intent == "related_question"
+                     else "Кто утверждает командировочные расходы?")
+    contexts = []
+
+    def answer(request):
+        contexts.append(request)
+        return AnswerResult("escalate", "Передать вопрос в Отдел качества?")
+
+    monkeypatch.setattr(engine, "answer", answer)
+    monkeypatch.setattr(engine, "interpret_offer", lambda *_, **__: {"intent": intent}, raising=False)
+    first = enqueue(client, conversation, 2, text=original)
+    with connect(dsn) as conn:
+        conn.execute("UPDATE cases SET conditions=%s WHERE id=%s", (Jsonb({"этап": "пресейл"}), first["case_id"]))
+    assert process(service)
+    second = enqueue(client, conversation, 2, case_id=first["case_id"], message_id="switch", text=next_question)
+    assert process(service)
+    assert len(contexts) == 2 and contexts[-1].question == next_question
+    continuation = intent == "related_question"
+    assert any(message.text == original for message in contexts[-1].history) == continuation
+    assert dict(contexts[-1].conditions) == ({"этап": "пресейл"} if continuation else {})
+    # An old tab could retry this accepted POST after the worker has chosen a topic.
+    assert enqueue(client, conversation, 2, case_id=first["case_id"], message_id="switch", text=next_question) == second
+    offer, = snapshot(client, second["turn_id"])["offers"]
+    assert client.post(f"/v1/offers/{offer['id']}/confirm", json={"version": offer["version"]}).status_code == 200
+    with connect(dsn) as conn:
+        outbound, = conn.execute("SELECT body FROM mail_outbound").fetchall()
+    assert next_question in outbound["body"]
+    assert (original in outbound["body"]) == continuation
+    assert ("пресейл" in outbound["body"]) == continuation
+
+
+def test_offer_closed_during_interpretation_cannot_send_mail(dsn, monkeypatch):
+    engine = build_engine("fixture-alpha")
+    service = DialogueService(dsn=dsn, engine=engine, mail_config=MailConfig(), resolve_actor=lambda *_: EMPLOYEE)
+    client = client_for(service)
+    conversation = uuid4()
+    first = enqueue(client, conversation, 2)
+    assert process(service)
+    current, = snapshot(client, first["turn_id"])["offers"]
+
+    def close_then_confirm(text, **_):
+        assert client.post(f"/v1/offers/{current['id']}/decline", json={"version": current["version"]}).status_code == 200
+        return {"intent": "confirm", "evidence": text}
+
+    monkeypatch.setattr(engine, "interpret_offer", close_then_confirm, raising=False)
+    reply = enqueue(client, conversation, 2, case_id=first["case_id"], message_id="reply", text="Обратимся к ним")
+    assert process(service)
+    assert snapshot(client, reply["turn_id"])["status"] == "completed"
+    assert snapshot(client, first["turn_id"])["offers"][0]["status"] == "declined"
+    with connect(dsn) as conn:
+        assert not conn.execute("SELECT id FROM mail_outbound").fetchone()
 
 
 def test_technical_failure_retry_reuses_the_turn(dsn):

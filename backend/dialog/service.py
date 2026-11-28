@@ -89,6 +89,12 @@ def _employee(actor: Actor) -> None:
         raise DialogueError(403, "employee_role_required")
 
 
+def _changed_reply_offer():
+    return DialogueError(409, "reply_offer_changed", message=(
+        "Предложение изменилось. Проверьте последнюю реплику бота и ответьте на неё."
+    ))
+
+
 def _conversation(conn, actor: Actor, conversation_id: UUID, *, write: bool = False):
     _employee(actor)
     lock = "FOR UPDATE" if write else "FOR SHARE"
@@ -117,6 +123,20 @@ def _accepted(turn) -> AcceptedMessage:
     return AcceptedMessage(
         conversation_id=turn["conversation_id"], case_id=turn["case_id"], turn_id=turn["id"]
     )
+
+
+def _topic_turns(conn, case_id, turn_id):
+    """Bound model and mail history after an employee switches subjects inside a case."""
+    rows = conn.execute("""
+        WITH topics AS (
+            SELECT id, count(*) FILTER (WHERE request @> '{"starts_topic": true}')
+                OVER (ORDER BY created_at,id) AS topic,
+                bool_or(request @> '{"starts_topic": true}') OVER () AS has_boundary
+            FROM turns WHERE case_id=%s
+        )
+        SELECT id FROM topics WHERE has_boundary AND topic=(SELECT topic FROM topics WHERE id=%s)
+        """, (case_id, turn_id)).fetchall()
+    return [row["id"] for row in rows] or None
 
 
 def _action(row: dict) -> dict:
@@ -190,14 +210,15 @@ class DialogueService:
         return conversation_id
 
     def admit(
-        self, conn, actor: Actor, conversation_id: UUID, body: MessageRequest
+        self, conn, actor: Actor, conversation_id: UUID, body: MessageRequest, *, offer_id: UUID | None = None
     ) -> AcceptedMessage:
         with conn.transaction():
-            return self._admit(conn, actor, conversation_id, body)
+            return self._admit(conn, actor, conversation_id, body, offer_id=offer_id)
 
-    def _admit(self, conn, actor: Actor, conversation_id: UUID, body: MessageRequest) -> AcceptedMessage:
+    def _admit(self, conn, actor: Actor, conversation_id: UUID, body: MessageRequest, *, offer_id=None) -> AcceptedMessage:
         self.ensure_conversation(conn, actor, conversation_id)
-        request = body.model_dump(mode="json")
+        bound = "reply_to_offer" in body.model_fields_set
+        request = body.model_dump(mode="json", exclude=set() if bound else {"reply_to_offer"})
         existing = conn.execute(
             "SELECT * FROM turns WHERE conversation_id = %s AND request_id = %s",
             (conversation_id, body.client_message_id),
@@ -208,11 +229,13 @@ class DialogueService:
             return _accepted(existing)
 
         case_id = body.case_id
+        shown = body.reply_to_offer
+        if shown and (case_id is None or body.clarification_id is not None):
+            raise DialogueError(422, "offer_case_required")
         text = body.text.strip() if body.text is not None else ""
         message_sources = None
-        decision = offer_decision(text) if case_id and not body.clarification_id else None
-        offer = conn.execute("SELECT * FROM offers WHERE case_id=%s AND status='open'",
-                             (case_id,)).fetchone() if decision else None
+        decision = offer_decision(text)
+        offer = None
         if body.clarification_id is None and text.isdecimal():
             raise DialogueError(422, "question_words_required", message="Напишите вопрос словами.")
         if body.clarification_id is not None:
@@ -228,7 +251,38 @@ class DialogueService:
                 "INSERT INTO cases (conversation_id) VALUES (%s) RETURNING id", (conversation_id,)
             ).fetchone()["id"]
         elif body.clarification_id is None:
-            self._require_case_ready(conn, actor, conversation_id, case_id)
+            try:
+                self._require_case_ready(conn, actor, conversation_id, case_id)
+            except DialogueError as exc:
+                if shown and exc.code == "clarification_id_required":
+                    raise _changed_reply_offer() from exc
+                raise
+            if (actor.channel != "dion" or offer_id is not None) and (
+                    decision or callable(getattr(self.engine, "interpret_offer", None)) or offer_id or bound):
+                offer = conn.execute("""
+                    SELECT o.*, t.result AS original_result FROM offers o JOIN turns t ON t.id=o.turn_id
+                    WHERE o.case_id=%s AND o.status='open'
+                    """, (case_id,)).fetchone()
+            if bound and offer:
+                conditions, _ = self._conditions(conn, actor, case_id)
+                if conditions != offer["payload"]["conditions"] or not self._result_visible(
+                        conn, actor, offer["original_result"], current=True):
+                    offer = None
+            if bound:
+                expected = (shown.id, shown.version) if shown else None
+                actual = (offer["id"], offer["version"]) if offer else None
+                changed = expected != actual
+            else:
+                # A legacy client can refer implicitly to the first offer in a case. After replacement
+                # it must target the visible offer explicitly, as its old draft could refer to either.
+                changed = bool(offer and not offer_id and conn.execute(
+                    "SELECT 1 FROM offers WHERE case_id=%s AND id<>%s LIMIT 1", (case_id, offer["id"]),
+                ).fetchone())
+            if changed:
+                raise _changed_reply_offer()
+        if offer_id is not None and (not offer or offer["id"] != offer_id):
+            raise DialogueError(409, "offer_is_closed")
+        pending = {"id": str(offer["id"]), "version": offer["version"]} if offer and not decision else None
 
         if not offer and (body.case_id is not None or body.clarification_id is not None):
             closed = conn.execute("""
@@ -245,7 +299,7 @@ class DialogueService:
             """,
             (
                 conversation_id, case_id, body.client_message_id, question,
-                Jsonb({"message": request, "channel": actor.channel}),
+                Jsonb({"message": request, "channel": actor.channel, **({"reply_offer": pending} if pending else {})}),
             ),
         ).fetchone()
         conn.execute(
@@ -258,26 +312,37 @@ class DialogueService:
                 Jsonb(message_sources) if message_sources is not None else None,
             ),
         )
-        if offer:
-            self._decide_offer(conn, actor, offer["id"], offer["version"], decision, consent_in_history=True)
-            mail = conn.execute("SELECT id, case_number FROM mail_requests WHERE offer_id=%s",
-                                (offer["id"],)).fetchone()
-            result = {"action": "answer", "sources": [], "mail_decision": decision, "text": "Письмо не отправлено."}
-            if mail:
-                result.update(mail_request_id=str(mail["id"]), case_number=mail["case_number"],
-                              text=f"Обращение ОК{mail['case_number']} принято для отправки в Отдел качества.")
-            conn.execute("UPDATE turns SET status='completed',result=%s,updated_at=now() WHERE id=%s",
-                         (Jsonb(result), turn["id"]))
-            conn.execute("""INSERT INTO messages(conversation_id,case_id,turn_id,role,text,created_at)
-                            VALUES (%s,%s,%s,'assistant',%s,clock_timestamp())""",
-                         (conversation_id, case_id, turn["id"], result["text"]))
-            _event(conn, turn, "turn.completed", {"status": "completed", "result": result})
+        if offer and decision:
+            receipt = self._offer_receipt(conn, actor, offer["id"], offer["version"], decision)
+            self._publish_offer_reply(conn, actor, turn, receipt)
             return _accepted(turn)
         self._enqueue(conn, actor, turn)
         _event(conn, turn, "turn.accepted", {"status": turn["status"], "attempt": turn["attempt"]})
         return _accepted(turn)
 
-    def _require_case_ready(self, conn, actor: Actor, conversation_id: UUID, case_id: UUID) -> None:
+    def _offer_receipt(self, conn, actor, offer_id, version, decision):
+        self._decide_offer(conn, actor, offer_id, version, decision, consent_in_history=True)
+        result = {"action": "answer", "sources": [], "mail_decision": decision, "text": "Письмо не отправлено."}
+        if decision == "confirmed":
+            mail = conn.execute("SELECT id, case_number FROM mail_requests WHERE offer_id=%s", (offer_id,)).fetchone()
+            result.update(mail_request_id=str(mail["id"]), case_number=mail["case_number"],
+                          text=f"Обращение ОК{mail['case_number']} принято для отправки в Отдел качества.")
+        return result
+
+    def _publish_offer_reply(self, conn, actor, turn, result, *, remains_open=None):
+        conn.execute("UPDATE turns SET status='completed',result=%s,updated_at=now() WHERE id=%s",
+                     (Jsonb(result), turn["id"]))
+        conn.execute("""INSERT INTO messages(conversation_id,case_id,turn_id,role,text,created_at)
+                        VALUES (%s,%s,%s,'assistant',%s,clock_timestamp())""",
+                     (turn["conversation_id"], turn["case_id"], turn["id"], result["text"]))
+        _event(conn, turn, "turn.completed", {"status": "completed", "result": self._public_result(result)})
+        if self.queue_reply is not None and actor.channel == "dion":
+            self.queue_reply(conn, effect_key=f"offer-reply:{turn['id']}", conversation_id=turn["conversation_id"],
+                             case_id=turn["case_id"], turn_id=turn["id"], actor_id=actor.id, text=result["text"],
+                             source_refs=result.get("condition_sources", []), offer_id=remains_open)
+
+    def _require_case_ready(self, conn, actor: Actor, conversation_id: UUID, case_id: UUID,
+                            *, clarification_id: str | None = None) -> None:
         case = conn.execute(
             "SELECT id FROM cases WHERE id = %s AND conversation_id = %s",
             (case_id, conversation_id),
@@ -298,6 +363,8 @@ class DialogueService:
             (case_id,),
         ):
             if self._result_visible(conn, actor, clarification["result"], current=True):
+                if str(clarification["id"]) == clarification_id:
+                    continue
                 raise DialogueError(409, "clarification_id_required")
             self._supersede_clarification(conn, conversation_id, clarification)
 
@@ -326,6 +393,9 @@ class DialogueService:
         if not self._result_visible(conn, actor, row["result"], current=True):
             self._supersede_clarification(conn, conversation_id, row)
             return row["case_id"], row["question"], text or row["question"], None
+        if conn.execute("SELECT 1 FROM turns WHERE case_id=%s AND status IN ('queued','processing')",
+                        (row["case_id"],)).fetchone():
+            raise DialogueError(409, "case_has_pending_turn")
         conditions = dict(row["conditions"])
         condition_sources = dict(row["condition_sources"])
         key = row["clarification_key"] or f"clarification:{row['id']}"
@@ -334,21 +404,23 @@ class DialogueService:
         additions = {}
         route = None
         if (text and not text.isdecimal() and getattr(self.engine, "interpret_choice", None)
-                and not any(text.strip().casefold() == o["text"].casefold() for o in row["options"])
-                and (actor.channel == "dion" or not matches or len(matches) > 1
-                     or UNKNOWN.search(text) or len(text.split()) > 4)):
+                and not any(text.strip().casefold() == o["text"].casefold() for o in row["options"])):
             from backend.contracts.engine import EngineUnavailable
             try:
+                visible_conditions, _ = self._conditions(conn, actor, row["case_id"])
                 route, option_id, additions = self.engine.interpret_choice(
-                    row, text, _AttemptRecorder(self.dsn, None, row["turn_id"], row["case_id"]))
-            except EngineUnavailable as exc:
-                raise DialogueError(503, "clarification_interpretation_unavailable",
-                                    message="Не удалось разобрать ответ. Повторите его или отправьте номер.") from exc
+                    {**row, "conditions": visible_conditions}, text,
+                    _AttemptRecorder(self.dsn, None, row["turn_id"], row["case_id"]))
+            except EngineUnavailable:
+                route = "ambiguous"
             if route == "new_question":
                 return None, text, text, None
+            if route == "about_choices":
+                # A question about the list is not a choice. Keep it available for the next reply.
+                return row["case_id"], text, text, self._result_refs(row["result"])
             if route == "ambiguous":
                 raise DialogueError(422, "clarification_choice_ambiguous",
-                                    message=numbered("Уточните, какой вариант подходит.", row["options"]))
+                                    message=numbered(row["prompt"], row["options"]))
             if route == "selected":
                 matches = [o for o in row["options"] if o["id"] == option_id]
             elif route == "unknown":
@@ -429,7 +501,8 @@ class DialogueService:
             return _accepted(turn)
         if turn["status"] != "technical_failure":
             raise DialogueError(409, "turn_is_not_technically_failed")
-        self._require_case_ready(conn, actor, turn["conversation_id"], turn["case_id"])
+        self._require_case_ready(conn, actor, turn["conversation_id"], turn["case_id"],
+                                 clarification_id=turn["request"].get("message", {}).get("clarification_id"))
         later_turn = conn.execute(
             "SELECT 1 FROM turns WHERE case_id = %s AND (created_at, id) > (%s, %s)",
             (turn["case_id"], turn["created_at"], turn["id"]),
@@ -493,13 +566,8 @@ class DialogueService:
                 conn.execute("""INSERT INTO messages(conversation_id,case_id,turn_id,role,text,created_at)
                                 VALUES (%s,%s,%s,'user',%s,clock_timestamp())""",
                              (turn["conversation_id"], turn["case_id"], turn["id"], "Подтверждаю отправку обращения."))
-            history = self.history(conn, actor, turn["conversation_id"])["messages"]
-            context = (offer["payload"].get("question", turn["question"]), offer["payload"]["conditions"],
-                       history, turn["result"])
-            if actor.channel == "guest":
-                from backend.mailfaq.shared_context import shared_context
-                context = shared_context(conn, turn["case_id"], turn["id"], history, context[0], context[1])
-            question, public_conditions, transcript, result = context
+            question, public_conditions, transcript, result = self._mail_context(
+                conn, actor, turn["conversation_id"], offer, turn["result"], turn["question"])
             try:
                 create_request(
                     conn, self.mail_config, offer_id=offer_id,
@@ -511,6 +579,19 @@ class DialogueService:
                 raise DialogueError(exc.status, exc.code) from exc
         _event(conn, turn, f"offer.{decision}", {"offer": _public_action(offer)})
         return self._offer_response(conn, actor, offer, turn)
+
+    def _mail_context(self, conn, actor, conversation_id, offer, result, original_question):
+        history = self.history(conn, actor, conversation_id)["messages"]
+        topic = _topic_turns(conn, offer["case_id"], offer["turn_id"])
+        if topic:
+            turn_ids = set(topic)
+            history = [message for message in history if message["turn_id"] in turn_ids]
+        question = offer["payload"].get("question") or original_question
+        conditions = offer["payload"]["conditions"]
+        if actor.channel == "guest":
+            from backend.mailfaq.shared_context import shared_context
+            return shared_context(conn, offer["case_id"], offer["turn_id"], history, question, conditions)
+        return question, conditions, history, result
 
     def _offer_response(self, conn, actor, offer, turn):
         response = _action(offer)
@@ -534,8 +615,82 @@ class DialogueService:
         context = self._answer_context(job, actor)
         if context is None:
             return
+        if context.pending_offer is not None:
+            offer = context.pending_offer
+            interpreter = getattr(self.engine, "interpret_offer", None)
+            intent = "unavailable"
+            if offer:
+                intent = interpreter(context.question, offer=offer, context=context)["intent"] if interpreter else "clarify"
+            if self._apply_offer_reply(job, context, intent):
+                return
+            context = self._answer_context(job, actor)
+            if context is None:
+                return
         result = self.engine.answer(context)
         self._finish_answer(job, context, result)
+
+    def _visible_offer(self, conn, actor, turn, conditions):
+        binding = turn["request"].get("reply_offer")
+        if not binding:
+            return None
+        origin = conn.execute("""
+            SELECT o.*, t.result, t.question AS original_question FROM offers o JOIN turns t ON t.id=o.turn_id
+            WHERE o.id=%s AND o.version=%s AND o.case_id=%s AND o.status='open'
+            """, (binding["id"], binding["version"], turn["case_id"])).fetchone()
+        if (origin and conditions == origin["payload"]["conditions"]
+                and self._result_visible(conn, actor, origin["result"], current=True)):
+            return origin
+        return None
+
+    def _apply_offer_reply(self, job, request, intent):
+        """Revalidate the exact offer after interpretation; a worker retry cannot repeat the effect."""
+        from backend.runtime import finish, require_lease
+
+        actor = self._actor_for_job(job)
+        with connect(self.dsn) as conn:
+            require_lease(conn, job)
+            lock_source_catalog(conn)
+            _, turn = _turn(conn, actor, request.turn_id, write=True)
+            if not self._job_is_current(turn, job):
+                return True
+            conditions, _ = self._conditions(conn, actor, turn["case_id"])
+            offer = self._visible_offer(conn, actor, turn, conditions)
+            keep = None
+            if not offer or intent == "unavailable":
+                result = {"action": "answer", "sources": [], "text": "Предложение уже недоступно. Отправку по этой реплике не выполняю."}
+            elif intent in {"new_question", "related_question"}:
+                conn.execute("UPDATE offers SET status='superseded',updated_at=now() WHERE id=%s", (offer["id"],))
+                append_event(conn, turn["conversation_id"], turn["case_id"], offer["turn_id"], "offer.superseded",
+                             {"offer": _public_action(dict(offer, status="superseded"))})
+                update = {}
+                if intent == "new_question":
+                    update["starts_topic"] = True
+                    conn.execute("UPDATE cases SET conditions='{}',condition_sources='{}',updated_at=now() WHERE id=%s",
+                                 (turn["case_id"],))
+                conn.execute("UPDATE turns SET request=(request-'reply_offer') || %s WHERE id=%s",
+                             (Jsonb(update), turn["id"]))
+                return False
+            elif intent in {"confirm", "decline"}:
+                decision = "confirmed" if intent == "confirm" else "declined"
+                result = self._offer_receipt(conn, actor, offer["id"], offer["version"], decision)
+            else:
+                keep = offer["id"]
+                question = offer["payload"].get("question") or offer["original_question"]
+                if intent == "ask_details":
+                    subject, _, _, shared = self._mail_context(conn, actor, turn["conversation_id"], offer,
+                                                              offer["result"], offer["original_question"])
+                    quotes = [ref["quote"] for ref in shared.get("sources", ())]
+                    text = f"В Отдел качества уйдёт вопрос «{subject}»."
+                    if quotes:
+                        text += "\n\nК обращению приложу выдержки из источников:\n" + "\n".join(f"«{quote}»" for quote in quotes)
+                    text += "\n\nВ письмо также войдёт переписка по этому вопросу. Отправить обращение?"
+                else:
+                    text = f"Уточните, пожалуйста, передать вопрос «{question}» в Отдел качества?"
+                result = {"action": "answer", "text": text, "sources": [], "pending_offer_id": str(keep),
+                          "condition_sources": self._result_refs(offer["result"])}
+            self._publish_offer_reply(conn, actor, turn, result, remains_open=keep)
+            finish(conn, job)
+            return True
 
     def _answer_context(self, job, actor):
         from backend.documents import list_fragments
@@ -551,6 +706,23 @@ class DialogueService:
                 conn.execute("UPDATE turns SET status = 'processing', updated_at = now() WHERE id = %s", (turn["id"],))
                 _event(conn, turn, "turn.processing", {"status": "processing", "attempt": turn["attempt"]})
             conditions, _ = self._conditions(conn, actor, turn["case_id"])
+            attempts = _AttemptRecorder(self.dsn, job, turn["id"], turn["case_id"])
+            if turn["request"].get("reply_offer"):
+                pending = {}
+                offer = self._visible_offer(conn, actor, turn, conditions)
+                if offer:
+                    prompt = offer["text"]
+                    prior = conn.execute("""
+                        SELECT result FROM turns WHERE case_id=%s AND result->>'pending_offer_id'=%s
+                        AND (created_at,id)<(%s,%s) ORDER BY created_at DESC,id DESC LIMIT 1
+                        """, (turn["case_id"], str(offer["id"]), turn["created_at"], turn["id"])).fetchone()
+                    if prior and self._result_visible(conn, actor, prior["result"], current=True):
+                        prompt = prior["result"]["text"]
+                    pending = dict(question=offer["payload"].get("question") or offer["original_question"],
+                                   prompt=prompt, conditions=conditions)
+                return AnswerRequest(turn["question"], turn["id"], turn["case_id"], conditions, (),
+                                     job.deadline_at, SourceSnapshot(()), attempts=attempts, pending_offer=pending)
+            topic = _topic_turns(conn, turn["case_id"], turn["id"])
             history = []
             for row in conn.execute("""
                 SELECT m.role, m.text, t.result, t.question, m.source_refs,
@@ -559,36 +731,47 @@ class DialogueService:
                 LEFT JOIN delivery_attempts a ON a.id = m.id AND a.channel = 'dion' AND a.state = 'sent'
                 LEFT JOIN dion_dispatches d ON d.attempt_id = a.id
                 WHERE m.case_id = %s AND m.turn_id IS DISTINCT FROM %s
+                  AND (%s::uuid[] IS NULL OR t.id=ANY(%s::uuid[]))
                 ORDER BY m.created_at, m.id
-                """, (turn["case_id"], turn["id"])):
+                """, (turn["case_id"], turn["id"], topic, topic)):
                 if not self._message_visible(conn, actor, row, row["result"]):
                     continue
                 result = (row["result"] or {}) if row["role"] == "assistant" and row["source_refs"] is None else {}
                 history.append(HistoryMessage(row["role"], row["text"], row["question"],
                                               result.get("resolved_question"), result.get("action")))
             clarification = None
+            pending_clarification = None
             clarification_id = turn["request"]["message"].get("clarification_id")
             if clarification_id:
                 resolved = conn.execute("""
-                    SELECT c.*, m.text FROM clarifications c
+                    SELECT c.*, m.text, original.question AS original_question, original.result AS original_result
+                    FROM clarifications c JOIN turns original ON original.id = c.turn_id
                     JOIN messages m ON m.turn_id = %s AND m.role = 'user'
-                    WHERE c.id = %s AND c.case_id = %s AND c.status = 'resolved'
+                    WHERE c.id = %s AND c.case_id = %s
                     """, (turn["id"], clarification_id, turn["case_id"])).fetchone()
-                if resolved:
+                if resolved and resolved["status"] == "open" and self._result_visible(
+                        conn, actor, resolved["original_result"], current=True):
+                    pending_clarification = resolved["id"]
+                    original_question = resolved["original_question"]
+                    choices = numbered(resolved["prompt"], resolved["options"])
+                    history = [HistoryMessage("user", original_question),
+                               HistoryMessage("assistant", choices, original_question, action="clarify")]
+                elif resolved and resolved["status"] == "resolved":
                     selected = match_options(resolved["text"], resolved["options"])
                     value = resolved["resolved_value"] or (
                         selected[0]["text"] if selected and len(selected) == 1 else resolved["text"])
                     clarification = dict(value=value, original=resolved["text"], prompt=resolved["prompt"],
                                          key=resolved["clarification_key"],
                                          choices=tuple(o["text"] for o in resolved["options"] if o["id"] != "unknown"))
-            count = conn.execute("SELECT count(*) AS n FROM clarifications WHERE case_id = %s AND status = 'resolved'",
-                                 (turn["case_id"],)).fetchone()["n"]
+            count = conn.execute("""SELECT count(*) AS n FROM clarifications WHERE case_id=%s AND status='resolved'
+                                    AND (%s::uuid[] IS NULL OR turn_id=ANY(%s::uuid[]))""",
+                                 (turn["case_id"], topic, topic)).fetchone()["n"]
             fragments = list_fragments(conn, actor.id, hackathon=self.hackathon)
             return AnswerRequest(
                 question=turn["question"], turn_id=turn["id"], case_id=turn["case_id"],
                 conditions=conditions, history=tuple(history), deadline=job.deadline_at,
                 sources=SourceSnapshot(fragments=fragments), clarification=clarification,
-                clarification_count=count, attempts=_AttemptRecorder(self.dsn, job, turn["id"], turn["case_id"]),
+                clarification_count=count, pending_clarification=pending_clarification, attempts=attempts,
             )
 
     def _finish_answer(self, job, request, result: AnswerResult) -> None:
@@ -604,6 +787,20 @@ class DialogueService:
             conditions, condition_sources = self._conditions(conn, actor, turn["case_id"])
             if conditions != dict(request.conditions):
                 raise EvidenceChanged("Case conditions changed during the turn")
+            continuing_clarification = None
+            if request.pending_clarification is not None:
+                # The answer draws on a previous prompt. Recheck its visibility and keep its list active.
+                origin = conn.execute("""
+                    SELECT c.*, t.result FROM clarifications c JOIN turns t ON t.id = c.turn_id
+                    WHERE c.id=%s AND c.case_id=%s AND c.status='open'
+                    """, (request.pending_clarification, turn["case_id"])).fetchone()
+                if not origin or not self._result_visible(conn, actor, origin["result"], current=True):
+                    raise EvidenceChanged("Clarification changed during the turn")
+                continuing_clarification = origin
+                condition_sources.extend(ref for ref in self._result_refs(origin["result"]) if ref not in condition_sources)
+                if result.action != "answer" or result.escalation_question:
+                    result = AnswerResult("clarify", "Уточнение поможет выбрать применимый пункт регламента.\n"
+                                          + numbered(origin["prompt"], origin["options"]), allow_faq=False)
             if isinstance(result, VerifiedAnswer):
                 from backend.documents import list_fragments
 
@@ -632,7 +829,9 @@ class DialogueService:
                 public["condition_sources"] = condition_sources
             if result.resolved_question:
                 public["resolved_question"] = result.resolved_question
-            self._store_result(conn, actor, turn, conditions, public, result)
+            if continuing_clarification is not None:
+                public["pending_clarification_id"] = str(continuing_clarification["id"])
+            self._store_result(conn, actor, turn, conditions, public, result, clarification=continuing_clarification)
             finish(conn, job)
 
     @staticmethod
@@ -719,9 +918,9 @@ class DialogueService:
                  for part in result.parts]
         return {"action": result.action, "text": result.text, "sources": refs, "parts": parts}
 
-    def _store_result(self, conn, actor, turn, conditions, public, result):
-        clarification = offer = None
-        if public["action"] == "clarify":
+    def _store_result(self, conn, actor, turn, conditions, public, result, *, clarification=None):
+        offer = None
+        if public["action"] == "clarify" and clarification is None:
             options = [
                 {"id": item.id, "text": item.text, "conditions": dict(item.conditions)}
                 for item in result.options
@@ -981,6 +1180,7 @@ class DialogueService:
         lock_source_catalog(conn)
         _conversation(conn, actor, conversation_id, write=reevaluate_faq and turn_id is not None)
         condition_sources = []
+        keep_actions = True
         if reevaluate_faq and turn_id is not None:
             turn = conn.execute(
                 "SELECT * FROM turns WHERE id = %s AND conversation_id = %s", (turn_id, conversation_id)
@@ -989,9 +1189,15 @@ class DialogueService:
                 return None
             if not self._result_visible(conn, actor, turn["result"], current=True):
                 return None
-            condition_sources = (turn["result"] or {}).get("condition_sources", [])
+            result = turn["result"] or {}
+            condition_sources = result.get("condition_sources", [])
+            pending = result.get("pending_clarification_id")
+            if pending and result.get("action") == "answer":
+                keep_actions = conn.execute("""
+                    SELECT 1 FROM clarifications WHERE id=%s AND case_id=%s AND status='open'
+                    """, (pending, turn["case_id"])).fetchone() is not None
         if self._refs_visible(conn, actor, source_refs, current=True):
-            return text, source_refs, True, condition_sources
+            return text, source_refs, keep_actions, condition_sources
         return None
 
     def _supersede_pending_action(self, conn, turn):

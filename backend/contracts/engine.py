@@ -105,6 +105,8 @@ class AnswerRequest:
     attempts: ModelAttemptRecorder | None = None
     clarification: Mapping | None = None
     clarification_count: int = 0
+    pending_offer: Mapping | None = None
+    pending_clarification: UUID | None = None
 
     def __post_init__(self):
         if self.deadline.utcoffset() is None:

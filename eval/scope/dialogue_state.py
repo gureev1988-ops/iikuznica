@@ -35,6 +35,11 @@ PROCEDURE_CONTEXT = (
     "реплики выбранного хода, которая называет нужный объект. Если объект уже назван, верни subject пустым. "
     "В subject оставь только объект, без прошлых просьб или шагов."
 )
+CHOICE_CONTEXT = (
+    "\nСотрудник просит пояснить только уточнение или показанные варианты. Сохрани этот вопрос. "
+    "Для местоимений подставь названия из списка бота и сохрани различие между вариантами. "
+    "Не выбирай ни один вариант за сотрудника и не включай исходный вопрос в новый запрос."
+)
 RETRY_PROCEDURE_CONTEXT = (
     "\nПерепроверь связь с единственным предложенным прошлым ходом. Короткое уточнение роли "
     "или ссылка «туда», «там» могут продолжать его, даже если прежний ответ отсутствует. "
@@ -154,7 +159,7 @@ def _retry_topic(decision, question, visible, procedure_context, past):
     return None
 
 
-def restore(question, past, model, call):
+def restore(question, past, model, call, *, about_choices=False):
     if (resolved := _directorate_followup(question, past)) is not None:
         return "follow", resolved
     history = [(role, t[key]) for t in past for role, key in (("user", "user"), ("assistant", "assistant"))]
@@ -170,6 +175,8 @@ def restore(question, past, model, call):
             turn["assistant"] = ""
             procedure_context.add(turn["turn"])
     instruction = RESOLVE + PROCEDURE_CONTEXT if procedure_context else RESOLVE
+    if about_choices:
+        instruction += CHOICE_CONTEXT
     try:
         obj = _resolution(question, visible, model, call, instruction)
         topic = _retry_topic(obj, question, visible, procedure_context, past)
@@ -193,6 +200,11 @@ def restore(question, past, model, call):
             raise ValueError
         context = by_id[anchor]["resolved"] + " " + by_id[anchor]["user"] + " " + question
         dirs = procedures.directories(question) or procedures.directories(context)
+        if about_choices:
+            context += " " + by_id[anchor]["assistant"]
+            dirs = procedures.directories(context)
+            if procedures.operation(query) != procedures.operation(question):
+                raise ValueError("Choice explanation must preserve the current request")
         focused = anchor in procedure_context and not procedures.full_procedure(question)
         if focused:
             query = _focus_followup(question, query, by_id[anchor]["user"], obj.get("subject"))

@@ -13,6 +13,11 @@ ClarificationStatus = Literal["open", "resolved", "superseded"]
 OfferStatus = Literal["open", "confirmed", "declined", "superseded"]
 
 
+class OfferReference(BaseModel):
+    id: UUID
+    version: int = Field(ge=1)
+
+
 class MessageRequest(BaseModel):
     client_message_id: str = Field(min_length=1, max_length=256)
     text: str | None = Field(default=None, max_length=16_000)
@@ -20,6 +25,9 @@ class MessageRequest(BaseModel):
     clarification_id: UUID | None = None
     clarification_version: int | None = Field(default=None, ge=1)
     option_id: str | None = Field(default=None, min_length=1, max_length=256)
+    reply_to_offer: OfferReference | None = Field(
+        default=None, description="Offer shown when composing this reply. Explicit null means no offer was shown.",
+    )
 
 
 class AcceptedMessage(BaseModel):

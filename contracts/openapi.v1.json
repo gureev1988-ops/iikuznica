@@ -1915,6 +1915,17 @@
             ],
             "title": "Option Id"
           },
+          "reply_to_offer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OfferReference"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Offer shown when composing this reply. Explicit null means no offer was shown."
+          },
           "text": {
             "anyOf": [
               {
@@ -2294,6 +2305,26 @@
           "version"
         ],
         "title": "OfferDecision",
+        "type": "object"
+      },
+      "OfferReference": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version"
+        ],
+        "title": "OfferReference",
         "type": "object"
       },
       "OfferView": {
