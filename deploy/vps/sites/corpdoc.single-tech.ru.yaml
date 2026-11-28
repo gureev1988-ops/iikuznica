@@ -9,9 +9,7 @@ services:
       <<: *public-url
       II_LEGACY_BROWSER_ORIGIN: https://45.8.146.122
   interactive:
-    environment:
-      <<: *public-url
-      II_HOSTED_PASSAGE_RANKING: ${II_HOSTED_PASSAGE_RANKING:-1}
+    environment: *public-url
   background:
     environment: *public-url
   https:
